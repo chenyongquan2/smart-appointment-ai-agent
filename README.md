@@ -203,42 +203,49 @@ Smart appointment AI agent/
 ├── data/                            # 数据库与缓存目录
 ├── tests/                           # 测试用例
 ├── app.py                           # 应用入口
-├── requirements.txt                 # Python 依赖
+├── pyproject.toml                   # 项目依赖与配置（uv 管理）
+├── uv.lock                          # 依赖锁文件
 ├── .env.example                     # 环境变量模板
 └── README.md                        # 项目说明
 ```
 
 ## 快速开始
 
-### 1. 创建虚拟环境
+本项目使用 [uv](https://docs.astral.sh/uv/) 管理依赖与虚拟环境。依赖声明在 `pyproject.toml`，由 `uv.lock` 锁定版本。
 
-```bash
-python -m venv .venv
-```
+### 1. 安装 uv
+
+如果还没有安装 uv：
 
 Windows PowerShell：
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Windows CMD：
-
-```cmd
-.venv\Scripts\activate.bat
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 macOS 或 Linux：
 
 ```bash
-source .venv/bin/activate
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-### 2. 安装依赖
+也可以用 `pip install uv` 或 `pipx install uv`。
+
+### 2. 创建虚拟环境并安装依赖
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+`uv sync` 会自动创建 `.venv`，按 `requires-python = ">=3.10,<3.13"` 选择（必要时自动下载）兼容的 Python，并按 `uv.lock` 精确安装全部依赖。如需包含开发工具（pytest），使用 `uv sync --dev`。
+
+> 说明：Python 3.13 / 3.14 不受支持，PEP 649 的延迟注解求值会破坏 LangChain 0.3.x，因此 `pyproject.toml` 已限定版本范围。
+
+后续运行命令时无需手动激活虚拟环境，直接用 `uv run <命令>` 即可。如需手动激活：
+
+Windows PowerShell：`.\.venv\Scripts\Activate.ps1`
+Windows CMD：`.venv\Scripts\activate.bat`
+macOS 或 Linux：`source .venv/bin/activate`
 
 ### 3. 配置环境变量
 
@@ -283,13 +290,13 @@ LOG_LEVEL=INFO
 ### 4. 启动服务
 
 ```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 如果 8000 端口已被占用，可以换成 8001：
 
 ```bash
-python -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 启动后可以访问：
@@ -303,13 +310,13 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 运行全部测试：
 
 ```bash
-pytest
+uv run pytest
 ```
 
 运行单个测试文件：
 
 ```bash
-pytest tests/test_task_classification_agent.py
+uv run pytest tests/test_task_classification_agent.py
 ```
 
 ## 主要页面
