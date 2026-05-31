@@ -2,12 +2,12 @@
 """
 Smoke test for the Smart Appointment AI Agent environment.
 
-Imports every critical third-party package declared in requirements.txt and
+Imports every critical third-party package declared in pyproject.toml and
 checks the .env file for required model provider keys. Exits with a non-zero
 status if anything is missing.
 
 Usage:
-    python .github/skills/setup-environment/scripts/verify_env.py
+    uv run python .github/skills/setup-environment/scripts/verify_env.py
 """
 from __future__ import annotations
 

@@ -1,18 +1,17 @@
 <#
 .SYNOPSIS
-  One-shot environment bootstrapper for the Smart Appointment AI Agent (Windows).
+  One-shot environment bootstrapper for the Smart Appointment AI Agent (Windows, uv).
 
 .DESCRIPTION
-  - Validates Python >= 3.10
-  - Creates / reuses .venv
-  - Installs requirements.txt
-  - Scaffolds .env from .env.example
+  - Validates that uv is installed (prints install hint otherwise)
+  - Scaffolds .env from .env.example and gates on model configuration
+  - Runs `uv sync` to create .venv from pyproject.toml + uv.lock (Python 3.10-3.12)
   - Ensures data/ directory exists
-  - Runs verify_env.py
+  - Runs verify_env.py via `uv run`
   - Optionally launches uvicorn
 
 .PARAMETER Force
-  Recreate the .venv from scratch.
+  Recreate the .venv from scratch before syncing.
 
 .PARAMETER Run
   After setup, launch `uvicorn app:app` on 127.0.0.1:8001.
@@ -102,49 +101,24 @@ function Get-IncompleteModelKeys([string]$content) {
   return $incomplete | Select-Object -Unique
 }
 
-# ---------------------------------------------------------------- 1. Python
-# Required range: 3.10 <= Python < 3.13.
-# Python 3.13/3.14 break LangChain 0.3.x via PEP 649 deferred annotation evaluation
-# (TypeError: 'function' object is not subscriptable on pydantic forward refs).
-Write-Step "Checking Python"
+# ---------------------------------------------------------------- 1. uv
+# Dependencies are managed by uv via pyproject.toml + uv.lock. uv reads
+# requires-python = ">=3.10,<3.13" and downloads a compatible CPython if needed.
+# Python 3.13/3.14 are excluded: PEP 649 deferred annotation evaluation breaks
+# LangChain 0.3.x (TypeError: 'function' object is not subscriptable).
+Write-Step "Checking uv"
 
-function Get-PythonExe {
-    $candidates = @()
-    $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyLauncher) {
-        foreach ($v in '3.12','3.11','3.10') {
-            try {
-                $exe = & cmd /c "py -$v -c `"import sys; print(sys.executable)`" 2>nul"
-                if ($LASTEXITCODE -eq 0 -and $exe) {
-                    $exe = ($exe -split "`n" | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
-                    if ($exe) { $candidates += $exe }
-                }
-            } catch { }
-        }
-    }
-    $defaultPy = Get-Command python -ErrorAction SilentlyContinue
-    if ($defaultPy) { $candidates += $defaultPy.Source }
-
-    foreach ($exe in $candidates) {
-        if (-not (Test-Path $exe)) { continue }
-        $ver = & $exe -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-        if (-not $ver) { continue }
-        $parts = $ver.Split('.')
-        $maj = [int]$parts[0]; $min = [int]$parts[1]
-        if ($maj -eq 3 -and $min -ge 10 -and $min -le 12) {
-            return [pscustomobject]@{ Exe = $exe; Version = $ver }
-        }
-    }
-    return $null
-}
-
-$pyInfo = Get-PythonExe
-if (-not $pyInfo) {
-    Write-Err "No compatible Python found. Need Python 3.10, 3.11, or 3.12 (3.13/3.14 break LangChain 0.3.x). Install from https://www.python.org/downloads/"
+$uvCmd = Get-Command uv -ErrorAction SilentlyContinue
+if (-not $uvCmd) {
+    Write-Err "uv is not installed."
+    Write-Host "Install it with one of:" -ForegroundColor Yellow
+    Write-Host '  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"'
+    Write-Host '  pip install uv'
+    Write-Host "Then restart the shell and re-run this script." -ForegroundColor Yellow
     exit 1
 }
-$PythonExe = $pyInfo.Exe
-Write-Ok "Python $($pyInfo.Version) at $PythonExe"
+$uvVersion = (& uv --version) 2>$null
+Write-Ok "uv found: $uvVersion"
 
 # ---------------------------------------------------------------- 2. .env gate
 Write-Step "Checking model configuration"
@@ -180,59 +154,37 @@ if ($incompleteKeys.Count -gt 0) {
 }
 Write-Ok ".env model configuration looks filled"
 
-# ---------------------------------------------------------------- 3. .venv
-Write-Step "Preparing virtual environment (.venv)"
+# ---------------------------------------------------------------- 3. uv sync
+Write-Step "Syncing dependencies with uv (this may take a minute)"
 if ($Force -and (Test-Path .venv)) {
     Write-Warn2 "Removing existing .venv (forced)"
     Remove-Item -Recurse -Force .venv
 }
-$VenvPython = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
 
-# Detect mismatched venv (created with different Python version) and rebuild.
-if ((Test-Path .venv) -and (Test-Path $VenvPython)) {
-    $venvVer = & $VenvPython -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
-    if ($venvVer -and $venvVer -ne $pyInfo.Version) {
-        Write-Warn2 ".venv was built with Python $venvVer, but selected Python is $($pyInfo.Version). Rebuilding."
-        Remove-Item -Recurse -Force .venv
-    }
-}
+& uv sync
+if ($LASTEXITCODE -ne 0) { Write-Err "uv sync failed"; exit 1 }
+Write-Ok "Dependencies synced into .venv"
 
-if (-not (Test-Path .venv)) {
-    & $PythonExe -m venv .venv
-    Write-Ok ".venv created (Python $($pyInfo.Version))"
-} else {
-    Write-Ok ".venv already exists"
-}
-
-if (-not (Test-Path $VenvPython)) { Write-Err ".venv python missing"; exit 1 }
-
-# ---------------------------------------------------------------- 4. pip install
-Write-Step "Installing dependencies (this may take a minute)"
-& $VenvPython -m pip install --upgrade pip --quiet
-& $VenvPython -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { Write-Err "pip install failed"; exit 1 }
-Write-Ok "Dependencies installed"
-
-# ---------------------------------------------------------------- 5. data dir
+# ---------------------------------------------------------------- 4. data dir
 Write-Step "Ensuring data/ directory"
 New-Item -ItemType Directory -Force -Path (Join-Path $ProjectRoot 'data') | Out-Null
 Write-Ok "data/ ready"
 
-# ---------------------------------------------------------------- 6. verify
+# ---------------------------------------------------------------- 5. verify
 if (-not $NoVerify) {
     Write-Step "Verifying installation"
-    & $VenvPython (Join-Path $ScriptDir 'verify_env.py')
+    & uv run python (Join-Path $ScriptDir 'verify_env.py')
     if ($LASTEXITCODE -ne 0) { Write-Err "verify_env.py failed"; exit 1 }
 }
 
 Write-Host "`n========================================================" -ForegroundColor Green
 Write-Host " Setup complete." -ForegroundColor Green
-Write-Host " Activate the venv with:  .\.venv\Scripts\Activate.ps1"   -ForegroundColor Green
-Write-Host " Then launch the app:     uvicorn app:app --host 127.0.0.1 --port 8001 --reload" -ForegroundColor Green
+Write-Host " Run app (no activation needed):  uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload" -ForegroundColor Green
+Write-Host " Or activate the venv with:       .\.venv\Scripts\Activate.ps1" -ForegroundColor Green
 Write-Host "========================================================`n" -ForegroundColor Green
 
-# ---------------------------------------------------------------- 7. optional run
+# ---------------------------------------------------------------- 6. optional run
 if ($Run) {
     Write-Step "Launching uvicorn on 127.0.0.1:8001"
-    & $VenvPython -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+    & uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 }

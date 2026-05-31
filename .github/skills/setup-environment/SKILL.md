@@ -1,11 +1,13 @@
 ---
 name: setup-environment
-description: One-shot environment bootstrapper for the Smart Appointment AI Agent. Creates a Python virtual environment, installs dependencies from requirements.txt, scaffolds a .env file with generic OpenAI-compatible LLM / embedding / OpenWeather keys, prepares the data directory, and verifies the install. Use when user says "setup environment", "一键配置", "初始化环境", "install deps", "配置环境", "setup", "bootstrap", "搭建环境", or whenever a fresh checkout needs to be made runnable.
+description: One-shot environment bootstrapper for the Smart Appointment AI Agent, powered by uv. Creates a uv-managed virtual environment from pyproject.toml / uv.lock, scaffolds a .env file with generic OpenAI-compatible LLM / embedding / OpenWeather keys, prepares the data directory, and verifies the install. Use when user says "setup environment", "一键配置", "初始化环境", "install deps", "配置环境", "setup", "bootstrap", "搭建环境", or whenever a fresh checkout needs to be made runnable.
 ---
 
-# Setup Environment
+# Setup Environment (uv)
 
-One trigger completes **check Python → create venv → install deps → scaffold .env → init data dir → verify → (optional) launch app**.
+One trigger completes **check uv → create venv → sync deps → scaffold .env → init data dir → verify → (optional) launch app**.
+
+This project is managed with [uv](https://docs.astral.sh/uv/). Dependencies live in `pyproject.toml`, pinned by `uv.lock`. uv creates and manages the `.venv` for you, and will download a compatible Python (3.10–3.12) automatically if one is not installed.
 
 Optional modifiers:
 - `--run` after setup, also start `uvicorn` on `127.0.0.1:8001`
@@ -17,26 +19,22 @@ Optional modifiers:
 ## Pipeline
 
 ```
-Check Python (3.10–3.12)
-        ↓
-Create / reuse .venv
-        ↓
-Activate venv  (idempotent)
-        ↓
-pip install -r requirements.txt
+Check uv (install hint if missing)
         ↓
 Ensure .env (copy from .env.example if missing, then prompt for model keys)
+        ↓
+uv sync         (creates .venv from pyproject.toml + uv.lock, Python 3.10–3.12)
         ↓
 Ensure data/ directory exists
         ↓
 Verify imports (fastapi, langchain, faiss, sqlalchemy, mcp …)
         ↓
-[optional] uvicorn app:app --host 127.0.0.1 --port 8001
+[optional] uv run uvicorn app:app --host 127.0.0.1 --port 8001
 ```
 
-> **⚠️ Always use the project-local Python environment for this repository.**
+> **⚠️ Always use uv / the project-local `.venv` for this repository.**
 > Do not run this project with global/system `python`, `pip`, `pytest`, or `uvicorn`; global Python may be 3.13+ and incompatible with LangChain 0.3.x.
-> Activate `.venv` first, or call the project interpreter directly.
+> Prefer `uv run <cmd>` — it auto-uses the project `.venv` without manual activation. To activate manually:
 > - **Windows (PowerShell)**: `.\.venv\Scripts\Activate.ps1`
 > - **Windows (cmd)**:        `.\.venv\Scripts\activate.bat`
 > - **macOS / Linux**:        `source .venv/bin/activate`
@@ -64,38 +62,26 @@ The script is idempotent: re-running only patches whatever is missing.
 
 ## Step-by-Step (when running manually)
 
-### 1. Check Python
+### 1. Check uv
 
-Required: **Python 3.10, 3.11, or 3.12**.
-
-> ⚠ Python **3.13 / 3.14 are not supported**. PEP 649 deferred annotation evaluation in 3.13+ breaks LangChain 0.3.x / pydantic forward-ref evaluation (`TypeError: 'function' object is not subscriptable`). The setup script detects this and refuses to continue. On Windows, install Python 3.12 from python.org or via `winget install --id Python.Python.3.12 -e`. The script will auto-pick `py -3.12` if available.
+Required: **uv** (any recent version). Check with:
 
 ```powershell
-python --version
+uv --version
 ```
 
-If missing or incompatible, stop and ask the user to install Python 3.10–3.12.
+If missing, install it:
 
-### 2. Create the virtual environment
+- **Windows (PowerShell)**: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
+- **macOS / Linux**: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- or `pipx install uv` / `pip install uv`
 
-```powershell
-python -m venv .venv
-```
+> uv reads `requires-python = ">=3.10,<3.13"` from `pyproject.toml` and will download a matching CPython automatically.
+> Python **3.13 / 3.14 are intentionally excluded**: PEP 649 deferred annotation evaluation in 3.13+ breaks LangChain 0.3.x / pydantic forward-ref evaluation (`TypeError: 'function' object is not subscriptable`).
 
-If `--force` was passed, delete `.venv` first.
+### 2. Fill model configuration before continuing
 
-### 3. Activate
-
-```powershell
-# Windows
-.\.venv\Scripts\Activate.ps1
-# Unix
-source .venv/bin/activate
-```
-
-### 4. Fill model configuration before continuing
-
-Before installing dependencies or launching the app, ensure `.env` has real model settings. If `.env` is missing, copy `.env.example` to `.env`, then pause and ask the user to fill these fields.
+Before syncing dependencies or launching the app, ensure `.env` has real model settings. If `.env` is missing, copy `.env.example` to `.env`, then pause and ask the user to fill these fields.
 
 This project uses **two different model capabilities**:
 
@@ -158,16 +144,17 @@ EMBEDDING_MODEL=your_qwen_embedding_model
 
 Stop here if any value still looks like `your_..._here`. Tell the user: “Please fill `.env`, then tell me it is ready, and I will continue setup.”
 
-### 5. Install dependencies
+### 3. Sync dependencies (creates the venv)
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+uv sync
 ```
+
+This single command creates `.venv` (picking a Python 3.10–3.12, downloading one if needed) and installs every dependency from `pyproject.toml`, exactly pinned by `uv.lock`. To include the dev tools (pytest), use `uv sync --dev`. If `--force` was passed, delete `.venv` first so uv rebuilds it from scratch.
 
 `faiss-cpu` may take 1–2 minutes on first install — that is normal.
 
-### 6. Validate `.env`
+### 4. Validate `.env`
 
 If a `.env` already exists, leave it alone. Otherwise copy `.env.example` to `.env`. Then check the values:
 
@@ -186,7 +173,7 @@ If a `.env` already exists, leave it alone. Otherwise copy `.env.example` to `.e
 
 If any required key still equals the placeholder (`your_..._here`), pause and ask the user to fill it in before continuing. **Never commit a populated `.env`.**
 
-### 7. Ensure data directory
+### 5. Ensure data directory
 
 ```powershell
 New-Item -ItemType Directory -Force -Path data | Out-Null
@@ -194,18 +181,18 @@ New-Item -ItemType Directory -Force -Path data | Out-Null
 
 The app writes the SQLite DB and FAISS index cache here on first launch.
 
-### 8. Verify
+### 6. Verify
 
 ```powershell
-.\.venv\Scripts\python.exe .github\skills\setup-environment\scripts\verify_env.py
+uv run python .github\skills\setup-environment\scripts\verify_env.py
 ```
 
 This script imports the critical packages and validates the model provider variables.
 
-### 9. (Optional) Launch
+### 7. (Optional) Launch
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 ```
 
 Open <http://127.0.0.1:8001/docs> to confirm.
@@ -216,11 +203,14 @@ Open <http://127.0.0.1:8001/docs> to confirm.
 
 | Symptom | Fix |
 |---------|-----|
-| `Activate.ps1 cannot be loaded because running scripts is disabled` | Run PowerShell as user and execute: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`, or invoke with `powershell -ExecutionPolicy Bypass -File ...` |
-| `faiss-cpu` build fails on Windows | Upgrade pip first (`python -m pip install --upgrade pip`), ensure Python is 64-bit, retry |
-| `mcp` package not found | Confirm Python is 3.10–3.12; `mcp>=1.0.0` requires modern Python |
-| `TypeError: 'function' object is not subscriptable` during LangChain import | You are on Python 3.13/3.14. PEP 649 breaks LangChain 0.3.x. Install Python 3.12 and rebuild `.venv` (`-Force`) |
-| `ModuleNotFoundError` after install | The shell is using system Python. Re-activate `.venv` and re-run |
+| `uv: command not found` / `not recognized` | Install uv (see step 1), then restart the shell so `uv` is on `PATH` |
+| `Activate.ps1 cannot be loaded because running scripts is disabled` | Prefer `uv run <cmd>` (no activation needed). Or run: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned` |
+| uv cannot find a compatible Python | uv normally downloads one automatically; if blocked, install Python 3.12 (`winget install --id Python.Python.3.12 -e`) and re-run `uv sync` |
+| `faiss-cpu` build/download fails | Re-run `uv sync`; ensure 64-bit Python; check network/proxy |
+| `mcp` package not found | Confirm the resolved Python is 3.10–3.12; re-run `uv sync` |
+| `TypeError: 'function' object is not subscriptable` during LangChain import | A Python 3.13/3.14 interpreter leaked in. `requires-python` excludes it; run via `uv run`/`.venv`, not system Python |
+| `ModuleNotFoundError` after install | The shell is using system Python. Use `uv run <cmd>` or re-activate `.venv` |
+| `uv.lock` out of sync with `pyproject.toml` | Run `uv lock` then `uv sync` |
 | Port 8001 already in use | Stop the previous server or pass `--port 8002` to uvicorn |
 | Model auth errors at startup | Re-check `MODEL_PROVIDER`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, and embedding settings in `.env` |
 
@@ -232,9 +222,9 @@ Open <http://127.0.0.1:8001/docs> to confirm.
 .github/skills/setup-environment/
 ├── SKILL.md           ← this file
 └── scripts/
-    ├── setup.ps1      ← one-shot bootstrapper for Windows
-    ├── setup.sh       ← one-shot bootstrapper for macOS/Linux
+    ├── setup.ps1      ← one-shot uv bootstrapper for Windows
+    ├── setup.sh       ← one-shot uv bootstrapper for macOS/Linux
     └── verify_env.py  ← import-level smoke test
 ```
 
-A `.env.example` template lives at the project root (sibling of `requirements.txt`) so the bootstrap scripts can copy it on a clean checkout.
+Dependencies are declared in `pyproject.toml` and pinned in `uv.lock` at the project root. A `.env.example` template also lives at the project root (sibling of `pyproject.toml`) so the bootstrap scripts can copy it on a clean checkout.

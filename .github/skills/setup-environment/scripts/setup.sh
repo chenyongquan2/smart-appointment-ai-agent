@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# One-shot environment bootstrapper for the Smart Appointment AI Agent (macOS / Linux).
+# One-shot environment bootstrapper for the Smart Appointment AI Agent (macOS / Linux, uv).
+#
+# Dependencies are managed by uv via pyproject.toml + uv.lock.
 #
 # Flags:
-#   --force        recreate .venv from scratch
+#   --force        recreate .venv from scratch before syncing
 #   --run          after setup, launch uvicorn on 127.0.0.1:8001
 #   --no-verify    skip verify_env.py
 set -euo pipefail
@@ -86,34 +88,20 @@ collect_incomplete_model_keys() {
     printf '%s' "$incomplete" | xargs
 }
 
-# ----------------------------------------------------------- 1. Python
-# Required range: 3.10 <= Python < 3.13.
-# Python 3.13/3.14 break LangChain 0.3.x via PEP 649 deferred annotation evaluation
-# (TypeError: 'function' object is not subscriptable on pydantic forward refs).
-step "Checking Python"
-
-find_python() {
-    local cand ver maj min
-    for cand in python3.12 python3.11 python3.10 python3; do
-        if command -v "$cand" >/dev/null 2>&1; then
-            ver="$("$cand" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-            maj="${ver%%.*}"; min="${ver##*.}"
-            if [ "$maj" = "3" ] && [ "$min" -ge 10 ] && [ "$min" -le 12 ]; then
-                echo "$cand|$ver"
-                return 0
-            fi
-        fi
-    done
-    return 1
-}
-PY_PICK="$(find_python || true)"
-if [ -z "$PY_PICK" ]; then
-    err "No compatible Python found. Need Python 3.10, 3.11, or 3.12 (3.13/3.14 break LangChain 0.3.x)."
+# ----------------------------------------------------------- 1. uv
+# uv reads requires-python = ">=3.10,<3.13" from pyproject.toml and downloads a
+# compatible CPython if needed. Python 3.13/3.14 are excluded: PEP 649 deferred
+# annotation evaluation breaks LangChain 0.3.x.
+step "Checking uv"
+if ! command -v uv >/dev/null 2>&1; then
+    err "uv is not installed."
+    printf "${C_YELLOW}Install it with one of:${C_OFF}\n"
+    printf "  curl -LsSf https://astral.sh/uv/install.sh | sh\n"
+    printf "  pip install uv\n"
+    printf "${C_YELLOW}Then restart the shell and re-run this script.${C_OFF}\n"
     exit 1
 fi
-PYTHON_BIN="${PY_PICK%%|*}"
-PY_VER="${PY_PICK##*|}"
-ok "Python $PY_VER ($PYTHON_BIN)"
+ok "uv found: $(uv --version)"
 
 # ----------------------------------------------------------- 2. .env gate
 step "Checking model configuration"
@@ -145,55 +133,37 @@ if [ -n "$INCOMPLETE_KEYS" ]; then
 fi
 ok ".env model configuration looks filled"
 
-# ----------------------------------------------------------- 3. .venv
-step "Preparing virtual environment (.venv)"
+# ----------------------------------------------------------- 3. uv sync
+step "Syncing dependencies with uv (this may take a minute)"
 if [ "$FORCE" -eq 1 ] && [ -d .venv ]; then
     warn "Removing existing .venv (forced)"; rm -rf .venv
 fi
-if [ -d .venv ] && [ -x .venv/bin/python ]; then
-    EXISTING_VER="$(.venv/bin/python -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || true)"
-    if [ -n "$EXISTING_VER" ] && [ "$EXISTING_VER" != "$PY_VER" ]; then
-        warn ".venv was built with Python $EXISTING_VER, but selected Python is $PY_VER. Rebuilding."
-        rm -rf .venv
-    fi
-fi
-if [ ! -d .venv ]; then
-    "$PYTHON_BIN" -m venv .venv
-    ok ".venv created (Python $PY_VER)"
-else
-    ok ".venv already exists"
-fi
-VENV_PY="$PROJECT_ROOT/.venv/bin/python"
+uv sync
+ok "Dependencies synced into .venv"
 
-# ----------------------------------------------------------- 4. pip install
-step "Installing dependencies (this may take a minute)"
-"$VENV_PY" -m pip install --upgrade pip --quiet
-"$VENV_PY" -m pip install -r requirements.txt
-ok "Dependencies installed"
-
-# ----------------------------------------------------------- 5. data dir
+# ----------------------------------------------------------- 4. data dir
 step "Ensuring data/ directory"
 mkdir -p "$PROJECT_ROOT/data"
 ok "data/ ready"
 
-# ----------------------------------------------------------- 6. verify
+# ----------------------------------------------------------- 5. verify
 if [ "$VERIFY" -eq 1 ]; then
     step "Verifying installation"
-    "$VENV_PY" "$SCRIPT_DIR/verify_env.py"
+    uv run python "$SCRIPT_DIR/verify_env.py"
 fi
 
 cat <<EOF
 
 ${C_GREEN}========================================================
  Setup complete.
- Activate the venv with:  source .venv/bin/activate
- Then launch the app:     uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+ Run app (no activation needed):  uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+ Or activate the venv with:       source .venv/bin/activate
 ========================================================${C_OFF}
 
 EOF
 
-# ----------------------------------------------------------- 7. optional run
+# ----------------------------------------------------------- 6. optional run
 if [ "$RUN" -eq 1 ]; then
     step "Launching uvicorn on 127.0.0.1:8001"
-    exec "$VENV_PY" -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
+    exec uv run uvicorn app:app --host 127.0.0.1 --port 8001 --reload
 fi
