@@ -7,7 +7,7 @@ checks the .env file for required model provider keys. Exits with a non-zero
 status if anything is missing.
 
 Usage:
-    uv run python .github/skills/setup-environment/scripts/verify_env.py
+    uv run python .claude/setup-environment/scripts/verify_env.py
 """
 from __future__ import annotations
 
@@ -107,8 +107,8 @@ def check_env(project_root: Path) -> tuple[list[str], list[str]]:
 
 
 def main() -> int:
-    # scripts/ -> setup-environment/ -> skills/ -> .github/ -> ROOT
-    project_root = Path(__file__).resolve().parents[4]
+    # scripts/ -> setup-environment/ -> .claude/ -> ROOT
+    project_root = Path(__file__).resolve().parents[3]
 
     print(f"\nPython: {sys.version.split()[0]}  ({sys.executable})")
     print(f"Project: {project_root}\n")

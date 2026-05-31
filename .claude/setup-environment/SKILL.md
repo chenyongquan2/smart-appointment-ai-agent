@@ -47,13 +47,13 @@ Verify imports (fastapi, langchain, faiss, sqlalchemy, mcp …)
 ### Windows (PowerShell)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .github\skills\setup-environment\scripts\setup.ps1
+powershell -ExecutionPolicy Bypass -File .claude\setup-environment\scripts\setup.ps1
 ```
 
 ### macOS / Linux
 
 ```bash
-bash .github/skills/setup-environment/scripts/setup.sh
+bash .claude/setup-environment/scripts/setup.sh
 ```
 
 The script is idempotent: re-running only patches whatever is missing.
@@ -184,7 +184,7 @@ The app writes the SQLite DB and FAISS index cache here on first launch.
 ### 6. Verify
 
 ```powershell
-uv run python .github\skills\setup-environment\scripts\verify_env.py
+uv run python .claude\setup-environment\scripts\verify_env.py
 ```
 
 This script imports the critical packages and validates the model provider variables.
@@ -219,7 +219,7 @@ Open <http://127.0.0.1:8001/docs> to confirm.
 ## Files in this skill
 
 ```
-.github/skills/setup-environment/
+.claude/setup-environment/
 ├── SKILL.md           ← this file
 └── scripts/
     ├── setup.ps1      ← one-shot uv bootstrapper for Windows

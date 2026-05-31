@@ -188,7 +188,7 @@
 - `tests/test_consultant_agent.py`
 - `tests/test_task_classification_agent.py`
 - `tests/test_user_behavior_agent.py`
-- `.github/skills/setup-environment/`
+- `.claude/setup-environment/`
 
 **技术要点**：
 - 当前测试覆盖预约 Agent、咨询 Agent、任务分类 Agent、用户行为 Agent 四个核心方向。

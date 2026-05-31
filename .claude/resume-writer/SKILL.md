@@ -18,7 +18,7 @@ description: "基于 Smart Appointment AI Agent（按摩房智能预约系统）
 3. [references/packaging_reference.md](references/packaging_reference.md) - Agent 记忆、反思、父子 Agent、RAG/MCP 包装方向与边界
 4. 按需读取 `project_packaging_report.md`、`README.md` 或对应源码文件补充实现细节
 
-如果用户明确要求突出"接入自研 Modular RAG MCP Server"，再读取同工作区 Modular RAG MCP Server 项目的 `README.md`、`DEV_SPEC.md` 或 `.github/skills/resume-writer/references/project_highlights.md` 中相关内容。
+如果用户明确要求突出"接入自研 Modular RAG MCP Server"，再读取同工作区 Modular RAG MCP Server 项目的 `README.md`、`DEV_SPEC.md` 或 `.claude/resume-writer/references/project_highlights.md` 中相关内容。
 
 ### Phase 2: 用户画像采集
 
