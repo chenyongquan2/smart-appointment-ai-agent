@@ -4,6 +4,13 @@ FastAPI应用程序
 主应用程序入口，配置中间件、路由和异常处理
 自动初始化知识库和技师数据
 """
+import sys
+
+# Windows 中文环境控制台默认 gbk，无法编码日志里的 emoji（如 ✅），统一转为 UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
