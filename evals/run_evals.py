@@ -1,58 +1,153 @@
-"""评估集运行器（Phase 0 骨架）。
+"""评估集运行器（Phase 0）。
 
 用法:
-    uv run python evals/run_evals.py
+    uv run python evals/run_evals.py            # 跑全部用例, 输出意图准确率基线
+    uv run python evals/run_evals.py --limit 5  # 只跑前 5 条(冒烟)
 
-当前为骨架: 只加载并校验用例、打印占位清单。
-TODO(Phase 0/1): 接入真实的意图分类 / 工具调用, 逐条比对 expected, 输出准确率基线。
+接入真实意图分类器(经 config.model_provider)，对每条用例跑 classify_task，
+与 expected_intent 比对，输出意图分类准确率基线 + 按类目分项 + 错误清单。
+成功静默、只详列错误。缺 API key 时优雅降级(提示 + 非零退出，不崩)。
 """
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
-# Windows 中文环境控制台默认 gbk，无法编码中文/emoji，统一转为 UTF-8（与 app.py 一致）
+# Windows 中文环境控制台默认 gbk，统一转 UTF-8（与 app.py 一致）
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8")
 
+# 让脚本能 import 项目根下的 config / agents（脚本目录是 evals/，需手动加根目录）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv()
+
 CASES_FILE = Path(__file__).parent / "cases.jsonl"
+
+# 真实分类器的 5 类口径（来源: agents/task_classification/task_classifier.py）
+VALID_INTENTS = {"appointment", "query", "pay", "statistics", "other"}
 
 
 def load_cases(path: Path) -> list[dict]:
-    """读取 jsonl 用例; 跳过空行与 // 注释行。"""
+    """读取 jsonl 用例; 跳过空行与 // 注释行; 校验 expected_intent 合法。"""
     cases: list[dict] = []
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("//"):
             continue
         try:
-            cases.append(json.loads(line))
+            case = json.loads(line)
         except json.JSONDecodeError as exc:
             print(f"[ERROR] 第 {lineno} 行 JSON 解析失败: {exc}", file=sys.stderr)
             raise
+        intent = case.get("expected_intent")
+        if intent not in VALID_INTENTS:
+            print(
+                f"[ERROR] 第 {lineno} 行 expected_intent={intent!r} 非法; "
+                f"必须是 {sorted(VALID_INTENTS)} 之一",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        cases.append(case)
     return cases
 
 
+def _has_api_key() -> bool:
+    """按 MODEL_PROVIDER 判断对应的 API key 是否已配置。"""
+    provider = (os.getenv("MODEL_PROVIDER", "azure") or "azure").strip().lower()
+    key_var = "AZURE_OPENAI_API_KEY" if provider == "azure" else "LLM_API_KEY"
+    return bool(os.getenv(key_var))
+
+
+def print_cases(cases: list[dict]) -> None:
+    """无 key 退路: 仅打印用例清单。"""
+    for case in cases:
+        intent = case.get("expected_intent", "?")
+        text = case.get("input", "")
+        print(f"  [{intent:11}] {text[:42]}")
+
+
+async def run_baseline(cases: list[dict]) -> int:
+    """跑真实分类器, 输出准确率基线 + 错误清单。返回进程退出码。"""
+    from config.model_provider import create_chat_model
+    from agents.task_classification.task_classifier import TaskClassifier
+
+    try:
+        classifier = TaskClassifier(create_chat_model(temperature=0))
+    except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
+        print(f"[ERROR] 创建分类器失败: {exc}", file=sys.stderr)
+        return 2
+
+    total = len(cases)
+    correct = 0
+    by_intent: dict[str, list[int]] = {}  # intent -> [correct, total]
+    errors: list[tuple[str, str, str]] = []  # (input, expected, actual)
+
+    for case in cases:
+        text = case.get("input", "")
+        expected = case["expected_intent"]
+        try:
+            actual = await classifier.classify_task(text)
+        except Exception as exc:  # 网络/鉴权异常: 标注出来, 不中断整轮
+            actual = f"<异常:{type(exc).__name__}>"
+        stat = by_intent.setdefault(expected, [0, 0])
+        stat[1] += 1
+        if actual == expected:
+            correct += 1
+            stat[0] += 1
+        else:
+            errors.append((text, expected, actual))
+
+    pct = (correct / total * 100) if total else 0.0
+    print(f"\n意图分类准确率基线: {correct}/{total} ({pct:.1f}%)\n")
+    print("按类目:")
+    for intent in sorted(by_intent):
+        c, t = by_intent[intent]
+        print(f"  {intent:11} {c}/{t}")
+
+    if errors:
+        print(f"\n判错 {len(errors)} 条:")
+        for text, expected, actual in errors:
+            print(f"  - 输入: {text}")
+            print(f"    期望: {expected}  实际: {actual}")
+    else:
+        print("\n全部通过。")
+    return 0
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="评估集运行器 (Phase 0)")
+    parser.add_argument("--limit", type=int, default=None, help="只跑前 N 条(冒烟)")
+    args = parser.parse_args()
+
     if not CASES_FILE.exists():
         print(f"[ERROR] 找不到用例文件: {CASES_FILE}", file=sys.stderr)
         return 1
 
     cases = load_cases(CASES_FILE)
-    print(f"已加载 {len(cases)} 条评估用例 ({CASES_FILE.name})\n")
+    if args.limit is not None:
+        cases = cases[: args.limit]
+    print(f"已加载 {len(cases)} 条评估用例 ({CASES_FILE.name})")
 
-    # TODO(Phase 0/1): 对每条 case 调用真实分类/agent, 与 expected_intent / expected_tools 比对。
-    # 目前仅打印清单, 作为基线脚手架。
-    for case in cases:
-        intent = case.get("expected_intent", "?")
-        tools = ", ".join(case.get("expected_tools", [])) or "-"
-        text = case.get("input", "")
-        print(f"  [{intent:12}] {text[:40]:<40}  tools=[{tools}]")
+    if not _has_api_key():
+        print(
+            "\n[提示] 未检测到 API key(MODEL_PROVIDER 对应的 *_API_KEY 未配置)。\n"
+            "       无法产出准确率基线; 以下仅为用例清单。\n"
+            "       在 .env 配好后重跑: uv run python evals/run_evals.py",
+            file=sys.stderr,
+        )
+        print_cases(cases)
+        return 2
 
-    print("\n(骨架模式: 尚未接入真实 agent。接入后此处输出准确率基线。)")
-    return 0
+    return asyncio.run(run_baseline(cases))
 
 
 if __name__ == "__main__":
