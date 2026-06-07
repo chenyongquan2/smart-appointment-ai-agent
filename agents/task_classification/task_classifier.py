@@ -15,40 +15,38 @@
 import logging
 from langchain.prompts import PromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
-from typing import Dict, Any
+
+from .schemas import TaskCategory
 
 logger = logging.getLogger(__name__)
 
 
 class TaskClassifier:
     """任务分类器 - 使用LLM进行智能任务分类"""
-    
+
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self._initialize_prompt()
-        self.chain = self.prompt | self.llm
+        # 结构化输出:用 function calling 强制模型返回合法枚举,
+        # 取代 strip().lower() + 白名单兜底(黄金准则:结构化输出 > 字符串解析)。
+        self.chain = self.prompt | self.llm.with_structured_output(TaskCategory)
     
     def _initialize_prompt(self):
-        """初始化分类提示词模板"""
+        """初始化分类提示词模板。
+
+        只描述分类语义,不规定输出格式(结构化由 with_structured_output 在协议层保证)。
+        """
         self.prompt = PromptTemplate(
             input_variables=["task"],
             template=(
-                "你是一个服务预约系统的助手，你会处理来自用户和工作人员的消息，你的任务是对本次任务进行分类。\n"
-                "用户可能会咨询服务价格、有哪些工作人员、各自的特点等，这类任务归类为查询任务。\n"
-                "用户可能会请求预约，比如'请帮我预约今天下午3点的服务1小时'，这类任务归类为预约任务。\n"
-                "appointment机器人也可能发来任务，告知用户选择了某位工作人员做某个项目，这类任务归类为支付任务。\n"
-                "工作人员可能会发来任务，比如告知某个用户需要延长服务时间，这类任务归类为预约任务。\n"
-                "工作人员也可能告知已完成当前任务，这类任务归类为统计任务。\n"
-                "如果输入的任务与上述都无关，请归类为其它任务。\n"
-                "请将以下任务归类为以下类别，输出只能选择以下之一：\n"
-                "1. appointment（预约任务）\n"
-                "2. query（查询任务）\n"
-                "3. pay（支付任务）\n"
-                "4. statistics（统计任务）\n"
-                "5. other（其它任务）\n"
-                "只返回类别英文名。\n\n"
-                "举例说明：假如task为'我要预约8号工作人员1小时的推拿'，则输出appointment。\n"
-                "假如输入为我想问一下按摩房在哪里，则输入query。\n"
+                "你是一个服务预约系统的助手，你会处理来自用户和工作人员的消息，请判断本次任务的意图类别。\n"
+                "分类口径：\n"
+                "- 用户咨询服务价格、有哪些工作人员、各自特点、地址营业等 → 查询任务(query)。\n"
+                "- 用户请求预约(如'请帮我预约今天下午3点的服务1小时')，"
+                "或工作人员告知某用户需延长服务时间 → 预约任务(appointment)。\n"
+                "- appointment 机器人告知用户已选定某位工作人员做某个项目 → 支付任务(pay)。\n"
+                "- 工作人员上报已完成当前任务 → 统计任务(statistics)。\n"
+                "- 与上述都无关(如闲聊、问天气) → 其它任务(other)。\n"
                 "以下是本次归类任务:\n"
                 "任务内容：{task}"
             )
@@ -65,19 +63,12 @@ class TaskClassifier:
             str: 分类结果 ('appointment', 'query', 'pay', 'statistics', 'other')
         """
         try:
-            category_msg = await self.chain.ainvoke({"task": task})
-            category = category_msg.content.strip().lower()
-            
-            # 验证分类结果是否有效
-            valid_categories = {'appointment', 'query', 'pay', 'statistics', 'other'}
-            if category not in valid_categories:
-                return 'other'  # 默认归类为其他
-                
-            return category
-            
+            result: TaskCategory = await self.chain.ainvoke({"task": task})
+            return result.category
+
         except Exception:
             logger.error("任务分类失败", exc_info=True)
-            return 'other'  # 发生错误时默认归类为其他
+            return 'other'  # LLM 调用异常时安全降级为其他
     
     def get_category_description(self, category: str) -> str:
         """获取分类类别的描述信息"""

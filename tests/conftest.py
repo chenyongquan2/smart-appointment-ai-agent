@@ -18,6 +18,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import RunnableLambda
 
 
 _CATEGORIES = {"appointment", "query", "pay", "statistics", "other"}
@@ -62,6 +63,30 @@ def _fake_reply(prompt_text: str) -> str:
     return "您好，关于您的问题我们很乐意为您提供帮助。"
 
 
+def _prompt_text(value: Any) -> str:
+    """把 PromptValue / 消息 / 字符串统一取为纯文本,供启发式判断。"""
+    if hasattr(value, "to_string"):
+        return value.to_string()
+    if hasattr(value, "to_messages"):
+        return _join(value.to_messages())
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _structured_response(schema: Any, text: str) -> Any:
+    """为 with_structured_output 返回确定性的 schema 实例。
+
+    - 含 ``category`` 字段(TaskCategory):按启发式分类;
+    - 其它(AppointmentSlots 等):返回 schema 默认值(info_complete=False)。
+    """
+    fields = getattr(schema, "model_fields", {})
+    if "category" in fields:
+        task = text.split("任务内容：", 1)[-1] if "任务内容：" in text else text
+        return schema(category=_classify(task))
+    return schema()
+
+
 class FakeChatModel(BaseChatModel):
     """离线确定性聊天模型。invoke/ainvoke/stream/astream 均走 _generate。"""
 
@@ -78,6 +103,14 @@ class FakeChatModel(BaseChatModel):
     ) -> ChatResult:
         content = _fake_reply(_join(messages))
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+
+    def with_structured_output(self, schema: Any, **kwargs: Any):
+        """支持结构化输出:返回一个把 prompt 文本映射为 schema 实例的 Runnable。
+
+        真实模型由 langchain-openai 的 with_structured_output 提供;此处为离线测试
+        提供等价能力(见 OpenSpec change: phase-1-structured-output)。
+        """
+        return RunnableLambda(lambda value: _structured_response(schema, _prompt_text(value)))
 
 
 class _FakeEmbeddings:
