@@ -4,7 +4,10 @@
 负责构建各种响应消息
 """
 
+import logging
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 
 class MessageBuilder:
@@ -67,8 +70,8 @@ class MessageBuilder:
                     if generated_msg:
                         return f"\n机器人：{generated_msg}\n"
                 
-            except Exception as e:
-                print(f"LLM生成推荐消息失败: {e}")
+            except Exception:
+                logger.error("LLM生成推荐消息失败", exc_info=True)
         
         # 如果LLM失败，使用默认消息
         return (f"\n机器人：抱歉，{original_tech['name']}技师在{start_time}这个时间段不空闲。"
@@ -93,8 +96,8 @@ class MessageBuilder:
                     generated_msg = response.content.strip()
                     if generated_msg:
                         return f"\n机器人：{generated_msg}\n"
-            except Exception as e:
-                print(f"LLM生成拒绝消息失败: {e}")
+            except Exception:
+                logger.error("LLM生成拒绝消息失败", exc_info=True)
         
         # 默认消息
         return "\n机器人：好的，我理解您的选择。您可以选择其他时间段，或者我可以为您重新推荐其他技师。请问您还有其他需要吗？\n"

@@ -12,9 +12,12 @@
 3. 提供清晰的分类结果和置信度
 """
 
+import logging
 from langchain.prompts import PromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
 
 
 class TaskClassifier:
@@ -72,8 +75,8 @@ class TaskClassifier:
                 
             return category
             
-        except Exception as e:
-            print(f"任务分类失败: {str(e)}")
+        except Exception:
+            logger.error("任务分类失败", exc_info=True)
             return 'other'  # 发生错误时默认归类为其他
     
     def get_category_description(self, category: str) -> str:

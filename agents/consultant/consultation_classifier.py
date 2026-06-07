@@ -4,8 +4,11 @@
 负责判断用户输入是否为咨询类问题
 """
 
+import logging
 from langchain_core.language_models.chat_models import BaseChatModel
 from .prompt_builder import PromptBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class ConsultationClassifier:
@@ -22,7 +25,7 @@ class ConsultationClassifier:
             response = await self.llm.ainvoke([{"role": "user", "content": prompt}])
             result = response.content.strip().upper()
             return result == "YES"
-        except Exception as e:
-            print(f"分类判断出错：{e}")
+        except Exception:
+            logger.error("分类判断出错", exc_info=True)
             # 如果分类出错，默认认为是相关的，避免误判
             return True

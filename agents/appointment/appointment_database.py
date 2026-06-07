@@ -5,10 +5,13 @@
 注意：现在通过Services层访问数据库，符合分层架构
 """
 
+import logging
 from typing import Dict, Any
 from datetime import datetime
 from config.time_config import time_config
 from config.constants import busy_periods_dict
+
+logger = logging.getLogger(__name__)
 
 
 class AppointmentDatabase:
@@ -52,8 +55,8 @@ class AppointmentDatabase:
             
             return success
             
-        except Exception as e:
-            print(f"保存预约信息到数据库失败：{e}")
+        except Exception:
+            logger.error("保存预约信息到数据库失败", exc_info=True)
             return False
     
     def update_memory_schedule(self, technician_id: str, start_time: datetime, end_time: datetime):
@@ -87,5 +90,5 @@ class AppointmentDatabase:
                 session_id=session_id
             )
             
-        except Exception as behavior_error:
-            print(f"记录用户行为失败（但预约仍然成功）：{behavior_error}")
+        except Exception:
+            logger.error("记录用户行为失败（但预约仍然成功）", exc_info=True)

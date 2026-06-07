@@ -26,8 +26,9 @@ from api import api_routers
 from api.core.exceptions import api_exception_handler, general_exception_handler, BusinessException
 from web import router as web_router
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# 配置日志：结构化 JSON 输出（取代纯文本 basicConfig）
+from config.logging_setup import setup_logging
+setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Pydantic模型
