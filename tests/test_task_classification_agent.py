@@ -14,6 +14,13 @@ from agents.appointment_agent import AppointmentAgent
 from agents.consultant_agent import ConsultantAgent
 
 
+@pytest.fixture(autouse=True)
+def _use_fake_llm(fake_llm_env):
+    """本模块全部用例走离线假 LLM / 假 embeddings(见 conftest.fake_llm_env),
+    确定、无需 API key。"""
+    return fake_llm_env
+
+
 class TestTaskClassificationAgentRealWorkflow:
     """测试任务分类代理真实工作流程"""
     
