@@ -55,6 +55,19 @@ class UserPreference(Base):
     confidence_score = Column(Integer, default=1)  # 偏好的置信度（出现次数）
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class ConversationTurn(Base):
+    """会话对话回合（Phase 4：会话历史持久化）。
+
+    按 ``session_id`` 隔离，每行记录一轮中的一条消息（用户或助手），
+    用于进程重启后恢复会话历史。详见 OpenSpec change: phase-4-state-memory。
+    """
+    __tablename__ = 'conversation_turns'
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class UserRecommendation(Base):
     __tablename__ = 'user_recommendations'
     id = Column(Integer, primary_key=True)

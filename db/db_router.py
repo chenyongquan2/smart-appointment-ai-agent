@@ -1,5 +1,10 @@
 from .base import SessionManager
-from .repositories import TechnicianRepository, KnowledgeRepository, UserBehaviorRepository
+from .repositories import (
+    TechnicianRepository,
+    KnowledgeRepository,
+    UserBehaviorRepository,
+    ConversationRepository,
+)
 from typing import Optional
 
 
@@ -26,6 +31,7 @@ class DatabaseRouter:
         self.technician_repo = TechnicianRepository(self.session_manager)
         self.knowledge_repo = KnowledgeRepository(self.session_manager)
         self.user_behavior_repo = UserBehaviorRepository(self.session_manager)
+        self.conversation_repo = ConversationRepository(self.session_manager)
 
     @property
     def technicians(self) -> TechnicianRepository:
@@ -41,6 +47,11 @@ class DatabaseRouter:
     def user_behavior(self) -> UserBehaviorRepository:
         """获取用户行为数据仓库"""
         return self.user_behavior_repo
+
+    @property
+    def conversations(self) -> ConversationRepository:
+        """获取会话历史数据仓库"""
+        return self.conversation_repo
 
     def close(self):
         """关闭数据库连接"""

@@ -86,6 +86,23 @@ async def _collect(loop: AgentLoop, user_input: str) -> str:
     return "".join([tok async for tok in loop.run(user_input)])
 
 
+class CapturingChatModel(ScriptedChatModel):
+    """在脚本化基础上记录最后一次 invoke 收到的 messages（用于断言历史注入）。"""
+
+    last_messages: List[BaseMessage] = []
+
+    def _generate(
+        self,
+        messages: List[BaseMessage],
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        # pydantic 模型字段赋值（list 复制一份，避免后续被 loop 改动）
+        object.__setattr__(self, "last_messages", list(messages))
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
 # --------------------------------------------------------------------------- #
 # 4.2 直接回复路径
 # --------------------------------------------------------------------------- #
@@ -243,3 +260,61 @@ async def test_trace_hooks_invoked():
     await _collect(loop, "钩子")
 
     assert seen_calls == ["echo"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4：历史注入 —— 带 history 时上下文包含历史；不带时与原行为一致
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_history_is_injected_into_context():
+    from langchain_core.messages import AIMessage as _AI, HumanMessage, SystemMessage
+
+    reg, _ = _make_registry()
+    llm = CapturingChatModel(responses=[AIMessage(content="好的。")])
+    loop = AgentLoop(llm=llm, registry=reg)
+
+    history = [HumanMessage(content="上一轮问题"), _AI(content="上一轮回答")]
+    out = "".join(
+        [tok async for tok in loop.run("本轮问题", history=history)]
+    )
+
+    assert out == "[REPLY]好的。"
+    contents = [m.content for m in llm.last_messages]
+    # system → 历史两条 → 当前 user，顺序正确
+    assert contents == [
+        loop.system_prompt,
+        "上一轮问题",
+        "上一轮回答",
+        "本轮问题",
+    ]
+    assert isinstance(llm.last_messages[0], SystemMessage)
+
+
+@pytest.mark.asyncio
+async def test_no_history_matches_phase3_behavior():
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    reg, _ = _make_registry()
+    llm = CapturingChatModel(responses=[AIMessage(content="您好。")])
+    loop = AgentLoop(llm=llm, registry=reg)
+
+    out = await _collect(loop, "你好")
+
+    assert out == "[REPLY]您好。"
+    # 无历史：只有 system + 当前 user
+    assert len(llm.last_messages) == 2
+    assert isinstance(llm.last_messages[0], SystemMessage)
+    assert isinstance(llm.last_messages[1], HumanMessage)
+    assert llm.last_messages[1].content == "你好"
+
+
+@pytest.mark.asyncio
+async def test_system_suffix_appended():
+    reg, _ = _make_registry()
+    llm = CapturingChatModel(responses=[AIMessage(content="好。")])
+    loop = AgentLoop(llm=llm, registry=reg)
+
+    await loop.run("问题", system_suffix="该用户偏好：女技师。").__anext__()
+
+    assert "该用户偏好：女技师。" in llm.last_messages[0].content
+    assert llm.last_messages[0].content.startswith(loop.system_prompt)

@@ -59,16 +59,34 @@ class AgentLoop:
         self.system_prompt = build_system_prompt(registry)
 
     async def run(
-        self, user_input: str, session_id: Optional[str] = None
+        self,
+        user_input: str,
+        session_id: Optional[str] = None,
+        history: Optional[list[BaseMessage]] = None,
+        system_suffix: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """驱动 TAO 循环，流式产出最终回复。
 
-        ``session_id`` 为 Phase 4 会话隔离预留，本 Phase 暂不使用。
+        Args:
+            user_input: 本轮用户输入。
+            session_id: 会话标识（由调用方按 session 隔离选用对应历史，见 Phase 4）。
+            history: 已裁剪的短期记忆窗口（``BaseMessage`` 列表），注入到 system
+                prompt 之后、当前 user message 之前；``None`` 时等价于无历史（与
+                Phase 3 行为一致）。
+            system_suffix: 系统提示补充（如长期偏好提示），追加到 system prompt 末尾；
+                ``None``/空串时不追加。
+
+        最终回复（含 ``max_steps`` 兜底）以 ``[REPLY]`` 前缀 yield，调用方可据此
+        捕获回复文本并回写会话历史（``AgentLoop`` 自身保持无状态、不写 DB）。
         """
-        messages: list[BaseMessage] = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=user_input),
-        ]
+        system_content = self.system_prompt
+        if system_suffix:
+            system_content = f"{system_content}\n\n{system_suffix}"
+
+        messages: list[BaseMessage] = [SystemMessage(content=system_content)]
+        if history:
+            messages.extend(history)
+        messages.append(HumanMessage(content=user_input))
 
         for _step in range(self.max_steps):
             ai: AIMessage = await self.llm.ainvoke(messages)
