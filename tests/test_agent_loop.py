@@ -199,7 +199,8 @@ async def test_max_steps_fallback():
     llm = ScriptedChatModel(
         responses=[AIMessage(content="", tool_calls=[_tool_call("echo", {"value": "z"}, "c1")])]
     )
-    loop = AgentLoop(llm=llm, registry=reg, max_steps=3)
+    # repeat_limit=None：禁用打转检测，隔离测试 max_steps 这一道护栏本身。
+    loop = AgentLoop(llm=llm, registry=reg, max_steps=3, repeat_limit=None)
 
     out = await _collect(loop, "死循环")
 

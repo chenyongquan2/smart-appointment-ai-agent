@@ -24,6 +24,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from harness.guardrails.budget import SpinDetector, estimate_tokens
+from harness.guardrails.retry import (
+    DEFAULT_BASE_DELAY,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_TIMEOUT,
+    GuardrailExhausted,
+    guarded_invoke,
+)
 from harness.tools.registry import ToolRegistry
 from harness.runtime.system_prompt import build_system_prompt
 
@@ -39,6 +47,11 @@ class AgentLoop:
             ``config.model_provider.create_chat_model`` 创建）。
         registry: 工具注册中心；提供 OpenAI tools schema 与按名 dispatch。
         max_steps: 单次请求的最大循环步数，防止死循环。
+        max_tokens: 单次请求的累计 token 预算上限（近似估算）；``None`` 时禁用预算护栏。
+        repeat_limit: 连续相同工具调用达到该次数即判定打转并终止；``None`` 时禁用。
+        llm_timeout / llm_max_attempts / llm_base_delay: LLM 调用护栏参数（超时秒数、
+            最大尝试次数、指数退避基准秒数），透传给 ``guarded_invoke``。
+        retry_sleep: 退避等待实现（默认 ``asyncio.sleep``）；测试可注入 no-op。
         on_tool_call / on_observation: 可选 trace 钩子（默认 no-op，Phase 6 接入）。
     """
 
@@ -47,11 +60,23 @@ class AgentLoop:
         llm: BaseChatModel,
         registry: ToolRegistry,
         max_steps: int = 8,
+        max_tokens: Optional[int] = None,
+        repeat_limit: Optional[int] = 3,
+        llm_timeout: float = DEFAULT_TIMEOUT,
+        llm_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+        llm_base_delay: float = DEFAULT_BASE_DELAY,
+        retry_sleep: Optional[Callable[[float], Awaitable[None]]] = None,
         on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None,
         on_observation: Optional[Callable[[str, Any], None]] = None,
     ) -> None:
         self.registry = registry
         self.max_steps = max_steps
+        self.max_tokens = max_tokens
+        self.repeat_limit = repeat_limit
+        self.llm_timeout = llm_timeout
+        self.llm_max_attempts = llm_max_attempts
+        self.llm_base_delay = llm_base_delay
+        self._retry_sleep = retry_sleep
         self._on_tool_call = on_tool_call or (lambda call: None)
         self._on_observation = on_observation or (lambda name, result: None)
         # 绑定工具 schema：单一真相源 = 各工具的 Pydantic args_schema → OpenAI 格式。
@@ -88,14 +113,31 @@ class AgentLoop:
             messages.extend(history)
         messages.append(HumanMessage(content=user_input))
 
+        spin = SpinDetector(self.repeat_limit)
+
         for _step in range(self.max_steps):
-            ai: AIMessage = await self.llm.ainvoke(messages)
+            # 预算护栏：累计上下文超过 token 预算即优雅收尾，绝不再发起 LLM 调用。
+            if self.max_tokens is not None and estimate_tokens(messages) > self.max_tokens:
+                yield f"[REPLY]{_FALLBACK_REPLY}"
+                return
+
+            # LLM 调用经超时 + 重试护栏；耗尽则优雅降级为兜底回复，不让异常冒泡。
+            try:
+                ai: AIMessage = await self._guarded_invoke(messages)
+            except GuardrailExhausted:
+                yield f"[REPLY]{_FALLBACK_REPLY}"
+                return
             messages.append(ai)
 
             tool_calls = ai.tool_calls or []
             if not tool_calls:
                 # 模型给出最终回复 —— 结束循环。
                 yield f"[REPLY]{_content_text(ai.content)}"
+                return
+
+            # 打转检测：连续相同工具调用达到上限即终止，早于 max_steps 的逃生口。
+            if spin.check(tool_calls):
+                yield f"[REPLY]{_FALLBACK_REPLY}"
                 return
 
             # 有工具调用：逐个执行并把结果按协议喂回（同一步的多个调用全部喂回）。
@@ -109,6 +151,16 @@ class AgentLoop:
 
         # 触达 max_steps 仍未得到最终回复：安全兜底，绝不无限循环。
         yield f"[REPLY]{_FALLBACK_REPLY}"
+
+    async def _guarded_invoke(self, messages: list[BaseMessage]) -> AIMessage:
+        """经超时 + 重试护栏发起一次 LLM 调用（只读、幂等，故可安全重试）。"""
+        return await guarded_invoke(
+            lambda: self.llm.ainvoke(messages),
+            timeout=self.llm_timeout,
+            max_attempts=self.llm_max_attempts,
+            base_delay=self.llm_base_delay,
+            sleep=self._retry_sleep,
+        )
 
     async def _dispatch(self, call: dict[str, Any]) -> Any:
         """分发单个工具调用；异常被捕获并作为错误结果回灌（不崩循环）。"""

@@ -44,4 +44,5 @@ create_appointment = Tool(
     ),
     args_schema=CreateAppointmentArgs,
     handler=_handler,
+    dangerous=True,  # 写库的副作用操作，分发前须经权限闸门（Phase 5）
 )

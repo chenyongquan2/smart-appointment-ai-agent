@@ -8,16 +8,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
+from harness.guardrails.permission import Decision, PermissionPolicy, allow_all
 from harness.tools.base import Tool
 
 
 class ToolRegistry:
-    """工具注册中心。"""
+    """工具注册中心。
 
-    def __init__(self) -> None:
+    Args:
+        permission: 可选权限策略；对 ``dangerous`` 工具在执行 handler 前先判定，
+            拒绝时不执行、返回结构化拒绝结果。``None`` 时默认放行（保持既有行为）。
+    """
+
+    def __init__(self, permission: Optional[PermissionPolicy] = None) -> None:
         self._tools: dict[str, Tool] = {}
+        self._permission: PermissionPolicy = permission or allow_all
 
     def register(self, tool: Tool) -> None:
         """注册工具；name 已存在则报错，拒绝覆盖。"""
@@ -35,8 +42,21 @@ class ToolRegistry:
         return list(self._tools)
 
     async def dispatch(self, name: str, raw_args: dict[str, Any]) -> Any:
-        """按名分发：校验入参（Pydantic）后执行 handler。"""
+        """按名分发：危险工具先过权限闸门，再校验入参（Pydantic）后执行 handler。
+
+        危险工具被策略拒绝时 MUST NOT 执行 handler，返回结构化拒绝结果
+        （``{"success": False, "denied": True, "reason": ...}``），由 ``AgentLoop``
+        经错误回灌路径喂回模型。只读工具与默认放行策略下行为与既有一致。
+        """
         tool = self.get(name)
+        if tool.dangerous:
+            decision: Decision = self._permission(tool, raw_args)
+            if not decision.allow:
+                return {
+                    "success": False,
+                    "denied": True,
+                    "reason": decision.reason,
+                }
         return await tool.run(raw_args)
 
     def to_openai_schema(self) -> list[dict[str, Any]]:

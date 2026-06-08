@@ -26,12 +26,16 @@ class Tool:
         args_schema: 入参的 Pydantic v2 模型；分发前用它校验原始参数。
         handler: ``async def handler(args: args_schema) -> Any``，
             接收已校验的 args 模型实例，内部调用 services/。
+        dangerous: 是否为有副作用的危险操作（如写库的 ``create_appointment``）。
+            危险工具在分发前须经权限闸门判定（见 ``harness/guardrails/permission``）；
+            只读查询工具保持默认 ``False``。
     """
 
     name: str
     description: str
     args_schema: type[BaseModel]
     handler: Callable[[BaseModel], Awaitable[Any]]
+    dangerous: bool = False
 
     async def run(self, raw_args: dict[str, Any]) -> Any:
         """校验原始参数并执行 handler。"""
