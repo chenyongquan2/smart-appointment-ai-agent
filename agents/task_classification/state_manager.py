@@ -8,8 +8,11 @@
 4. 确保状态转换的正确性和安全性
 """
 
+import logging
 from config.constants import SharedState, StateEnum
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class StateManager:
@@ -32,7 +35,7 @@ class StateManager:
         """设置新状态"""
         old_state = self.state.value
         self.state.value = new_state
-        print(f"状态转换: {old_state} -> {new_state}")
+        logger.debug("状态转换: %s -> %s", old_state, new_state)
     
     def reset_to_classify(self) -> None:
         """重置状态到分类状态"""
@@ -84,5 +87,5 @@ class StateManager:
     
     def force_reset(self) -> None:
         """强制重置状态（用于错误恢复）"""
-        print("强制重置状态到分类状态")
+        logger.info("强制重置状态到分类状态")
         self.reset_to_classify()

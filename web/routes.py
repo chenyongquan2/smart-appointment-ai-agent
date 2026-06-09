@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from api.chat_handler import ProcessUserInput_stream
+from api.chat_handler import ProcessUserInput_stream, resolve_session_id
 import logging
 
 # 创建logger实例
@@ -21,6 +21,7 @@ router = APIRouter(tags=["Web界面"])
 class ChatRequest(BaseModel):
     message: str
     state: str | None = None
+    session_id: str | None = None  # 缺省时服务端生成并经 X-Session-Id 回传
 
 @router.get("/", response_class=HTMLResponse, summary="主页")
 async def read_root(request: Request):
@@ -29,19 +30,31 @@ async def read_root(request: Request):
 
 @router.post("/chat/stream", summary="流式聊天")
 async def chat_stream_endpoint(chat: ChatRequest):
-    """处理流式聊天请求"""
+    """处理流式聊天请求（按 session_id 隔离会话；响应头回传 X-Session-Id）"""
+    session_id = resolve_session_id(chat.session_id)
+
     async def token_generator():
-        async for token in ProcessUserInput_stream(chat.message):
+        async for token in ProcessUserInput_stream(chat.message, session_id=session_id):
             yield token
-    return StreamingResponse(token_generator(), media_type="text/plain")
+    return StreamingResponse(
+        token_generator(),
+        media_type="text/plain",
+        headers={"X-Session-Id": session_id},
+    )
 
 @router.post("/chat", summary="兼容性聊天接口")
 async def chat_endpoint(chat: ChatRequest):
     """兼容性聊天接口，建议使用/chat/stream"""
+    session_id = resolve_session_id(chat.session_id)
+
     async def token_generator():
-        async for token in ProcessUserInput_stream(chat.message):
+        async for token in ProcessUserInput_stream(chat.message, session_id=session_id):
             yield token
-    return StreamingResponse(token_generator(), media_type="text/plain")
+    return StreamingResponse(
+        token_generator(),
+        media_type="text/plain",
+        headers={"X-Session-Id": session_id},
+    )
 
 @router.get("/user_behavior", response_class=HTMLResponse, summary="用户行为分析页面")
 async def user_behavior_page(request: Request):

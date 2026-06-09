@@ -1,0 +1,35 @@
+// 评估用例集 — Phase 0 回归基线
+// expected_intent 口径来自真实分类器 agents/task_classification/task_classifier.py:
+//   appointment(预约) / query(查询) / pay(支付) / statistics(统计) / other(其他)
+// expected_tools 为 Phase 2 工具层的前瞻注解，当前不计分。
+// 格式: {"input": 用户输入, "expected_intent": 期望意图, "expected_tools": [前瞻工具]}
+
+// --- appointment(预约) ---
+{"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
+{"input": "请帮我预约今天下午3点的服务1小时", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
+{"input": "约个李师傅，他这周六有空吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"]}
+{"input": "我要约后天上午的推拿，要力度大的男技师", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
+{"input": "帮我把今天的预约改到明天同一时间", "expected_intent": "appointment", "expected_tools": ["check_availability", "create_appointment"]}
+{"input": "8号技师反馈这个客人需要延长30分钟", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
+
+// --- query(查询) ---
+{"input": "你们都有哪些按摩项目?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
+{"input": "推拿一个小时多少钱?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
+{"input": "按摩房在哪里？怎么过去", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
+{"input": "有哪些女技师？她们各自擅长什么", "expected_intent": "query", "expected_tools": ["search_knowledge", "find_technician"]}
+{"input": "李师傅的手法怎么样", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
+
+// --- pay(支付) ---
+{"input": "用户已选择8号技师的推拿1小时服务，请确认支付198元", "expected_intent": "pay", "expected_tools": []}
+{"input": "顾客已确认预约王师傅做精油按摩，金额288元，待支付", "expected_intent": "pay", "expected_tools": []}
+{"input": "该用户已选定6号技师足疗，请发起收款", "expected_intent": "pay", "expected_tools": []}
+
+// --- statistics(统计) ---
+{"input": "我已完成3号房的服务", "expected_intent": "statistics", "expected_tools": []}
+{"input": "8号技师上报：当前推拿订单已结束", "expected_intent": "statistics", "expected_tools": []}
+{"input": "今天我这边的5个客人都做完了", "expected_intent": "statistics", "expected_tools": []}
+
+// --- other(其他) ---
+{"input": "今天天气怎么样", "expected_intent": "other", "expected_tools": []}
+{"input": "帮我写一首关于春天的诗", "expected_intent": "other", "expected_tools": []}
+{"input": "你是用什么大模型做的", "expected_intent": "other", "expected_tools": []}

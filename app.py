@@ -4,6 +4,13 @@ FastAPI应用程序
 主应用程序入口，配置中间件、路由和异常处理
 自动初始化知识库和技师数据
 """
+import sys
+
+# Windows 中文环境控制台默认 gbk，无法编码日志里的 emoji（如 ✅），统一转为 UTF-8
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,8 +26,9 @@ from api import api_routers
 from api.core.exceptions import api_exception_handler, general_exception_handler, BusinessException
 from web import router as web_router
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# 配置日志：结构化 JSON 输出（取代纯文本 basicConfig）
+from config.logging_setup import setup_logging
+setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Pydantic模型

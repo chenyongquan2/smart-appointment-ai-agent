@@ -7,6 +7,7 @@
 import os
 import json
 import asyncio
+import logging
 import aiohttp
 from typing import Dict, Any, AsyncGenerator
 from .input_parser import InputParser
@@ -16,6 +17,8 @@ from .appointment_database import AppointmentDatabase
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate
+
+logger = logging.getLogger(__name__)
 
 
 class WeatherMCPTool(BaseTool):
@@ -277,8 +280,8 @@ class AppointmentProcessor:
                     result = await self.agent_executor.ainvoke({"input": prompt})
                     agent_output = result.get("output", "")
                     return f"\n机器人：已为您预约技师：{tech['name']}，性别：{tech['gender']}。预约成功！\n{agent_output}\n"
-                except Exception as e:
-                    print(f"Agent调用失败: {e}")
+                except Exception:
+                    logger.error("Agent调用失败", exc_info=True)
                     return self.message_builder.create_appointment_success_message(tech)
             else:
                 return self.message_builder.create_appointment_success_message(tech)

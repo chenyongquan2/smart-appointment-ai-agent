@@ -8,8 +8,11 @@
 4. 重置对话状态，准备处理下一个请求
 """
 
+import logging
 from typing import AsyncGenerator
 from .state_manager import StateManager
+
+logger = logging.getLogger(__name__)
 
 
 class UnrelatedHandler:
@@ -40,7 +43,7 @@ class UnrelatedHandler:
         Returns:
             str: 处理结果
         """
-        print("归类机器人接管处理 unrelated user_input")
+        logger.info("归类机器人接管处理 unrelated user_input")
         
         # 重置状态为分类状态，准备处理下一个输入
         self.state_manager.reset_to_classify()
@@ -58,7 +61,7 @@ class UnrelatedHandler:
         Yields:
             str: 流式响应内容
         """
-        print("归类机器人接管处理 unrelated user_input (async stream)")
+        logger.info("归类机器人接管处理 unrelated user_input (async stream)")
         
         # 重置状态为分类状态
         self.state_manager.reset_to_classify()

@@ -16,7 +16,8 @@ from agents.appointment_agent import AppointmentAgent
 class TestAppointmentAgentCoreFeatures:
     """测试预约代理核心功能"""
     
-    def test_should_extract_user_info_from_natural_language(self):
+    @pytest.mark.asyncio
+    async def test_should_extract_user_info_from_natural_language(self):
         """
         测试：预约代理应该能从自然语言中提取预约信息
         
@@ -36,15 +37,11 @@ class TestAppointmentAgentCoreFeatures:
         # 使用真实的解析流程：通过LLM处理用户输入
         from langchain_core.chat_history import InMemoryChatMessageHistory
         chat_history = InMemoryChatMessageHistory()
-        
-        # 模拟流式解析过程，获取LLM的完整响应
-        ai_content = ""
-        for token in agent.input_parser.parse_stream(user_input, chat_history):
-            ai_content += token
-        
-        # 解析LLM返回的JSON
-        result = agent.input_parser.parse_data(ai_content)
-        
+
+        # 结构化抽取
+        slots = await agent.input_parser.extract(user_input, chat_history)
+        result = agent.input_parser.parse_data(slots)
+
         # 验证解析结果包含预期信息
         assert result["project"] == "按摩", f"应该提取到按摩项目，但得到：{result['project']}"
         assert result["gender"] == "女", f"应该提取到女技师偏好，但得到：{result['gender']}"
@@ -90,7 +87,8 @@ class TestAppointmentAgentCoreFeatures:
         assert agent.appointment_history["project"] == "按摩"  # 应该保持
         assert agent.appointment_history["start_time"] == "明天下午2点"
     
-    def test_should_identify_unrelated_requests(self):
+    @pytest.mark.asyncio
+    async def test_should_identify_unrelated_requests(self):
         """
         测试：预约代理应该能识别与预约无关的请求
         
@@ -104,15 +102,11 @@ class TestAppointmentAgentCoreFeatures:
         # 使用真实的解析流程：通过LLM处理用户输入
         from langchain_core.chat_history import InMemoryChatMessageHistory
         chat_history = InMemoryChatMessageHistory()
-        
-        # 模拟流式解析过程，获取LLM的完整响应
-        ai_content = ""
-        for token in agent.input_parser.parse_stream(unrelated_input, chat_history):
-            ai_content += token
-        
-        # 解析LLM返回的JSON
-        result = agent.input_parser.parse_data(ai_content)
-        
+
+        # 结构化抽取
+        slots = await agent.input_parser.extract(unrelated_input, chat_history)
+        result = agent.input_parser.parse_data(slots)
+
         # 应该被标记为无关请求
         assert result.get("unrelated", False) == True, f"应该识别为无关请求，但得到：{result}"
     
@@ -167,7 +161,7 @@ class TestAppointmentAgentCoreFeatures:
         # 应该能处理不完整信息（不抛出异常）
         try:
             response_tokens = []
-            async for token in agent.appointment_processor.handle_incomplete_info(incomplete_data):
+            async for token in agent.appointment_processor.handle_incomplete_info(incomplete_data, agent.appointment_history):
                 response_tokens.append(token)
             
             response = "".join(response_tokens)

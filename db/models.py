@@ -55,6 +55,37 @@ class UserPreference(Base):
     confidence_score = Column(Integer, default=1)  # 偏好的置信度（出现次数）
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class ConversationTurn(Base):
+    """会话对话回合（Phase 4：会话历史持久化）。
+
+    按 ``session_id`` 隔离，每行记录一轮中的一条消息（用户或助手），
+    用于进程重启后恢复会话历史。详见 OpenSpec change: phase-4-state-memory。
+    """
+    __tablename__ = 'conversation_turns'
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False)  # 'user' or 'assistant'
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class BadCase(Base):
+    """坏 case 回流记录（Phase 6：评估闭环）。
+
+    记录失败或用户纠正的 case，供事后复盘与补充评估集。新增独立表，不改动既有
+    业务表语义。``trace_id`` 可关联可观测层的同一次请求 trace。
+    详见 OpenSpec change: phase-6-observability。
+    """
+    __tablename__ = 'bad_cases'
+    id = Column(Integer, primary_key=True)
+    kind = Column(String, nullable=False, index=True)  # 'failure' or 'correction'
+    user_input = Column(Text, nullable=False)
+    expected = Column(Text, nullable=True)
+    actual = Column(Text, nullable=True)
+    trace_id = Column(String, nullable=True, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    extra = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class UserRecommendation(Base):
     __tablename__ = 'user_recommendations'
     id = Column(Integer, primary_key=True)

@@ -1,9 +1,12 @@
 """
 知识库管理API
 """
+import logging
 from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库管理"])
 
@@ -32,8 +35,8 @@ async def get_all_knowledge():
         # 安全获取categories，避免出错
         try:
             categories = knowledge_service.get_all_categories()
-        except Exception as e:
-            print(f"获取categories失败: {e}")
+        except Exception:
+            logger.error("获取categories失败", exc_info=True)
             categories = []
         
         return {

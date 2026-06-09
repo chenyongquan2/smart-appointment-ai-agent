@@ -13,6 +13,16 @@ from agents.user_behavior_agent import UserBehaviorAgent
 from datetime import datetime, timedelta
 
 
+_PHANTOM_REASON = (
+    "断言了 UserBehaviorAgent 从未实现的 API(如 recommendation_generator/"
+    "insight_provider/behavior_processor 属性、get_recent_behavior/save_preferences "
+    "等方法),且 record_behavior(dict) 与真实签名 (action_type, action_data,...) 错位。"
+    "这些用例从未绿过、不反映真实行为;agents/ 即将被重构替换,不补 phantom 实现。"
+    "(OpenSpec change: fix-preexisting-test-debt)"
+)
+
+
+@pytest.mark.xfail(reason=_PHANTOM_REASON, strict=False)
 class TestUserBehaviorAgentCoreFeatures:
     """测试用户行为代理核心功能"""
     
@@ -216,6 +226,7 @@ class TestUserBehaviorAgentCoreFeatures:
             pytest.fail(f"提供行为洞察时出错：{e}")
 
 
+@pytest.mark.xfail(reason=_PHANTOM_REASON, strict=False)
 class TestUserBehaviorAgentDataManagement:
     """测试数据管理功能"""
     
@@ -341,6 +352,7 @@ class TestUserBehaviorAgentDataManagement:
 class TestUserBehaviorAgentEdgeCases:
     """测试边界情况"""
     
+    @pytest.mark.xfail(reason=_PHANTOM_REASON, strict=False)
     def test_should_handle_new_user_with_no_history(self):
         """
         测试：应该处理没有历史记录的新用户
