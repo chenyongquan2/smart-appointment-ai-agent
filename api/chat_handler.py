@@ -23,11 +23,28 @@ from harness.memory.long_term import LongTermMemory
 from harness.memory.short_term import ShortTermMemory
 from harness.runtime import AgentLoop
 from harness.runtime.session import SessionStore
-from harness.tools.registry import build_default_registry
+from harness.runtime.system_prompt import build_system_prompt
+from harness.subagents import build_default_subagent_registry, build_delegate_tool
+from harness.tools.registry import ToolRegistry, build_default_registry
 
-# 模块级单例：注册工具、创建 LLM、构造（无状态的）loop。
-_registry = build_default_registry()
-_agent_loop = AgentLoop(llm=create_chat_model(temperature=0), registry=_registry)
+# 模块级单例（Phase 7）：
+# - 全量工具 registry：领域工具仍在此注册，但由子 Agent 经其工具子集调用。
+# - 子 Agent registry：预约 / 咨询 / 行为分析三个专员。
+# - delegate 工具：主 Agent 据此自主派生子 Agent（取代硬编码路由）。
+# - 主 registry 只含 delegate：主 Agent 负责「决策派给谁」，不直接执行领域工具。
+_llm = create_chat_model(temperature=0)
+_full_registry = build_default_registry()
+_subagents = build_default_subagent_registry()
+_delegate_tool = build_delegate_tool(_llm, _full_registry, _subagents)
+
+_main_registry = ToolRegistry()
+_main_registry.register(_delegate_tool)
+
+_agent_loop = AgentLoop(
+    llm=_llm,
+    registry=_main_registry,
+    system_prompt=build_system_prompt(_main_registry, _subagents),
+)
 
 # 持久化与记忆组件（DatabaseRouter 复用既有 SQLite + Repository）。
 _db = DatabaseRouter()

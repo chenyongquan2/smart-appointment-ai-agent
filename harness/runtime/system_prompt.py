@@ -9,7 +9,12 @@ ClassificationProcessor 里隐式的 if/else 路由约定（黄金准则：显�
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Optional
+
 from harness.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:  # 仅类型注解，运行时不 import，避免与 subagents→runtime 形成循环。
+    from harness.subagents.registry import SubAgentRegistry
 
 # 角色与行为基线。不在此枚举具体工具——工具清单由 registry 动态注入。
 BASE_SYSTEM_PROMPT = (
@@ -26,12 +31,27 @@ BASE_SYSTEM_PROMPT = (
 )
 
 
-def build_system_prompt(registry: ToolRegistry) -> str:
-    """拼接基线提示与当前已注册工具的说明书。"""
+def build_system_prompt(
+    registry: ToolRegistry,
+    subagents: Optional["SubAgentRegistry"] = None,
+) -> str:
+    """拼接基线提示与当前已注册工具的说明书。
+
+    当主 registry 含 ``delegate`` 工具且传入 ``subagents`` 时，额外把可派生子 Agent 的
+    职责清单渲染进提示（显式优于隐式），使主 Agent 知道「有哪些专员、各管什么」。
+    不含 ``delegate`` 或未传 ``subagents`` 时，行为与既有完全一致（向后兼容）。
+    """
     tools = [registry.get(name) for name in registry.names()]
     if not tools:
         return BASE_SYSTEM_PROMPT
     lines = [BASE_SYSTEM_PROMPT, "", "可用工具："]
     for tool in tools:
         lines.append(f"- {tool.name}：{tool.description}")
+
+    if subagents is not None and "delegate" in registry.names():
+        members = subagents.all()
+        if members:
+            lines.extend(["", "可派生的专用子 Agent（用 delegate 工具委派）："])
+            for agent in members:
+                lines.append(f"- {agent.name}：{agent.description}")
     return "\n".join(lines)

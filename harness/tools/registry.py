@@ -41,6 +41,18 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return list(self._tools)
 
+    def subset(self, names: list[str]) -> "ToolRegistry":
+        """构建仅含指定工具的子集 registry（切片），供子 Agent 使用（Phase 7）。
+
+        复用既有 ``Tool`` 实例（不复制、不重写业务逻辑），并沿用本 registry 的权限
+        策略。含未注册的工具名时报错（与 ``get`` 一致）。子集 registry 的注册/分发/
+        导出 schema 行为与全量 registry 完全一致。
+        """
+        sub = ToolRegistry(permission=self._permission)
+        for name in names:
+            sub.register(self.get(name))
+        return sub
+
     async def dispatch(self, name: str, raw_args: dict[str, Any]) -> Any:
         """按名分发：危险工具先过权限闸门，再校验入参（Pydantic）后执行 handler。
 

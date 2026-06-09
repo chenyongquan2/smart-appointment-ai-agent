@@ -57,6 +57,9 @@ class AgentLoop:
         tracer: 可选可观测 tracer（Phase 6）；注入时为整次 run 开 root span、每步开
             child span，记录 thought / tool_call / observation / latency / tokens。
             缺省为 ``NoopTracer``，行为与接入前完全一致（向后兼容）。
+        system_prompt: 可选的系统提示覆盖（Phase 7）；子 Agent 用其专用提示构造
+            ``AgentLoop`` 时传入。缺省为 ``None`` 时走 ``build_system_prompt(registry)``，
+            与既有行为完全一致（向后兼容）。
     """
 
     def __init__(
@@ -73,6 +76,7 @@ class AgentLoop:
         on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None,
         on_observation: Optional[Callable[[str, Any], None]] = None,
         tracer: Optional[Tracer] = None,
+        system_prompt: Optional[str] = None,
     ) -> None:
         self.registry = registry
         self.max_steps = max_steps
@@ -88,7 +92,8 @@ class AgentLoop:
         self._tracer: Tracer = tracer or NoopTracer()
         # 绑定工具 schema：单一真相源 = 各工具的 Pydantic args_schema → OpenAI 格式。
         self.llm = llm.bind_tools(registry.to_openai_schema())
-        self.system_prompt = build_system_prompt(registry)
+        # 子 Agent 可传入专用 system prompt 覆盖默认；缺省走 build_system_prompt（向后兼容）。
+        self.system_prompt = system_prompt or build_system_prompt(registry)
 
     async def run(
         self,
