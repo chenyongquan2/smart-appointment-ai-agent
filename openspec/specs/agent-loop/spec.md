@@ -3,9 +3,7 @@
 ## Purpose
 
 定义 harness 运行时的 TAO（Thought→Action→Observation）循环：用 native tool calling 驱动 LLM 自主选择并调用工具，把工具结果喂回上下文并迭代，直至模型产出最终回复或触达步数上限。它取代「LLM 分类一次 + if/else 硬路由」成为请求编排核心，使系统能处理未预设的多步工具组合，并保持单向依赖（runtime → tools → services）。
-
 ## Requirements
-
 ### Requirement: TAO 循环编排
 
 系统 SHALL 提供一个 `AgentLoop`，在每一步用绑定了工具 schema 的 LLM 推理：若 LLM 返回工具调用（tool calls），则按名分发到 `ToolRegistry` 执行、并把每个工具结果作为 tool message 追加回消息上下文，然后进入下一步；若 LLM 不返回工具调用（产出最终文本回复），则结束循环。循环 MUST NOT 使用 `if category == ...` 这类对意图的硬编码路由分支来决定调用哪个能力。
@@ -98,3 +96,23 @@
 
 - **WHEN** LLM 调用持续超时/失败直至护栏重试耗尽
 - **THEN** `AgentLoop` 捕获护栏异常，以 `[REPLY]` 前缀产出安全兜底回复，不抛出异常、不崩溃请求
+
+### Requirement: 循环接入 Tracer 且向后兼容
+
+`AgentLoop` SHALL 接受一个可选的 tracer 依赖（构造参数，缺省为无）。当注入 tracer 时，`AgentLoop` MUST 为整次 run 开一个 root span、为每一步开一个 child span，并在各步记录 `thought`（LLM 文本/决策）、`tool_call`（工具名+参数）、`observation`（工具结果）、该步 latency 与 token 近似。当未注入 tracer 时，`AgentLoop` 的行为 MUST 与未接入可观测性前完全一致（既有 `on_tool_call`/`on_observation` 钩子语义保留、可 no-op），不得引入任何可观测路径上的回归。
+
+#### Scenario: 注入 tracer 时产生可回放 trace
+
+- **WHEN** 用注入了 tracer 的 `AgentLoop` 跑一次含工具调用的请求
+- **THEN** tracer 收到一个 root span 与每步的 child span，工具步的 span 记录了 tool_call、observation 与该步 latency
+
+#### Scenario: 未注入 tracer 时行为不变
+
+- **WHEN** 不传 tracer 构造 `AgentLoop` 并运行既有路径
+- **THEN** 循环行为与接入可观测性之前一致（直接回复 / 单步 / 多步 / max_steps / 护栏兜底均不变），不抛错、不回归
+
+#### Scenario: tracer 不影响护栏与错误隔离
+
+- **WHEN** 注入 tracer 的同时发生工具异常或触达护栏（预算/打转/重试耗尽）
+- **THEN** 既有错误回灌与 `[REPLY]` 兜底语义不变，tracer 仅记录相应 span/事件，不改变控制流
+

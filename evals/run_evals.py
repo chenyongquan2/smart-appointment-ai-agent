@@ -76,9 +76,17 @@ def print_cases(cases: list[dict]) -> None:
 
 
 async def run_baseline(cases: list[dict]) -> int:
-    """跑真实分类器, 输出准确率基线 + 错误清单。返回进程退出码。"""
+    """跑真实分类器, 输出多指标报告 + 错误清单。返回进程退出码。
+
+    Phase 6：在意图准确率之外，按用例计时（端到端延迟），并把每条用例填成
+    ``EvalResult`` 交给 ``evals.metrics`` 汇总。工具调用正确率/槽位完整率仅在对应
+    数据可得时计入，否则报告显式标 N/A（不伪造分母）。
+    """
+    import time
+
     from config.model_provider import create_chat_model
     from agents.task_classification.task_classifier import TaskClassifier
+    from evals.metrics import EvalResult, build_report, format_report
 
     try:
         classifier = TaskClassifier(create_chat_model(temperature=0))
@@ -86,40 +94,47 @@ async def run_baseline(cases: list[dict]) -> int:
         print(f"[ERROR] 创建分类器失败: {exc}", file=sys.stderr)
         return 2
 
-    total = len(cases)
-    correct = 0
+    results: list[EvalResult] = []
     by_intent: dict[str, list[int]] = {}  # intent -> [correct, total]
-    errors: list[tuple[str, str, str]] = []  # (input, expected, actual)
 
     for case in cases:
         text = case.get("input", "")
         expected = case["expected_intent"]
+        start = time.perf_counter()
         try:
             actual = await classifier.classify_task(text)
         except Exception as exc:  # 网络/鉴权异常: 标注出来, 不中断整轮
             actual = f"<异常:{type(exc).__name__}>"
+        latency = time.perf_counter() - start
+
         stat = by_intent.setdefault(expected, [0, 0])
         stat[1] += 1
         if actual == expected:
-            correct += 1
             stat[0] += 1
-        else:
-            errors.append((text, expected, actual))
 
-    pct = (correct / total * 100) if total else 0.0
-    print(f"\n意图分类准确率基线: {correct}/{total} ({pct:.1f}%)\n")
-    print("按类目:")
+        results.append(
+            EvalResult(
+                input=text,
+                expected_intent=expected,
+                actual_intent=actual,
+                # expected_tools 为前瞻注解；本运行不端到端执行 AgentLoop，故 actual_tools
+                # 留空（报告会据此把"工具调用正确率"标 N/A 并注明原因）。
+                expected_tools=case.get("expected_tools"),
+                actual_tools=None,
+                expected_slots=case.get("expected_slots"),
+                actual_slots=None,
+                latency_s=latency,
+            )
+        )
+
+    report = build_report(results)
+    print(format_report(report))
+
+    # 按意图类目分项（保留 Phase 0 的分类目视图）。
+    print("\n按类目（意图）:")
     for intent in sorted(by_intent):
         c, t = by_intent[intent]
         print(f"  {intent:11} {c}/{t}")
-
-    if errors:
-        print(f"\n判错 {len(errors)} 条:")
-        for text, expected, actual in errors:
-            print(f"  - 输入: {text}")
-            print(f"    期望: {expected}  实际: {actual}")
-    else:
-        print("\n全部通过。")
     return 0
 
 

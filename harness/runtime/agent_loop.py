@@ -32,6 +32,7 @@ from harness.guardrails.retry import (
     GuardrailExhausted,
     guarded_invoke,
 )
+from harness.observability.tracer import NoopTracer, Tracer
 from harness.tools.registry import ToolRegistry
 from harness.runtime.system_prompt import build_system_prompt
 
@@ -52,7 +53,10 @@ class AgentLoop:
         llm_timeout / llm_max_attempts / llm_base_delay: LLM 调用护栏参数（超时秒数、
             最大尝试次数、指数退避基准秒数），透传给 ``guarded_invoke``。
         retry_sleep: 退避等待实现（默认 ``asyncio.sleep``）；测试可注入 no-op。
-        on_tool_call / on_observation: 可选 trace 钩子（默认 no-op，Phase 6 接入）。
+        on_tool_call / on_observation: 可选 trace 钩子（默认 no-op）。
+        tracer: 可选可观测 tracer（Phase 6）；注入时为整次 run 开 root span、每步开
+            child span，记录 thought / tool_call / observation / latency / tokens。
+            缺省为 ``NoopTracer``，行为与接入前完全一致（向后兼容）。
     """
 
     def __init__(
@@ -68,6 +72,7 @@ class AgentLoop:
         retry_sleep: Optional[Callable[[float], Awaitable[None]]] = None,
         on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None,
         on_observation: Optional[Callable[[str, Any], None]] = None,
+        tracer: Optional[Tracer] = None,
     ) -> None:
         self.registry = registry
         self.max_steps = max_steps
@@ -79,6 +84,8 @@ class AgentLoop:
         self._retry_sleep = retry_sleep
         self._on_tool_call = on_tool_call or (lambda call: None)
         self._on_observation = on_observation or (lambda name, result: None)
+        # 未注入 tracer 时退化为 NoopTracer：行为与接入可观测性前完全一致（向后兼容）。
+        self._tracer: Tracer = tracer or NoopTracer()
         # 绑定工具 schema：单一真相源 = 各工具的 Pydantic args_schema → OpenAI 格式。
         self.llm = llm.bind_tools(registry.to_openai_schema())
         self.system_prompt = build_system_prompt(registry)
@@ -115,42 +122,62 @@ class AgentLoop:
 
         spin = SpinDetector(self.repeat_limit)
 
-        for _step in range(self.max_steps):
-            # 预算护栏：累计上下文超过 token 预算即优雅收尾，绝不再发起 LLM 调用。
-            if self.max_tokens is not None and estimate_tokens(messages) > self.max_tokens:
-                yield f"[REPLY]{_FALLBACK_REPLY}"
-                return
+        # 整次 run 一个 root span；trace_id 由其生成，每步 child span 继承。
+        root = self._tracer.start_span(
+            "agent_loop.run",
+            attributes={"session_id": session_id} if session_id else None,
+        )
+        try:
+            for _step in range(self.max_steps):
+                # 预算护栏：累计上下文超过 token 预算即优雅收尾，绝不再发起 LLM 调用。
+                if self.max_tokens is not None and estimate_tokens(messages) > self.max_tokens:
+                    yield f"[REPLY]{_FALLBACK_REPLY}"
+                    return
 
-            # LLM 调用经超时 + 重试护栏；耗尽则优雅降级为兜底回复，不让异常冒泡。
-            try:
-                ai: AIMessage = await self._guarded_invoke(messages)
-            except GuardrailExhausted:
-                yield f"[REPLY]{_FALLBACK_REPLY}"
-                return
-            messages.append(ai)
+                step = self._tracer.start_span("step", parent=root)
+                try:
+                    # LLM 调用经超时 + 重试护栏；耗尽则优雅降级，不让异常冒泡。
+                    try:
+                        ai: AIMessage = await self._guarded_invoke(messages)
+                    except GuardrailExhausted:
+                        self._tracer.add_event(step, "error", {"type": "guardrail_exhausted"})
+                        yield f"[REPLY]{_FALLBACK_REPLY}"
+                        return
+                    messages.append(ai)
+                    self._tracer.add_thought(step, _content_text(ai.content))
+                    self._tracer.set_tokens(step, estimate_tokens(messages))
 
-            tool_calls = ai.tool_calls or []
-            if not tool_calls:
-                # 模型给出最终回复 —— 结束循环。
-                yield f"[REPLY]{_content_text(ai.content)}"
-                return
+                    tool_calls = ai.tool_calls or []
+                    if not tool_calls:
+                        # 模型给出最终回复 —— 结束循环。
+                        yield f"[REPLY]{_content_text(ai.content)}"
+                        return
 
-            # 打转检测：连续相同工具调用达到上限即终止，早于 max_steps 的逃生口。
-            if spin.check(tool_calls):
-                yield f"[REPLY]{_FALLBACK_REPLY}"
-                return
+                    # 打转检测：连续相同工具调用达上限即终止，早于 max_steps 的逃生口。
+                    if spin.check(tool_calls):
+                        self._tracer.add_event(step, "error", {"type": "spin_detected"})
+                        yield f"[REPLY]{_FALLBACK_REPLY}"
+                        return
 
-            # 有工具调用：逐个执行并把结果按协议喂回（同一步的多个调用全部喂回）。
-            for call in tool_calls:
-                self._on_tool_call(call)
-                result = await self._dispatch(call)
-                self._on_observation(call.get("name", ""), result)
-                messages.append(
-                    ToolMessage(content=str(result), tool_call_id=call["id"])
-                )
+                    # 有工具调用：逐个执行并把结果按协议喂回（同一步的多个调用全部喂回）。
+                    for call in tool_calls:
+                        self._on_tool_call(call)
+                        self._tracer.add_tool_call(
+                            step, call.get("name", ""), call.get("args") or {}
+                        )
+                        result = await self._dispatch(call)
+                        self._on_observation(call.get("name", ""), result)
+                        self._tracer.add_observation(step, call.get("name", ""), result)
+                        messages.append(
+                            ToolMessage(content=str(result), tool_call_id=call["id"])
+                        )
+                finally:
+                    self._tracer.end_span(step)
 
-        # 触达 max_steps 仍未得到最终回复：安全兜底，绝不无限循环。
-        yield f"[REPLY]{_FALLBACK_REPLY}"
+            # 触达 max_steps 仍未得到最终回复：安全兜底，绝不无限循环。
+            yield f"[REPLY]{_FALLBACK_REPLY}"
+        finally:
+            self._tracer.end_span(root)
 
     async def _guarded_invoke(self, messages: list[BaseMessage]) -> AIMessage:
         """经超时 + 重试护栏发起一次 LLM 调用（只读、幂等，故可安全重试）。"""

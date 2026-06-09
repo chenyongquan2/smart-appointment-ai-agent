@@ -68,6 +68,24 @@ class ConversationTurn(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class BadCase(Base):
+    """坏 case 回流记录（Phase 6：评估闭环）。
+
+    记录失败或用户纠正的 case，供事后复盘与补充评估集。新增独立表，不改动既有
+    业务表语义。``trace_id`` 可关联可观测层的同一次请求 trace。
+    详见 OpenSpec change: phase-6-observability。
+    """
+    __tablename__ = 'bad_cases'
+    id = Column(Integer, primary_key=True)
+    kind = Column(String, nullable=False, index=True)  # 'failure' or 'correction'
+    user_input = Column(Text, nullable=False)
+    expected = Column(Text, nullable=True)
+    actual = Column(Text, nullable=True)
+    trace_id = Column(String, nullable=True, index=True)
+    session_id = Column(String, nullable=True, index=True)
+    extra = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class UserRecommendation(Base):
     __tablename__ = 'user_recommendations'
     id = Column(Integer, primary_key=True)
