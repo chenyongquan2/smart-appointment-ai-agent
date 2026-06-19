@@ -8,12 +8,16 @@ from __future__ import annotations
 
 from harness.subagents.base import SubAgent
 
+# 模块级常量：咨询顾问子 Agent（frozen 纯数据）。
 CONSULTANT_SUBAGENT = SubAgent(
     name="consultant",
+    # description 帮主 Agent 区分「咨询信息」与「下单预约」——前者派 consultant，后者派 appointment。
     description=(
         "门店咨询顾问：回答关于服务项目、价格、营业时间、技师介绍、注意事项等"
         "信息类问题。当用户在咨询信息而非直接下单预约时派给它。"
     ),
+    # 刻意只给一个「只读」的知识库检索工具——拿不到 create_appointment，
+    # 故本子 Agent 在能力上就「不可能误下单」（最小权限原则的直接体现）。
     tool_names=("search_knowledge",),
     system_prompt=(
         "你是按摩/推拿门店的咨询顾问，负责解答顾客关于服务、价格、营业信息等问题。\n"

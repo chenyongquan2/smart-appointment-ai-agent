@@ -16,9 +16,14 @@ from harness.tools.schemas import FindTechnicianArgs
 
 
 async def _handler(args: FindTechnicianArgs) -> dict[str, Any] | None:
+    # 延迟 import：仅在调用本工具时才加载 TechnicianFinder（避免导入即拉起其依赖）。
+    # 注意这里 import 的是 agents/ 下的既有实现——见模块 docstring 说明的横向依赖取舍。
     from agents.appointment.technician_finder import TechnicianFinder
 
     finder = TechnicianFinder()
+    # 把 6 个独立入参打包成 finder 期望的 appointment_history 字典——纯换形状、不挑不算。
+    # 各字段典型取值：start_time "2026-06-19 14:00"、duration "180分钟"、project "按摩"、
+    # preference "力气大"/"无"、gender "男"/"女"/"未知"、technician_name 指定姓名或 "未知"。
     appointment_history = {
         "start_time": args.start_time,
         "duration": args.duration,
@@ -27,10 +32,14 @@ async def _handler(args: FindTechnicianArgs) -> dict[str, Any] | None:
         "gender": args.gender,
         "technician_name": args.technician_name,
     }
-    # yield_func 为 None：工具层不产出 thought 流，由上层（Phase 3 loop）负责可观测。
+    # 匹配规则（指定优先 / 否则按性别+偏好过滤 + 查可用 / 不可用则推荐相似技师）整套都在
+    # finder 里，工具层一行转交、绝不重写。返回技师信息字典；找不到时为 None。
+    # yield_func 为 None：finder 本可流式吐 thought，但工具层不产出 thought 流，
+    # 可观测交给上层（Phase 3 loop 的 tracer）统一负责，故这里显式关掉。
     return finder.find_technician_with_thought(appointment_history, yield_func=None)
 
 
+# 声明工具四要素；未设 dangerous → 默认 False（只读查找，分发时直接放行）。
 find_technician = Tool(
     name="find_technician",
     description=(

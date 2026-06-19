@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# frozen=True：实例「不可变」（创建后改字段会报错）。Skill 是只读声明，冻结后可放进
+# set / 作 dict key，也避免被误改——契合「薄声明、不持业务状态」的定位。
 @dataclass(frozen=True)
 class Skill:
     """一个可按需加载的可复用能力。
@@ -27,12 +29,21 @@ class Skill:
             为空时退化为「用 ``name`` 作为唯一触发词」。
     """
 
+    # ↓ dataclass 字段：声明顺序即构造参数顺序（Skill("name", "desc", "content")）。
     name: str
     description: str
     content: str
+    # triggers 用 tuple 而非 list：tuple 不可变，契合 frozen 的「实例只读」语义；
+    # default_factory=tuple 给每个实例独立的空元组，避免共享可变默认值的经典坑。
     triggers: tuple[str, ...] = field(default_factory=tuple)
 
     def matches(self, task: str) -> bool:
-        """该 skill 是否与给定任务相关（确定性关键词匹配）。"""
+        """该 skill 是否与给定任务相关（确定性关键词匹配）。
+
+        刻意「不引向量检索」：纯子串匹配是确定性的——同样输入永远同样结果，故离线、
+        无网络也能写断言、可单测（设计要点 D5）。代价是只能精确命中关键词、无语义近似。
+        """
+        # 没配 triggers 就退化成「拿 name 当唯一触发词」——保证任何 skill 至少能被自己的名字命中。
         keywords = self.triggers or (self.name,)
+        # any(...)：任一关键词是 task 的子串即算相关；kw 真值判断顺带滤掉空串触发词。
         return any(kw and kw in task for kw in keywords)

@@ -25,6 +25,9 @@ class SummaryMemory(Protocol):
     """
 
     def summarize(self, old_turns: Sequence[Turn]) -> str:
+        # 这是「契约」而非实现：Protocol 只规定方法签名（输入窗外旧轮、输出一段摘要文本），
+        # 任何长这样的类都自动算作 SummaryMemory（结构化鸭子类型），无需显式继承。
+        # 函数体 `...` 是占位，Protocol 不需要真正实现。
         ...
 
 
@@ -37,4 +40,8 @@ class NoOpSummary:
     """
 
     def summarize(self, old_turns: Sequence[Turn]) -> str:  # noqa: D401
+        # 设计意图：本 Phase 故意「先搭骨架、不上真功能」。返回空串 = 不产出任何摘要，
+        # 于是窗外旧轮既不被压缩、也不注入上下文（裁掉它们的是 ShortTermMemory 的窗口）。
+        # 这样做的好处：接口已定下、调用点已接通，后续真正实现压缩时只需替换本类，
+        # 上层（loop/handler）一行都不用改。返回空串而非抛异常，保证现在流程也能正常跑通。
         return ""

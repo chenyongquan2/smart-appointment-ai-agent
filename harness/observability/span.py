@@ -21,8 +21,8 @@ __all__ = ["Span", "SpanEvent"]
 class SpanEvent:
     """span 上的一个时点事件，如 thought / tool_call / observation。"""
 
-    kind: str
-    payload: dict[str, Any]
+    kind: str  # 事件类型标签；约定值见 tracer 的 add_thought/add_tool_call/add_observation
+    payload: dict[str, Any]  # 该事件的内容，形状随 kind 而变（如 {"text": ...} / {"name", "args"}）
 
 
 @dataclass
@@ -40,30 +40,37 @@ class Span:
         events: 顺序事件列表（thought / tool_call / observation ...）。
     """
 
-    trace_id: str
-    span_id: str
-    parent_id: Optional[str]
+    trace_id: str  # 同一请求内全部 span 共享同一个值（串联整条 trace 的关键）
+    span_id: str  # 本 span 唯一 id；会被「子 span」抄进它的 parent_id
+    parent_id: Optional[str]  # 父的 span_id；root 为 None ←—— 父子树就靠这一字段显式连起来
     name: str
-    start: float
-    end: Optional[float] = None
-    attributes: dict[str, Any] = field(default_factory=dict)
-    events: list[SpanEvent] = field(default_factory=list)
+    start: float  # 开始时刻（注入的单调 clock 读数，非墙钟时间，只用来算差值）
+    end: Optional[float] = None  # 结束时刻；None = 还没结束
+    # 下面两个用 default_factory：dataclass 默认值若直接写 {} / [] 会被「所有实例共享」
+    # 同一个对象（Python 可变默认值的经典坑）；用工厂函数保证每个 Span 各得一份新容器。
+    attributes: dict[str, Any] = field(default_factory=dict)  # 可检索标量字段（session_id/tokens/tool_name…）
+    events: list[SpanEvent] = field(default_factory=list)  # 按发生顺序排列的事件流
 
     @property
     def latency(self) -> Optional[float]:
         """span 耗时（秒）；未结束时为 ``None``。"""
+        # 用 property 而非存字段：latency 永远是 end-start 的派生值，按需算，免得
+        # end 一变还要记得同步更新另一个字段（单一真相源）。
         if self.end is None:
-            return None
-        return self.end - self.start
+            return None  # 还没 end_span，算不出耗时
+        return self.end - self.start  # 两个 clock 读数相减 → 秒数
 
     def to_dict(self) -> dict[str, Any]:
         """规整为可序列化字典（供 JSON 日志 exporter 与断言使用）。"""
+        # 刻意「拍平」成纯 dict/list/标量：这样能直接喂给 json.dumps，也方便测试里
+        # 用普通字典断言，不必依赖 dataclass 比较。
         return {
             "trace_id": self.trace_id,
             "span_id": self.span_id,
             "parent_id": self.parent_id,
             "name": self.name,
-            "latency": self.latency,
-            "attributes": dict(self.attributes),
+            "latency": self.latency,  # 注意：导出的是「算好的耗时」，不是 start/end 原值
+            "attributes": dict(self.attributes),  # 拷一份，防外部拿到引用后改坏内部状态
+            # 每个 SpanEvent 也展开成普通 dict（嵌套对象同样拍平）。
             "events": [{"kind": e.kind, "payload": e.payload} for e in self.events],
         }

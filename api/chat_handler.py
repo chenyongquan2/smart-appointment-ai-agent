@@ -28,30 +28,39 @@ from harness.subagents import build_default_subagent_registry, build_delegate_to
 from harness.tools.registry import ToolRegistry, build_default_registry
 
 # 模块级单例（Phase 7）：
+# 这些对象在「import 本模块时」只建一次，被所有请求共享——故必须无状态/可并发复用
+# （会话隔离靠下面的 session_id + SessionStore，而不是给每个用户各建一套对象）。
 # - 全量工具 registry：领域工具仍在此注册，但由子 Agent 经其工具子集调用。
 # - 子 Agent registry：预约 / 咨询 / 行为分析三个专员。
 # - delegate 工具：主 Agent 据此自主派生子 Agent（取代硬编码路由）。
 # - 主 registry 只含 delegate：主 Agent 负责「决策派给谁」，不直接执行领域工具。
-_llm = create_chat_model(temperature=0)
+_llm = create_chat_model(temperature=0)  # temperature=0：尽量确定性，利于评估对照与复现
 _full_registry = build_default_registry()
 _subagents = build_default_subagent_registry()
 _delegate_tool = build_delegate_tool(_llm, _full_registry, _subagents)
 
+# ★ 关键设计：主 registry 里「只放 delegate 这一个工具」。
+#   于是主 Agent 的唯一动作就是「调 delegate(派给哪个专员)」——它只做路由决策，
+#   真正干活的领域工具都藏在子 Agent 的工具子集里。对比 Phase 7 之前的硬编码 if/else 路由，
+#   这把「派给谁」交还给模型自主判断。
 _main_registry = ToolRegistry()
 _main_registry.register(_delegate_tool)
 
 _agent_loop = AgentLoop(
     llm=_llm,
     registry=_main_registry,
+    # 主 Agent 专用系统提示：把可委派的子 Agent 清单写进去，模型才知道能派给谁。
     system_prompt=build_system_prompt(_main_registry, _subagents),
 )
 
 # 持久化与记忆组件（DatabaseRouter 复用既有 SQLite + Repository）。
 _db = DatabaseRouter()
-_session_store = SessionStore(repo=_db.conversations)
-_short_term = ShortTermMemory(window_turns=10)
-_long_term = LongTermMemory(repo=_db.user_behavior)
+_session_store = SessionStore(repo=_db.conversations)       # 按 session_id 隔离会话历史
+_short_term = ShortTermMemory(window_turns=10)               # 短期记忆：只回放最近 10 轮
+_long_term = LongTermMemory(repo=_db.user_behavior)          # 长期记忆：跨会话的用户偏好
 
+# 与 AgentLoop 的约定前缀：loop 把「最终回复」以 [REPLY]... 形式 yield 出来，
+# 本模块据此从一串 token 里择出真正的回复文本（其余如 [THOUGHT] 是过程，不回写历史）。
 _REPLY_PREFIX = "[REPLY]"
 
 
@@ -73,28 +82,43 @@ async def ProcessUserInput_stream(
     Yields:
         带 ``[THOUGHT]`` / ``[REPLY]`` 前缀的文本片段。
     """
+    # ════════════════════════════════════════════════════════════════════
+    # 一条消息的完整路径（这就是本文件的主线，按 ①→⑥ 读）
+    # ════════════════════════════════════════════════════════════════════
+
+    # ① 会话隔离：定位「这条消息属于哪个会话」。缺 session_id 就新开一个会话。
+    #    get_or_create 据此取/建对应会话——不同 session_id 的历史互不串扰。
     sid = session_id or str(uuid.uuid4())
     session = _session_store.get_or_create(sid)
 
-    # 注入的历史 = 本轮之前的回合（当前 user_input 单独传给 loop，勿重复注入）。
+    # ② 记忆注入（在「写入本轮输入之前」先取历史，避免把当前这句也当成历史回放）：
+    #    - 短期：把最近 N 轮历史转成 BaseMessage 列表，喂给 loop 当上下文。
+    #    - 长期：跨会话的用户偏好，作为「系统提示补充」（system_suffix）。
     history_msgs = _short_term.to_messages(session.history)
     preference_hint = _long_term.build_preference_hint(session.user_id)
 
-    # 先把本轮用户输入写入会话（内存窗口 + 持久化）。
+    # ③ 先写「用户输入」入会话（内存窗口 + 持久化 SQLite）。
+    #    注意：必须在 ② 取完历史「之后」再写，否则当前这句会污染本轮注入的历史。
     _session_store.append_turn(sid, "user", user_input)
 
+    # ④ 驱动 TAO 循环。user_input 单独作参数传入（已在 history_msgs 里排除，勿重复注入）。
+    #    run(...) 是异步生成器：会逐个 yield 出 token（[THOUGHT].../[REPLY]...）。
     reply_text = ""
     async for token in _agent_loop.run(
         user_input,
         session_id=sid,
-        history=history_msgs,
-        system_suffix=preference_hint,
+        history=history_msgs,          # 短期记忆
+        system_suffix=preference_hint, # 长期偏好，拼到系统提示末尾
     ):
+        # ⑤ 一边把每个 token 透传给前端（保留流式体验），一边「截留」最终回复：
+        #    只有 [REPLY] 前缀那条是要回写历史的真正回复；切掉前缀后存进 reply_text。
+        #    （若 loop 多次发 [REPLY]，这里以最后一条为准。）
         if token.startswith(_REPLY_PREFIX):
             reply_text = token[len(_REPLY_PREFIX):]
         yield token
 
-    # 回写助手回复（兜底回复同样记入历史，保证多轮连续）。
+    # ⑥ 回写「助手回复」入会话，至此本轮一问一答都已落库，下一轮才能续上多轮上下文。
+    #    （兜底回复——如 loop 跑满步数的那句——同样记入，保证历史不断档。）
     if reply_text:
         _session_store.append_turn(sid, "assistant", reply_text)
 

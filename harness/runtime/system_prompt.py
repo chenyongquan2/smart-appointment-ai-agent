@@ -41,17 +41,28 @@ def build_system_prompt(
     职责清单渲染进提示（显式优于隐式），使主 Agent 知道「有哪些专员、各管什么」。
     不含 ``delegate`` 或未传 ``subagents`` 时，行为与既有完全一致（向后兼容）。
     """
+    # ① 从注册中心动态取出当前所有工具对象（顺序由 registry.names() 决定）。
+    #    「动态注入」的意义：工具清单是运行时拼出来的，不是写死在提示里——
+    #    新增/删除一个工具，这段提示会自动跟着变，无需手改文案（单一真相源）。
     tools = [registry.get(name) for name in registry.names()]
     if not tools:
-        return BASE_SYSTEM_PROMPT
+        return BASE_SYSTEM_PROMPT  # 一个工具都没注册：只回基线提示，不拼空的「可用工具：」段
+    # lines 是「一行一条」地攒提示内容，最后用换行拼成整段；空串 "" 用来制造空行分隔。
     lines = [BASE_SYSTEM_PROMPT, "", "可用工具："]
     for tool in tools:
+        # 每个工具的说明书 = 它自己的 description（单一真相源）。
+        # 易误解点：这里不重复描述工具用法，全靠各 Tool 类里写好的 description——
+        # 想改某工具的说明，去改那个工具，而不是改这里。
         lines.append(f"- {tool.name}：{tool.description}")
 
+    # ② 子 Agent 清单（Phase 7）：仅当「主 registry 里有 delegate 工具」且「传了 subagents」时才渲染。
+    #    两个条件缺一不可——没有 delegate 工具，模型也无从委派，列清单只会徒增干扰。
     if subagents is not None and "delegate" in registry.names():
         members = subagents.all()
         if members:
+            # 把「有哪些专员、各管什么」明明白白写进提示（显式优于隐式），
+            # 让主 Agent 知道何时该用 delegate 把活派给哪个子 Agent。
             lines.extend(["", "可派生的专用子 Agent（用 delegate 工具委派）："])
             for agent in members:
                 lines.append(f"- {agent.name}：{agent.description}")
-    return "\n".join(lines)
+    return "\n".join(lines)  # 各行用换行拼接，得到最终系统提示字符串

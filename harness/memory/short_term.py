@@ -24,6 +24,8 @@ class ShortTermMemory:
     """
 
     def __init__(self, window_turns: int = 10) -> None:
+        # 窗口大小：只把「最近这么多条」喂给 LLM。设小一点能省 token、防上下文爆掉；
+        # 代价是更早的对话模型「看不到」（但它们仍安静地躺在 DB 里，没被删）。
         self.window_turns = window_turns
 
     def to_messages(self, history: Sequence[Turn]) -> List[BaseMessage]:
@@ -31,11 +33,17 @@ class ShortTermMemory:
 
         user → HumanMessage，assistant → AIMessage；未知 role 跳过。
         """
+        # ① 窗口裁剪：history[-N:] 取「末尾 N 条」（即最近 N 轮）。这是整个短期记忆的关键——
+        #    窗外的旧轮「不进上下文」，但注意：原始 history 没被改动，旧轮仍在内存/DB 中，
+        #    只是这一次没被选进喂给 LLM 的消息里。window_turns<=0 视为「不带任何历史」。
         recent = history[-self.window_turns:] if self.window_turns > 0 else []
         messages: List[BaseMessage] = []
+        # ② 形态转换：内存里的 Turn（role/content）→ LangChain 的消息对象，
+        #    因为 AgentLoop 喂给 LLM 的是 BaseMessage 列表，不是我们自定义的 Turn。
         for turn in recent:
             if turn.role == "user":
-                messages.append(HumanMessage(content=turn.content))
+                messages.append(HumanMessage(content=turn.content))      # 顾客说的
             elif turn.role == "assistant":
-                messages.append(AIMessage(content=turn.content))
+                messages.append(AIMessage(content=turn.content))         # 助手说的
+            # 其它 role（如脏数据/未来扩展）静默跳过，不让异常数据污染上下文。
         return messages
