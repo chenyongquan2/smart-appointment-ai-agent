@@ -41,6 +41,21 @@ def build_system_prompt(
     职责清单渲染进提示（显式优于隐式），使主 Agent 知道「有哪些专员、各管什么」。
     不含 ``delegate`` 或未传 ``subagents`` 时，行为与既有完全一致（向后兼容）。
     """
+    # ──────────────────────────────────────────────────────────────────────
+    # 本函数产出的系统提示分三块，「必要性」截然不同（理解这点很关键）：
+    #   A. BASE_SYSTEM_PROMPT（角色 + TAO + 何时停 + 边界）—— 必需、不可替代。
+    #      这些「跨工具的策略与边界」无法由工具 schema 表达，删了模型会乱答/跑题/该停不停。
+    #   B. 下面「可用工具：」逐条回显 —— 对「模型能不能调用工具」而言【基本冗余】。
+    #      模型能调工具，靠的是 bind_tools 注入的 API ``tools`` 字段（即
+    #      registry.to_openai_schema() 的产物，见 agent_loop.py 绑定处），不是这段文字。
+    #      删掉这段，模型照样能调；保留它只是「动态生成、零维护、人类可读」的低成本取舍。
+    #   C. 子 Agent 清单 —— 「回显」里最值得保留的一项。子 Agent 不是一等公民工具
+    #      （不进 ``tools`` 字段），把「有哪些专员、各管什么」明写出来，对主 Agent 选对
+    #      delegate 的 subagent 参数确有帮助（虽然 delegate.description 内也嵌了一份）。
+    # ⚠️ 耦合点：BASE 里「你可以调用下面列出的工具」一句引用了 B；若要精简删 B，
+    #    需顺手改这句措辞，否则会出现「说有清单、下面却没有」。
+    # ──────────────────────────────────────────────────────────────────────
+
     # ① 从注册中心动态取出当前所有工具对象（顺序由 registry.names() 决定）。
     #    「动态注入」的意义：工具清单是运行时拼出来的，不是写死在提示里——
     #    新增/删除一个工具，这段提示会自动跟着变，无需手改文案（单一真相源）。
@@ -48,6 +63,7 @@ def build_system_prompt(
     if not tools:
         return BASE_SYSTEM_PROMPT  # 一个工具都没注册：只回基线提示，不拼空的「可用工具：」段
     # lines 是「一行一条」地攒提示内容，最后用换行拼成整段；空串 "" 用来制造空行分隔。
+    # 注：lines[0] 即上文说的【A】（必需）；下面这段「可用工具：」即【B】（对机制基本冗余）。
     lines = [BASE_SYSTEM_PROMPT, "", "可用工具："]
     for tool in tools:
         # 每个工具的说明书 = 它自己的 description（单一真相源）。
@@ -55,7 +71,8 @@ def build_system_prompt(
         # 想改某工具的说明，去改那个工具，而不是改这里。
         lines.append(f"- {tool.name}：{tool.description}")
 
-    # ② 子 Agent 清单（Phase 7）：仅当「主 registry 里有 delegate 工具」且「传了 subagents」时才渲染。
+    # ② 子 Agent 清单（即上文的【C】，「回显」里最值得保留的一项）（Phase 7）：
+    #    仅当「主 registry 里有 delegate 工具」且「传了 subagents」时才渲染。
     #    两个条件缺一不可——没有 delegate 工具，模型也无从委派，列清单只会徒增干扰。
     if subagents is not None and "delegate" in registry.names():
         members = subagents.all()
