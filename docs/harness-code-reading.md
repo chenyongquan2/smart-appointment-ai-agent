@@ -521,7 +521,7 @@ class SessionStore:
 
 代码逐条对回上面三个需求：① **会话隔离** = 用 `session_id` 当 dict 的 key，A、B 的 `history` 落在不同 value 里，内存上互不可见；② **低延迟** = `get_or_create` 先查内存，热会话命中即返回、不碰 DB；③ **重启恢复** = `append_turn` **双写**（内存 + DB），内存丢了还能靠 `_load_history` 从 DB 读回。一个易错点见 [session.py:41](../harness/runtime/session.py#L41)：`history` 用 `default_factory=list` 而非 `=[]`，否则所有 `SessionState` 实例会共享同一个列表（Python 可变默认值的经典坑）。
 
-> 想运用/改：换持久层就给 `SessionStore(repo=...)` 注入别的 repo（鸭子类型即可，传 `None` 就是纯内存）；这个注入点见 [chat_handler.py:62](../api/chat_handler.py#L62)、以及本站末尾 3.8 运用表。
+> 想运用/改：换持久层就给 `SessionStore(repo=...)` 注入别的 repo（鸭子类型即可，传 `None` 就是纯内存）；这个注入点见 [chat_handler.py:63](../api/chat_handler.py#L63)、以及本站末尾 3.8 运用表。
 
 ## 3.4 三层记忆（先想清楚「为什么需要」，再看代码）
 
@@ -539,16 +539,16 @@ class SessionStore:
 
 一句话抓住「升级关系」：**短期 = 这次对话的细节；摘要 = 这次对话的旧要点（压缩）；长期 = 跨对话的「这个人」**。三者都是同一个动作——「往这一轮 prompt 里补该补的上下文」——只是时间跨度和压缩程度递增。
 
-> 它们在哪汇合？在 [chat_handler.py:109-117](../api/chat_handler.py#L109)：短期出 `history`、长期出 `system_suffix`、摘要出 history 首条 `SystemMessage`，一起注入第 1 站的 `loop.run(...)`。也就是说，**这三层的产出，最终都变成喂给 LLM 的那段 prompt**。
+> 它们在哪汇合？在 [chat_handler.py:127-143](../api/chat_handler.py#L127)：长期出 `system_suffix`、读侧 `get_read_context` 出「摘要 SystemMessage + id>covered_upto 原文」，一起注入第 1 站的 `loop.run(...)`。也就是说，**这三层的产出，最终都变成喂给 LLM 的那段 prompt**。
 
 ### 再看代码：每层各自怎么实现
 
 **① 短期** — 只取最近 N 轮，转成 LangChain 消息
 
-> 📄 源码出处：[harness/memory/short_term.py:31-49](../harness/memory/short_term.py#L31)
+> 📄 源码出处：[harness/memory/short_term.py:34-49](../harness/memory/short_term.py#L34)
 
 ```python
-# short_term.py:39
+# short_term.py:42
 recent = history[-self.window_turns:] if self.window_turns > 0 else []   # 只取末尾 N 条
 for turn in recent:                          # 再逐条转成 LangChain 消息类型
     if turn.role == "user":      messages.append(HumanMessage(content=turn.content))
@@ -564,7 +564,7 @@ for turn in recent:                          # 再逐条转成 LangChain 消息�
 
 > 📄 源码出处：[harness/memory/summary.py](../harness/memory/summary.py)（`SummaryMemory` 协议 + `NoOpSummary` 桩 + `LLMSummaryMemory` 生产实现）、[summary_schema.py](../harness/memory/summary_schema.py)
 
-[`SummaryMemory`](../harness/memory/summary.py#L21) 协议与 [`NoOpSummary`](../harness/memory/summary.py#L42)（永远返回空串）**仍保留不动**——前者是契约、后者作降级/测试基线。真正干活的是新增的 [`LLMSummaryMemory`](../harness/memory/summary.py)。
+[`SummaryMemory`](../harness/memory/summary.py#L40) 协议与 [`NoOpSummary`](../harness/memory/summary.py#L53)（永远返回空串）**仍保留不动**——前者是契约、后者作降级/测试基线。真正干活的是新增的 [`LLMSummaryMemory`](../harness/memory/summary.py)。
 
 #### 先扫盲：`turn id` / `window_turns` / `covered_upto` 三个词（看代码前务必搞懂）
 
@@ -638,19 +638,19 @@ turn id │ 谁说的 │ 内容                       ← turn id = 每条消�
 ```
 请求开始 ─────────────────── 处理中 ─────────────── 回合收尾
    │                                                   │
- 读侧 get_summary_hint                          写侧 compact_if_needed
-  · 纯读缓存里的摘要，零 LLM 开销                 · 回复已流式发完后才算（不卡首 token）
-  · 注入 history 首条 SystemMessage              · 判触发 → 取前序摘要 → 压缩 → 写回缓存
+ 读侧 get_read_context                          写侧 compact_if_needed
+  · 纯读缓存摘要 + 取 id>covered_upto 原文，零 LLM   · 回复已流式发完后才算（不卡首 token）
+  · 注入 = 摘要 SystemMessage + 未覆盖原文          · 判触发 → 取前序摘要 → 压缩 → 写回缓存
                                                  · LLM 失败就不写缓存
-                                                   → 下次读侧取不到 → 自动退回纯窗口
+                                                   → 该段回合下次仍以原文注入（不丢，待重试）
 ```
 
 **看代码 · 写侧 `compact_if_needed`**（图 A+B+C 的落地，回合收尾时调）
 
-> 📄 源码出处：[harness/memory/summary.py:154-226](../harness/memory/summary.py#L154)（下方为省略 tracer / 部分异常分支的精简版，主干一字不差）
+> 📄 源码出处：[harness/memory/summary.py:207-279](../harness/memory/summary.py#L207)（下方为省略 tracer / 部分异常分支与 full_recompute 纠偏分支的精简版，主干一致）
 
 ```python
-# summary.py:154 —— 写侧：回合收尾时调（图 C 右端），判触发 → 滚动压缩 → 写缓存
+# summary.py:207 —— 写侧：回合收尾时调（图 C 右端），判触发 → 滚动压缩 → 写缓存
 async def compact_if_needed(self, session_id: str) -> None:
     rows = self._conversations.get_turns(session_id)   # 取带 id 的升序历史（游标要稳定 id，故从持久层读）
     out_of_window = rows[:-self.window_turns]           # 图 A：窗外 = 除最近 N 条外的更早回合
@@ -677,7 +677,7 @@ async def compact_if_needed(self, session_id: str) -> None:
     self._summaries.upsert_summary(session_id, summary_text, covered_to)    # 落库：新摘要 + 新游标
 ```
 
-`rows_to_summarize` 这一行（[summary.py:200](../harness/memory/summary.py#L200)）是图 B「滚动」的关键——**只挑 id 大于游标的回合**，老回合一律不再读（注：另有 `full_recompute` 分支会取**全部**窗外回合重算纠偏，故变量名不叫 `new_rows`）。真正压缩在 [`_summarize_rows`](../harness/memory/summary.py#L258)：把 `prior_summary`（已有摘要）与新回合一起喂给 `with_structured_output(ConversationSummary)` 的链，**强制模型按「关键实体 / 决策 / 未完成项 / 用户约束」字段填写**（[summary_schema.py](../harness/memory/summary_schema.py)），比自由文本摘要更不易丢约束。
+`rows_to_summarize` 这一行（[summary.py:253](../harness/memory/summary.py#L253)）是图 B「滚动」的关键——**只挑 id 大于游标的回合**，老回合一律不再读（注：另有 `full_recompute` 分支会取**全部**窗外回合重算纠偏，故变量名不叫 `new_rows`）。真正压缩在 [`_summarize_rows`](../harness/memory/summary.py#L311)：把 `prior_summary`（已有摘要）与新回合一起喂给 `with_structured_output(ConversationSummary)` 的链，**强制模型按「关键实体 / 决策 / 未完成项 / 用户约束」字段填写**（[summary_schema.py](../harness/memory/summary_schema.py)），比自由文本摘要更不易丢约束。
 
 > 💡 **`covered_upto` 到底是什么？**（代码里反复出现，先讲清）
 > 它是摘要的一个**书签 / 游标**，回答一句话："**这条摘要已经把历史压缩到第几条为止了？**" —— 值就是**被压进摘要的最后一条消息（`ConversationTurn`）的数据库自增 `id`**。
@@ -717,8 +717,8 @@ def get_read_context(self, session_id):
 [SystemMessage] 行为纲领 + 长期偏好
 [SystemMessage] ← 读侧注入的摘要 S2：「女技师 / 周末 / 推拿 / 60分钟」  ← 早期约束在这被接住！
 [Human U3]「几点关门」   ┐
-[AI A3]  「晚 10 点」     ├ 窗内最近 4 条（原文）
-[Human U4]「帮我约周六下午」┘   ← 注意：U1 早掉出窗口了
+[AI A3]  「晚 10 点」     ├ id>covered_upto 的原文（此刻 covered_upto=4，恰=窗内最近 4 条）
+[Human U4]「帮我约周六下午」┘   ← 注意：U1 早掉出窗口了，靠上面的摘要 S2 接住
 ```
 
 即使 U1（第 1 轮的「只要女技师」）已经滑出 4 条窗口、**原文不再出现**，它的约束已经被第 3 轮压进 S1、又被第 4 轮滚进 S2，于是第 4 轮模型**仍从摘要里看到「女技师」**——不会把男技师推给用户。这就是压缩层的价值：**用一条 SystemMessage 的成本，保住了本会被窗口丢弃的早期关键信息**。对比没有压缩层（`NoOpSummary`）时：第 4 轮的 messages 里既没有 U1 原文、也没有摘要，"女技师"彻底失忆。
@@ -755,19 +755,19 @@ except Exception as exc:                    # long_term.py:48 —— 读失败�
                       + [ HumanMessage(本轮用户输入) ]            ← 这一句
 ```
 
-**跟着会话 `demo-1`（一位老顾客，长期偏好里有「张三 / 60 分钟」）走两轮**，看 `SessionStore` 里的 `history` 怎么长大、每轮又怎么被重新喂回（编号对应 [chat_handler.py:101-147](../api/chat_handler.py#L101) 的 ①→⑦）：
+**跟着会话 `demo-1`（一位老顾客，长期偏好里有「张三 / 60 分钟」）走两轮**，看 `SessionStore` 里的 `history` 怎么长大、每轮又怎么被重新喂回（编号对应 [chat_handler.py:120-173](../api/chat_handler.py#L120) 的 ①→⑦）：
 
 | 步骤 | 第 1 轮：用户说「约明天下午肩颈按摩」 | 第 2 轮：用户说「改成后天」 |
 |---|---|---|
 | ① `get_or_create(sid)` | 新会话，`history = []` | 取到 **`history = [U1, A1]`**（上一轮留下的；若服务重启过，则 `_load_history` 从 DB 读回） |
-| ② 取记忆（**在写本轮之前**） | 短期 `to_messages([]) → []`；长期 hint → `"…技师：张三；60分钟"` | 短期 `to_messages([U1,A1]) → [Human(U1), AI(A1)]` ← **上一轮被重新喂回**；长期 hint 同上 |
+| ② 取记忆（**在写本轮之前**） | `get_read_context` → 无摘要、无历史 → `[]`；长期 hint → `"…技师：张三；60分钟"` | `get_read_context` → 无摘要(covered_upto=0)、未覆盖原文 = `[Human(U1), AI(A1)]` ← **上一轮被重新喂回**；长期 hint 同上 |
 | ③ `append_turn(user)` | `history = [U1]` | `history = [U1, A1, U2]` |
 | ④ `loop.run(input, history, suffix)` | 模型看见：`System(基线+偏好)` + `[]` + `Human("约明天下午肩颈")` → 可据偏好主动建议张三/60分钟 → 回复 `A1` | 模型看见：`System(基线+偏好)` + `[Human(U1), AI(A1)]` + `Human("改成后天")` → **从 history 里知道「改」的是「明天下午肩颈」** → 回复 `A2` |
 | ⑤ `append_turn(assistant)` | `history = [U1, A1]` | `history = [U1, A1, U2, A2]` |
 
 **这就是「串起来」的全部**——三件事每轮循环往复：
 
-1. **取**（②）：短期从 `history` 裁最近 N 轮、长期查偏好 → 凑齐 prompt 的上文与 suffix。
+1. **取**（②）：`get_read_context` 取「摘要 + id>covered_upto 原文」、长期查偏好 → 凑齐 prompt 的上文与 suffix（短对话无摘要时即全部历史原文）。
 2. **跑**（④）：把这轮输入连同上文一起喂给无状态的 LLM，它「看起来记得」其实是因为上一轮被重新喂了回去。
 3. **存**（③⑤）：用户输入与助手回复都写回 `SessionStore`（内存 + DB），**让下一轮的 ① 能取到**——闭环就在这里合上。
 
@@ -901,7 +901,7 @@ return "\n".join(lines)                                      # 各行换行拼�
 **动线 B：短期裁窗**——长历史被裁到只剩最近 N 条
 
 > 启动测试：[`test_short_term_window_truncates_to_recent`](../tests/test_memory.py#L26)（造 6 条、`window_turns=3`，期望只剩 `m3/m4/m5`）。
-> 在 [short_term.py:39](../harness/memory/short_term.py#L39) `recent = history[-self.window_turns:]` 打点——看 6 条被切到末尾 3 条；F10 后看 `Turn` 如何逐条变成 `HumanMessage/AIMessage`（对照 [`test_short_term_maps_roles_to_messages`](../tests/test_memory.py#L18)）。
+> 在 [short_term.py:42](../harness/memory/short_term.py#L42) `recent = history[-self.window_turns:]` 打点——看 6 条被切到末尾 3 条；F10 后看 `Turn` 如何逐条变成 `HumanMessage/AIMessage`（对照 [`test_short_term_maps_roles_to_messages`](../tests/test_memory.py#L18)）。
 
 **动线 C：长期偏好「失败不崩」**
 
@@ -930,14 +930,14 @@ uv run python scripts/debug_memory_flow.py     # 直接看打印出的记忆流
 
 | 断点 | 位置 | 看什么（以 demo-1 第 2 轮为例） |
 |---|---|---|
-| 1 | [chat_handler.py:104](../api/chat_handler.py#L104) `get_or_create(sid)` | `session.history` = 第 1 轮留下的 `[U1, A1]`（demo-2 时为 `[]`） |
-| 2 | [chat_handler.py:109](../api/chat_handler.py#L109) `to_messages(...)` | **F11 步入** [short_term.py:39](../harness/memory/short_term.py#L39) 看裁窗；回来 `history_msgs` = `[Human(U1), AI(A1)]` |
-| 3 | [chat_handler.py:110](../api/chat_handler.py#L110) `build_preference_hint(...)` | **F11 步入** [long_term.py:44](../harness/memory/long_term.py#L44)；回来 `preference_hint` 非空 |
-| 3.5 | [chat_handler.py:115](../api/chat_handler.py#L115) `get_summary_hint(sid)` | 读侧纯读摘要缓存（短对话时为空串）；非空则注入 history 首条（见动线 E） |
-| 4 | [chat_handler.py:121](../api/chat_handler.py#L121) `append_turn(user)` | history 2 条 → 3 条 |
-| 5 | [chat_handler.py:126](../api/chat_handler.py#L126) `_agent_loop.run(...)` | **F11 步入** → 回到第 1 站，看 `messages = [System(+suffix)] + history + Human` 的组装 |
-| 6 | [chat_handler.py:141](../api/chat_handler.py#L141) `if reply_text:` | 回写 assistant → history 变 4 条 |
-| 7 | [chat_handler.py:147](../api/chat_handler.py#L147) `await _summary.compact_if_needed(sid)` | 回合收尾压缩（写侧，见动线 E）；短对话未触发即快速返回 |
+| 1 | [chat_handler.py:123](../api/chat_handler.py#L123) `get_or_create(sid)` | `session.history` = 第 1 轮留下的 `[U1, A1]`（demo-2 时为 `[]`） |
+| 2 | [chat_handler.py:127](../api/chat_handler.py#L127) `build_preference_hint(...)` | **F11 步入** [long_term.py:44](../harness/memory/long_term.py#L44)；回来 `preference_hint` 非空 |
+| 3 | [chat_handler.py:134](../api/chat_handler.py#L134) `get_read_context(sid)` | 读侧主路径：返回 `(摘要, id>covered_upto 原文)`；摘要非空作 SystemMessage 置 history 首条（见动线 E）。短对话无摘要 → uncovered=全部历史原文 |
+| — | [chat_handler.py:140](../api/chat_handler.py#L140) `_short_term.to_messages(...)` | 仅 `except` 兜底分支才用（repo 读失败时退回短期窗口 + `get_summary_hint`） |
+| 4 | [chat_handler.py:147](../api/chat_handler.py#L147) `append_turn(user)` | history 2 条 → 3 条 |
+| 5 | [chat_handler.py:152](../api/chat_handler.py#L152) `_agent_loop.run(...)` | **F11 步入** → 回到第 1 站，看 `messages = [System(+suffix)] + history + Human` 的组装 |
+| 6 | [chat_handler.py:167](../api/chat_handler.py#L167) `if reply_text:` | 回写 assistant → history 变 4 条 |
+| 7 | [chat_handler.py:173](../api/chat_handler.py#L173) `await _summary.compact_if_needed(sid)` | 回合收尾压缩（写侧，见动线 E）；短对话未触发即快速返回 |
 
 **改一个参数看变化**（呼应下方 3.8 运用表）：把脚本里 `ShortTermMemory(window_turns=10)` 改成 `window_turns=1` 重跑——demo-1 第 2 轮的 LLM 就**收不到第 1 轮**了（窗口只留最近 1 条），直观验证「调 `window_turns` 让助手记更久/更短」。
 
@@ -953,26 +953,26 @@ uv run python scripts/debug_memory_flow.py     # 直接看打印出的记忆流
 
 | 断点 | 位置 | F5 到达后看什么 |
 |---|---|---|
-| 1 | [summary.py:171](../harness/memory/summary.py#L171) `out_of_window = rows[:-self.window_turns]` | 看 `rows` 6 条、`out_of_window` 被切成 id 1..4（图 A 的「窗外」） |
-| 2 | [summary.py:200](../harness/memory/summary.py#L200) `rows_to_summarize = [r for r in out_of_window if r["id"] > covered_upto]` | 首次 `covered_upto=0` → `rows_to_summarize` = 全部窗外 4 条 |
-| 3 | [summary.py:208](../harness/memory/summary.py#L208) `approx_tokens = self._estimate_tokens(rows_to_summarize)` | F10 越过阈值判断：阈值=0 → 不 return，继续压缩 |
-| 4 | [summary.py:218](../harness/memory/summary.py#L218) `summary_text = await self._summarize_rows(...)` | **F11 步入** `_summarize_rows`（[:258](../harness/memory/summary.py#L258)）→ 看 `prior_summary=None`、消息只含新回合；返回 render 后的摘要文本 |
-| 5 | [summary.py:226](../harness/memory/summary.py#L226) `self._summaries.upsert_summary(...)` | 看 `covered_to=4`（末条窗外 id）落库——这就是下次的游标 |
+| 1 | [summary.py:224](../harness/memory/summary.py#L224) `out_of_window = rows[:-self.window_turns]` | 看 `rows` 6 条、`out_of_window` 被切成 id 1..4（图 A 的「窗外」） |
+| 2 | [summary.py:253](../harness/memory/summary.py#L253) `rows_to_summarize = [r for r in out_of_window if r["id"] > covered_upto]` | 首次 `covered_upto=0` → `rows_to_summarize` = 全部窗外 4 条 |
+| 3 | [summary.py:261](../harness/memory/summary.py#L261) `approx_tokens = self._estimate_tokens(rows_to_summarize)` | F10 越过阈值判断：阈值=0 → 不 return，继续压缩 |
+| 4 | [summary.py:271](../harness/memory/summary.py#L271) `summary_text = await self._summarize_rows(...)` | **F11 步入** `_summarize_rows`（[:311](../harness/memory/summary.py#L311)）→ 看 `prior_summary=None`、消息只含新回合；返回 render 后的摘要文本 |
+| 5 | [summary.py:279](../harness/memory/summary.py#L279) `self._summaries.upsert_summary(...)` | 看 `covered_to=4`（末条窗外 id）落库——这就是下次的游标 |
 
 **E2 · 滚动并入**（图 B：只喂「上次摘要 + 新出窗回合」）
 
 > 启动测试：[`test_rolling_includes_prior_summary_and_only_new_turns`](../tests/test_summary_memory.py)（预置缓存 `covered_upto=2`）。
-> 在 [summary.py:200](../harness/memory/summary.py#L200) 打点：看 `rows_to_summarize` **只含 id 3、4**（id≤2 的老回合被游标挡掉，不再重读）；F11 进 `_summarize_rows` 看 `prior_summary` 已是上次摘要文本——印证「在上次结论上累积」。
+> 在 [summary.py:253](../harness/memory/summary.py#L253) 打点：看 `rows_to_summarize` **只含 id 3、4**（id≤2 的老回合被游标挡掉，不再重读）；F11 进 `_summarize_rows` 看 `prior_summary` 已是上次摘要文本——印证「在上次结论上累积」。
 
 **E3 · 缓存命中，零 LLM**（图 C 的省钱路径）
 
 > 启动测试：[`test_cache_hit_skips_llm`](../tests/test_summary_memory.py)（预置 `covered_upto=4`，已覆盖全部窗外）。
-> 在 [summary.py:204](../harness/memory/summary.py#L204) `if not rows_to_summarize:` 打点：`rows_to_summarize` 为空 → 直接 return，**根本不走到 LLM**（fake chain 的 `calls` 保持 0）。
+> 在 [summary.py:257](../harness/memory/summary.py#L257) `if not rows_to_summarize:` 打点：`rows_to_summarize` 为空 → 直接 return，**根本不走到 LLM**（fake chain 的 `calls` 保持 0）。
 
 **E4 · LLM 失败 → 优雅降级**（图 C 右下：不写缓存 → 读侧退回纯窗口）
 
 > 启动测试：[`test_llm_failure_degrades_without_crash`](../tests/test_summary_memory.py)（fake chain 抛 `asyncio.TimeoutError`）。
-> 在 [summary.py:218](../harness/memory/summary.py#L218) 打点并 F10 越过：看 `GuardrailExhausted` 被接住、**不写缓存、不抛**；再看 `get_summary_hint` 返回 `""`——压缩失败完全等价于「这轮没摘要」，主流程毫发无伤。
+> 在 [summary.py:271](../harness/memory/summary.py#L271) 打点并 F10 越过：看 `GuardrailExhausted` 被接住、**不写缓存、不抛**；再看 `get_summary_hint` 返回 `""`——压缩失败完全等价于「这轮没新摘要」，主流程毫发无伤（读侧 `get_read_context` 仍会把 id>covered_upto 原文注入，不丢）。
 
 > 想看读侧在真实 `chat_handler` 里如何把摘要注入 history 首条、写侧如何在回合收尾被调用，见第 7 站端到端动线 + [`test_chat_handler_e2e.py`](../tests/test_chat_handler_e2e.py) 的 `test_compaction_runs_after_assistant_writeback`（断言压缩发生在 assistant 回写之后）。
 
@@ -986,16 +986,16 @@ uv run python scripts/debug_memory_flow.py     # 直接看打印出的记忆流
 app.py:119   app = create_app()                          ← FastAPI 应用（uvicorn 跑在 :8001）
   └ app.py:105   app.include_router(web_router)
       └ web/routes.py:37   POST /chat/stream → ProcessUserInput_stream(...)   ← 真实 HTTP 端点
-          └ api/chat_handler.py:79   ProcessUserInput_stream
+          └ api/chat_handler.py:98   ProcessUserInput_stream
               ├ _session_store.get_or_create        ← 本站 SessionStore（会话隔离）
-              ├ _short_term.to_messages             ← 本站 短期记忆（最近 N 轮）
               ├ _long_term.build_preference_hint    ← 本站 长期偏好（跨会话）
-              ├ _summary.get_summary_hint           ← 本站 摘要压缩 读侧（注入 history 首条）
+              ├ _summary.get_read_context           ← 本站 摘要压缩 读侧（摘要 + id>covered_upto 原文）
+              │   （repo 读失败时退回 _short_term.to_messages + get_summary_hint 兜底）
               ├ _agent_loop.run(history=, system_suffix=)   ← 第 1 站 主循环
               └ _summary.compact_if_needed          ← 本站 摘要压缩 写侧（回合收尾）
 ```
 
-涉及文件：[app.py:105](../app.py#L105) → [web/routes.py:37](../web/routes.py#L37) → [chat_handler.py:79](../api/chat_handler.py#L79)。这些记忆组件在 [chat_handler.py:60-76](../api/chat_handler.py#L60) 作为**模块级单例**建好（含 `_summary` 摘要压缩），被所有请求共享（会话隔离靠 `session_id`，不是每人一套对象）。
+涉及文件：[app.py:105](../app.py#L105) → [web/routes.py:37](../web/routes.py#L37) → [chat_handler.py:98](../api/chat_handler.py#L98)。这些记忆组件在 [chat_handler.py:60-76](../api/chat_handler.py#L60) 作为**模块级单例**建好（含 `_summary` 摘要压缩），被所有请求共享（会话隔离靠 `session_id`，不是每人一套对象）。
 
 **所以「运用」对你而言不是「接进去」（已接好），而是下面两件事：**
 
@@ -1448,9 +1448,9 @@ _main_registry.register(_delegate_tool)   # ☜ 主 Agent 手里「只有」dele
   ▼
 api/chat_handler.py  ProcessUserInput_stream            （本站主角：编排）
   ├─① session.py        get_or_create(sid)              取该会话独立状态        ← 第 3 站
-  ├─② short_term.py     to_messages(history)            最近 N 轮 → 上下文        ← 第 3 站
-  │   long_term.py      build_preference_hint(user_id)  跨会话偏好 → system_suffix ← 第 3 站
-  │   summary.py        get_summary_hint(sid)           读侧纯读摘要 → history 首条 ← 第 3 站 ②
+  ├─② long_term.py      build_preference_hint(user_id)  跨会话偏好 → system_suffix ← 第 3 站
+  │   summary.py        get_read_context(sid)           摘要 + id>covered_upto 原文 → 上下文 ← 第 3 站 ②
+  │     （repo 读失败兜底：short_term.to_messages + get_summary_hint）
   ├─③ session.py        append_turn(sid,"user",...)     先记用户输入
   ├─④ agent_loop.py     run(input, history, suffix)     驱动 TAO 循环            ← 第 1 站
   │     └─ registry.dispatch ─▶ delegate ─▶ 子 Agent ─▶ subset 工具 ─▶ services/   ← 第 2/6 站
@@ -1462,26 +1462,27 @@ api/chat_handler.py  ProcessUserInput_stream            （本站主角：编排
 
 ## 7.3 关键代码 ①：一条消息的完整路径
 
-> 📄 源码出处：[api/chat_handler.py:79-147](../api/chat_handler.py#L79)
+> 📄 源码出处：[api/chat_handler.py:98-173](../api/chat_handler.py#L98)
 
 ```python
-# chat_handler.py:79
+# chat_handler.py:98
 async def ProcessUserInput_stream(user_input, state=None, context=None, session_id=None):
     sid = session_id or str(uuid.uuid4())          # 没传 session_id 就新开一个会话
     session = _session_store.get_or_create(sid)    # ① 取该会话的独立状态（第 3 站）
 
     # ② 组装记忆：在「写入本轮输入之前」先取历史——否则当前这句会被当成历史回放
-    history_msgs = _short_term.to_messages(session.history)
-    preference_hint = _long_term.build_preference_hint(session.user_id)
-    summary_hint = _summary.get_summary_hint(sid)         # ②.5 读侧：纯读摘要缓存（零 LLM，第 3 站 ②）
-    if summary_hint:                                       #      非空则作独立 SystemMessage 置 history 首条
-        history_msgs = [SystemMessage(content=summary_hint)] + history_msgs
+    preference_hint = _long_term.build_preference_hint(session.user_id)   # 长期偏好 → system_suffix
+    summary_text, uncovered = _summary.get_read_context(sid)  # ②读侧：摘要 + id>covered_upto 原文（零 LLM，无盲区）
+    history_msgs = _turns_to_messages(uncovered)              #   未覆盖回合 → 原文消息
+    if summary_text:                                          #   摘要非空则作独立 SystemMessage 置 history 首条
+        history_msgs = [SystemMessage(content=summary_text)] + history_msgs
+    # （以上为主路径；repo 读失败时 except 退回 _short_term 窗口 + get_summary_hint 兜底）
     _session_store.append_turn(sid, "user", user_input)   # ③ 之后再把本轮用户输入记入历史
 
     reply_text = ""
     async for token in _agent_loop.run(            # ④ 驱动主循环（第 1 站；内部用到 2/4/5/6 站）
         user_input, session_id=sid,
-        history=history_msgs,                      # 短期记忆 + 摘要作为上下文注入
+        history=history_msgs,                      # 摘要 + 未覆盖原文作为上下文注入
         system_suffix=preference_hint,             # 长期偏好拼到系统提示末尾
     ):
         if token.startswith("[REPLY]"):            # ⑤ 从流式产出里挑出最终回复那条
@@ -1526,17 +1527,17 @@ def tool_call_correctness(results) -> Metric:
 
 | 断点 | 位置 | 看什么 |
 |---|---|---|
-| 1 | [chat_handler.py:109](../api/chat_handler.py#L109) `history_msgs = _short_term.to_messages(...)` | 第二轮时 `session.history` 已含第一轮 4 条；注入的 `history_msgs` 即上下文 |
-| 2 | [chat_handler.py:121](../api/chat_handler.py#L121) `append_turn(sid, "user", ...)` | **在取历史之后**才写本轮输入（顺序关键） |
-| 3 | [chat_handler.py:126](../api/chat_handler.py#L126) `async for token in _agent_loop.run(...)` | **F11 步入**——直接进第 1 站的 `AgentLoop.run` |
-| 4 | [chat_handler.py:141](../api/chat_handler.py#L141) `if reply_text:` | 回写 assistant 回复，下一轮才能续上 |
-| 5 | [chat_handler.py:147](../api/chat_handler.py#L147) `await _summary.compact_if_needed(sid)` | 回合收尾压缩（写侧）；细看压缩内部走第 3 站动线 E |
+| 1 | [chat_handler.py:134](../api/chat_handler.py#L134) `summary_text, uncovered = _summary.get_read_context(...)` | 第二轮时返回 `(摘要, id>covered_upto 原文)`；拼成注入上下文 |
+| 2 | [chat_handler.py:147](../api/chat_handler.py#L147) `append_turn(sid, "user", ...)` | **在取历史之后**才写本轮输入（顺序关键） |
+| 3 | [chat_handler.py:152](../api/chat_handler.py#L152) `async for token in _agent_loop.run(...)` | **F11 步入**——直接进第 1 站的 `AgentLoop.run` |
+| 4 | [chat_handler.py:167](../api/chat_handler.py#L167) `if reply_text:` | 回写 assistant 回复，下一轮才能续上 |
+| 5 | [chat_handler.py:173](../api/chat_handler.py#L173) `await _summary.compact_if_needed(sid)` | 回合收尾压缩（写侧）；细看压缩内部走第 3 站动线 E |
 
 > 对照隔离：[`test_two_sessions_isolated`](../tests/test_chat_handler_e2e.py#L89)（会话 B 的上下文不含会话 A 任何内容）、[`test_session_id_generated_when_absent`](../tests/test_chat_handler_e2e.py#L107)（不传 id 也能跑）。
 
 **动线 B：真服务端到端**（需 `.env` 配好 key）
 
-> 用「FastAPI: 调试整个应用」配置，在 [chat_handler.py:104](../api/chat_handler.py#L104) 打点 → 前端发一条消息 → 单步走完整条链路（会话隔离 → 记忆注入 → loop → 回写 → 收尾压缩）。这是把 7 站串起来的总演练。看真实 trace：`uv run pytest tests/test_chat_handler_e2e.py -s`。
+> 用「FastAPI: 调试整个应用」配置，在 [chat_handler.py:123](../api/chat_handler.py#L123) 打点 → 前端发一条消息 → 单步走完整条链路（会话隔离 → 记忆注入 → loop → 回写 → 收尾压缩）。这是把 7 站串起来的总演练。看真实 trace：`uv run pytest tests/test_chat_handler_e2e.py -s`。
 
 **动线 C：评估打分 + N/A 逻辑**
 
