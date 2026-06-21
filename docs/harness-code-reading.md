@@ -706,7 +706,7 @@ def get_read_context(self, session_id):
 
 前面讲了摘要怎么**算/存/取**，这里补最后一环——**取到的摘要到底怎么喂给 LLM、长什么样**。分三步：
 
-**① 结构化对象 → 文本**：缓存里 `summary_text` 不是裸 JSON，而是 `ConversationSummary.render()`（[summary_schema.py](../harness/memory/summary_schema.py)）渲染出的**分段提示文本**——压缩时就已 render 好落库（[summary.py `_summarize_rows`](../harness/memory/summary.py#L311) 末尾 `return summary.render()`）。格式形如：
+**① 结构化对象 → 文本**：缓存里 `summary_text` 不是裸 JSON，而是 `ConversationSummary.render()`（见 [`summary_schema.py`](../harness/memory/summary_schema.py)）渲染出的**分段提示文本**——压缩时就已 render 好落库（[`_summarize_rows`](../harness/memory/summary.py#L311) 末尾 `return summary.render()`）。格式形如：
 
 ```
 以下是更早对话的摘要（窗口外较旧回合，已压缩）：
@@ -723,7 +723,7 @@ def get_read_context(self, session_id):
 
 > 为何分这四段、且约束/未完成项靠前：让模型一眼分清「已定 / 未定 / 硬约束」，**尤其别违背早期约束**（render 里 `user_constraints`、`open_items` 刻意排在前面）。
 
-**② 文本 → 一条 `SystemMessage`，置于 history 首条**：编排层（[chat_handler.py:136-137](../api/chat_handler.py#L136)）把这段文本包成**独立的 `SystemMessage`**，插到 `history` 最前——它和「系统提示」「长期偏好（system_suffix）」「未覆盖原文」是**各自独立**的消息，互不混淆。
+**② 文本 → 一条 `SystemMessage`，置于 history 首条**：编排层（见 [`chat_handler.py:136`](../api/chat_handler.py#L136)）把这段文本包成**独立的 `SystemMessage`**，插到 `history` 最前——它和「系统提示」「长期偏好（system_suffix）」「未覆盖原文」是**各自独立**的消息，互不混淆。
 
 **③ LLM 这一轮实际收到的 `messages`**（第 1 站 `AgentLoop` 组装，顺序固定）：
 
