@@ -14,10 +14,11 @@
 ``[THOUGHT]`` / ``[REPLY]`` / ``[ERROR]`` 前缀语义，前端无需改动既有解析。
 """
 
+import logging
 import uuid
-from typing import Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from config.model_provider import create_chat_model
 from db.db_router import DatabaseRouter
@@ -71,9 +72,27 @@ _summary = LLMSummaryMemory(
     window_turns=_WINDOW_TURNS,
 )
 
+logger = logging.getLogger(__name__)
+
 # 与 AgentLoop 的约定前缀：loop 把「最终回复」以 [REPLY]... 形式 yield 出来，
 # 本模块据此从一串 token 里择出真正的回复文本（其余如 [THOUGHT] 是过程，不回写历史）。
 _REPLY_PREFIX = "[REPLY]"
+
+
+def _turns_to_messages(turns: List[Any]) -> List[BaseMessage]:
+    """把回合（dict 含 role/content）转成 LangChain 消息列表；未知 role 跳过。
+
+    供读侧把 ``get_read_context`` 返回的「未覆盖原文回合」注入上下文
+    （change: fix-compaction-gap-blindspot）。
+    """
+    msgs: List[BaseMessage] = []
+    for t in turns:
+        role, content = t.get("role"), t.get("content", "")
+        if role == "user":
+            msgs.append(HumanMessage(content=content))
+        elif role == "assistant":
+            msgs.append(AIMessage(content=content))
+    return msgs
 
 
 async def ProcessUserInput_stream(
@@ -104,17 +123,24 @@ async def ProcessUserInput_stream(
     session = _session_store.get_or_create(sid)
 
     # ② 记忆注入（在「写入本轮输入之前」先取历史，避免把当前这句也当成历史回放）：
-    #    - 短期：把最近 N 轮历史转成 BaseMessage 列表，喂给 loop 当上下文。
     #    - 长期：跨会话的用户偏好，作为「系统提示补充」（system_suffix）。
-    history_msgs = _short_term.to_messages(session.history)
     preference_hint = _long_term.build_preference_hint(session.user_id)
 
-    #    - 摘要（记忆压缩）：读侧纯读上一轮预算好的摘要缓存（不调 LLM）。非空则作为独立
-    #      SystemMessage 置于 history 首条——落在「系统提示之后、短期窗口之前」，与长期偏好
-    #      （走 system_suffix）物理分开。摘要承载被短期窗口裁掉的早期约束/未完成槽位。
-    summary_hint = _summary.get_summary_hint(sid)
-    if summary_hint:
-        history_msgs = [SystemMessage(content=summary_hint)] + history_msgs
+    #    - 短期 + 摘要（记忆压缩，无盲区，fix-compaction-gap-blindspot）：
+    #      可见性分界 = covered_upto——摘要(id≤covered_upto) 作独立 SystemMessage 置 history 首条，
+    #      其后接「全部未覆盖原文(id>covered_upto)」。没进摘要的一律保留原文 → 不存在「掉出窗口
+    #      又没进摘要」的夹缝盲区。窗外原文条数有界（≈window+min_old），不会无界膨胀。
+    try:
+        summary_text, uncovered = _summary.get_read_context(sid)
+        history_msgs = _turns_to_messages(uncovered)
+        if summary_text:
+            history_msgs = [SystemMessage(content=summary_text)] + history_msgs
+    except Exception:  # noqa: BLE001 —— 持久层抖动等：退回旧路径（短期窗口 + 摘要 hint）
+        logger.warning("读侧 get_read_context 失败，退回短期窗口兜底", exc_info=True)
+        history_msgs = _short_term.to_messages(session.history)
+        summary_hint = _summary.get_summary_hint(sid)
+        if summary_hint:
+            history_msgs = [SystemMessage(content=summary_hint)] + history_msgs
 
     # ③ 先写「用户输入」入会话（内存窗口 + 持久化 SQLite）。
     #    注意：必须在 ② 取完历史「之后」再写，否则当前这句会污染本轮注入的历史。

@@ -71,6 +71,31 @@ class ConversationRepository:
                 ).all()
             return [self._turn_to_dict(row) for row in rows]
 
+    def get_turns_after(self, session_id: str, after_id: int) -> List[Dict[str, Any]]:
+        """读取某会话 id 大于 ``after_id`` 的回合，按 id 升序返回。
+
+        供记忆压缩读侧取「尚未被摘要覆盖（id > covered_upto）」的回合原文
+        （change: fix-compaction-gap-blindspot）。``after_id=0`` 即返回全部历史。
+
+        Args:
+            session_id: 会话 ID
+            after_id: 游标；只返回 id 严格大于此值的回合
+
+        Returns:
+            对话回合列表（每项含 id / role / content / created_at），按 id 升序。
+        """
+        with self.session_manager.session_scope() as session:
+            rows = (
+                session.query(ConversationTurn)
+                .filter(
+                    ConversationTurn.session_id == session_id,
+                    ConversationTurn.id > after_id,
+                )
+                .order_by(ConversationTurn.id.asc())
+                .all()
+            )
+            return [self._turn_to_dict(row) for row in rows]
+
     def _turn_to_dict(self, turn: ConversationTurn) -> Dict[str, Any]:
         """将回合对象转换为字典。"""
         return {

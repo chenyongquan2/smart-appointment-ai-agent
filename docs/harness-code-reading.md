@@ -595,6 +595,8 @@ turn id │ 谁说的 │ 内容                       ← turn id = 每条消�
 
 图上半是某一刻的快照：消息按 `turn id` 排开，`window_turns` 罩住最近 4 条（绿，喂 AI），`covered_upto` 书签把窗外切成「已压入摘要（蓝）」与「夹缝·待压（黄）」；摘要单独存一张表、原消息不删。图下半是触发节奏：压完夹缝归零，每回合 +2 条，攒到 `min_old_turns`（默认 4）即再压。**关键公式：夹缝条数 = 自上次压缩以来新增的消息数。**
 
+> 🔧 **读侧无盲区**（change `fix-compaction-gap-blindspot`）：图里黄色「夹缝」回合（掉出窗口、还没压进摘要）**也会以原文注入**给 LLM——读侧真正的可见性分界是 `covered_upto`，不是窗口：**没进摘要的(id>covered_upto)一律原文保留**。于是 `window_turns` 只决定「写侧何时压缩（节奏）」，不再是「读侧能看几条」的上限。读侧据此从持久层取 `id>covered_upto` 的原文（见 `LLMSummaryMemory.get_read_context` 与 `ConversationRepository.get_turns_after`），与摘要拼成：系统提示 → 摘要(id≤covered_upto) → 未覆盖原文(id>covered_upto) → 当前输入。
+
 **图 A · 压什么**：窗外旧轮 →（攒够量）→ 一段结构化摘要
 
 ```
@@ -680,16 +682,21 @@ async def compact_if_needed(self, session_id: str) -> None:
 > - 为什么用 turn id 而不是「第几条」计数：id 单调递增、抗并发，"id 之后即新增"语义稳定（grill 决策 Q4，见归档 design.md D5）。
 > - 一句类比：像**看书的书签**——只记「读到第 X 页」，下次从 X+1 页接着读，不必从头翻。
 
-**看代码 · 读侧 `get_summary_hint`**（图 C 左端，纯读缓存、零 LLM）
+**看代码 · 读侧组装 `get_read_context`**（图 C 左端，纯读缓存、零 LLM；无盲区版）
 
 ```python
-# summary.py:138 —— 读侧：请求开始时调，不碰 LLM（摘要是上一轮写侧预先算好落库的）
-def get_summary_hint(self, session_id: str) -> str:
-    row = self._summaries.get_summary(session_id)
-    return row.get("summary_text") or ""   # 有 → 返回缓存的摘要文本；无 / 读失败 → 空串（退回纯窗口）
+# summary.py —— 读侧：请求开始时调，不碰 LLM。返回 (摘要文本, 未覆盖原文回合)
+def get_read_context(self, session_id):
+    row = self._summaries.get_summary(session_id)          # (摘要, covered_upto)；无则 ("",0)
+    summary_text = (row.get("summary_text") or "") if row else ""
+    covered_upto = row["covered_upto"] if row else 0
+    uncovered = self._conversations.get_turns_after(session_id, covered_upto)  # id>covered_upto 的原文
+    return summary_text, uncovered                          # 编排层：摘要作 SystemMessage + uncovered 原文
 ```
 
-读侧能这么轻，正因为「算」已在上一轮回合收尾时由写侧做完、落进了 `ConversationSummary` 表（[conversation_summary_repository.py](../db/repositories/conversation_summary_repository.py)）。这就是图 C 读写分离的收益：用户这一轮**零等待**地拿到压缩好的早期上下文。
+可见性分界是 `covered_upto`：id ≤ 它的以摘要注入、id > 它的一律原文注入——**没进摘要的必有原文，不存在盲区**（change `fix-compaction-gap-blindspot`）。读侧能这么轻，正因为「算」已在上一轮回合收尾时由写侧做完、落进了 `ConversationSummary` 表（[conversation_summary_repository.py](../db/repositories/conversation_summary_repository.py)）。
+
+> 注：更早的 `get_summary_hint`（只返回摘要文本、配合短期窗口取原文）仍保留，作为持久层读失败时的**兜底路径**。
 
 **跟着一个真实长对话走一遍**（最直观的方式）。为方便看，把窗口设小到 **N=4**（即只保留最近 4 条消息 = 2 问 2 答），触发阈值也设低。每条消息一个自增 `id`。盯住一件事：**第 1 轮说的「只要女技师」，到第 4 轮早就掉出 4 条窗口了，凭什么模型还记得？**
 
