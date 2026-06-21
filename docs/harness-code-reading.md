@@ -1083,7 +1083,7 @@ def end_span(self, span):                      # tracer.py:85
 - [ ] [subagents/base.py](../harness/subagents/base.py) — 子 Agent 基类
 - [ ] [subagents/delegate.py](../harness/subagents/delegate.py) — **关键：`delegate` 本身就是一个工具**
 - [ ] [subagents/registry.py](../harness/subagents/registry.py) + 三个具体子 Agent（appointment / consultant / user_behavior）
-- [ ] [skills/base.py](../harness/skills/base.py) + [skills/registry.py](../harness/skills/registry.py)
+- [ ] [skills/base.py](../harness/skills/base.py) + [skills/registry.py](../harness/skills/registry.py) — **骨架、未接入，扫一眼即可**（详见 6.5）
 - [ ] 测试 [test_subagents.py](../tests/test_subagents.py) + [test_skills.py](../tests/test_skills.py) + [test_system_prompt_subagents.py](../tests/test_system_prompt_subagents.py)
 
 ## 6.3 关键代码 ①：delegate 本身就是一个工具
@@ -1131,6 +1131,20 @@ async def run(self, task, full_registry, llm, session_id=None) -> str:
 
 **为什么是「复用而非重写」**：子 Agent 复用 `AgentLoop`，连带护栏/tracer/错误隔离**全继承**，无需再实现一遍。**为什么要切工具子集**：这是子 Agent 间的**能力隔离**(最小权限)——`consultant` 只拿到 `search_knowledge`、拿不到 `create_appointment`,从根上杜绝「咨询专员误下单」。**为什么只回最终文本**：子 Agent 在自己独立的 `messages` 里跑,中间思考/工具调用都困在内部,只把 `[REPLY]` 那条交还——即「上下文隔离」,主 Agent 经第 1 站喂回路径把它变成一条 `ToolMessage`。
 
+### 看图：一次 delegate 调用的真实调用栈
+
+文字不如看「跑起来长什么样」。下图是一条用户消息（「帮我约明天的技师」）的**真实调用栈按时间展开**——缩进越深＝调用栈越深，`▸`＝LLM 决策，`↩`＝返回出栈：
+
+![主 Agent → delegate → 子 Agent 的调用栈时序](img/subagent-call-stack.svg)
+
+三个要点对着图看就通：
+
+1. **整张图是一个「V 形」**：第 1→9 行一路向右「钻进去」（进栈），第 9 行最深，第 10→15 行一路向左「退回来」（出栈）。
+2. **第 7 行高亮 = 本节标题的实证**：`子 AgentLoop.run` 和第 3 行的 `主 AgentLoop.run` **是同一个方法**，只是出现在更深的栈层——这就是「子 Agent = 换装的主循环」在运行时的样子（同一段循环代码在栈里出现两次：一次浅＝父，一次深＝子）。
+3. **delegate 是「桥」**：第 5 行把控制权从父层（蓝）交到子层（绿）；第 11→12 行的 `↩` 又把控制权交回，且子 Agent 的最终文本作为 **ToolMessage 回灌**进主 loop（第 1 站喂回路径）。
+
+> 父子「同 vs 异」一句话：中间跑的是**同一个 `AgentLoop.run`**（连同 `_guarded_invoke`/`_dispatch` 一字不差）；不同的只在**两端**——入口的构造参数（registry／system_prompt／run 入参）与输出去向（父 yield＋回写记忆；子只 return 文本）。
+
 **怎么搭这套**（[chat_handler.py:38-47](../api/chat_handler.py#L38)）——**主 registry 只含 delegate**：
 
 ```python
@@ -1168,18 +1182,18 @@ _main_registry.register(_delegate_tool)   # ☜ 主 Agent 手里「只有」dele
 >
 > 两条渠道都同源于各 `Tool.description` / `args_schema`（第 2 站「单一真相源」），不会漂。唯一小维护点：子 Agent 写死的 prose 里若用文字提了某工具（如 consultant 写「用知识库检索工具」），改了 `tool_names` 却忘改这句 prose，**模型仍能正常调工具（靠渠道 ①），只是那句文字会过时**——无伤大雅。
 
-## 6.5 关键代码 ③：Skills 按需加载（确定性匹配）
+## 6.5 harness 的 `Skill`（骨架 · 仿 Agent Skill，未接入）
 
-> 📄 源码出处：[harness/skills/base.py:40-49](../harness/skills/base.py#L40) + [harness/skills/registry.py](../harness/skills/registry.py)
+> 📄 源码：[harness/skills/base.py](../harness/skills/base.py) + [harness/skills/registry.py](../harness/skills/registry.py)
+> 术语：**Agent Skill** = 开放标准（`SKILL.md`）；**harness 的 `Skill` 类** = 本仓库仿这个理念的玩具类。用词约定见 [skills-notes.md §0](./skills-notes.md)。
 
-```python
-# base.py:40
-def matches(self, task: str) -> bool:
-    keywords = self.triggers or (self.name,)        # 没配 triggers 就退化成「name 当唯一触发词」
-    return any(kw and kw in task for kw in keywords)   # 任一关键词是 task 子串即算相关
-```
+理念是**按需加载可复用能力、不常驻**（渐进式披露，对齐 Agent Skill）。harness 里就是一个 `Skill` 类（`name`/`description`/`content`/`triggers`）+ [`SkillRegistry.load_for(task)`](../harness/skills/registry.py#L39) 用关键词匹配挑相关项。
 
-**为什么用关键词子串匹配而非向量检索**：刻意保持**确定性**——同样输入永远同样结果,故离线、无网络也能写断言、可单测(对齐本项目「离线可测」原则)。代价是只能精确命中、无语义近似——这是 Phase 7 有意的取舍。[`SkillRegistry.load_for(task)`](../harness/skills/registry.py#L39) 据此返回所有相关 skill 的内容,注入子 Agent 上下文。
+- **现状（重要）**：**定义了 + 有单测，但没接进运行路径——本项目并未实际使用。** `chat_handler`/`AgentLoop`/`SubAgent.run`/`delegate` 都不调它，也没有具体 Skill 实例。它是 Phase 7 故意留的**扩展点骨架**，同第 3 站 3.4 的 `summary.py` 摘要 stub。
+- **什么时候才会用到**：当「运营 SOP/话术」积累到几十套、且想让运营自助维护时（信号：子 Agent 的 `system_prompt` 越写越长、改话术要发版）。在那之前，**工具 + RAG + 子 Agent + 系统提示已覆盖需求，用不上 skill**。
+- **演进方向（生产）**：这个关键词版骨架对未来生产版**几乎零复用**，生产化时建议**移除**；真要做时采用开放 **`SKILL.md` 标准 + 模型驱动加载**（`skills-ref` 或 LangChain Deep Agents），**不复活关键词版**。
+
+> 📎 完整分析（要不要 / 何时 / 选型 / `skills-ref` 成熟度实测 / 术语三分）见 [skills-notes.md](./skills-notes.md)。
 
 **带着问题读的答案**：
 - 主 Agent 如何「自主决定」派给谁？→ system prompt 里列了子 Agent 清单（[`build_system_prompt`](../harness/runtime/system_prompt.py#L60) 渲染，第 3 站），模型在 TAO 循环里调 delegate 并指定 subagent，**不是 if/else**。
@@ -1211,10 +1225,7 @@ def matches(self, task: str) -> bool:
 > [`test_delegate_unknown_subagent_returns_structured_error`](../tests/test_subagents.py#L197)：在 [delegate.py:67](../harness/subagents/delegate.py#L67) `if not subagent_registry.has(...)` 打点，看未知子 Agent 名返回结构化错误而非抛。
 > [`test_delegate_description_lists_subagents`](../tests/test_subagents.py#L209)：看构造期把三个专员渲染进 `description`。
 
-**动线 D：Skills 关键词匹配**
-
-> 启动测试：[`test_load_for_returns_only_matching_skill`](../tests/test_skills.py#L30)（注册两个 skill，查「项目的价格」只命中 `rag_search`）。
-> 在 [base.py:49](../harness/skills/base.py#L49) `return any(kw and kw in task ...)` 打点，看命中判定。对照 [`test_skill_matches_by_name_when_no_triggers`](../tests/test_skills.py#L47)（无 triggers 时退化用 name 匹配）。
+> Skills（骨架、未接入）只需扫一眼单测即可：[`test_load_for_returns_only_matching_skill`](../tests/test_skills.py#L30) 看关键词命中判定；不必深究，理由见 6.5 与 [skills-notes.md](./skills-notes.md)。
 
 ---
 

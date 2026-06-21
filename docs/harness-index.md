@@ -13,8 +13,9 @@
 | 1️⃣ | [概念入门 · harness-study-notes.md](./harness-study-notes.md) | harness **是什么**、三层 ①②③、家族全景、马挽具比喻、5 杠杆、要不要装 ECC | **第一次接触**这个概念时 |
 | 2️⃣ | [官方手册 · harness-engineering-official-notes.md](./harness-engineering-official-notes.md) | OpenAI / Anthropic 两篇官方文精读 + **两份操作手册**（当好"用 agent 的人 / 造 agent 的人"） | 想知道**高手具体怎么做**时 |
 | 3️⃣ | [重构计划 · harness-refactor-plan.md](./harness-refactor-plan.md) | 把本预约项目从 **workflow 重构成 harness** 的分 Phase 落地方案 | **动手改本项目**时 |
+| 4️⃣ | [读源码 · harness-code-reading.md](./harness-code-reading.md) | 按数据流的 **7 站精读路线**（每站：读哪个文件 / 配哪个测试 / 带什么问题），带可勾选清单 | **重构已落地、想读懂 `harness/` 代码**时 |
 
-> 简记：**1 学概念 → 2 学方法 → 3 动手做**。
+> 简记：**1 学概念 → 2 学方法 → 3 动手做 → 4 读懂代码**。
 
 ---
 
@@ -44,12 +45,14 @@
 - 想要"怎么把代码写好"的清单 → [官方笔记 · 5.1 当好用 agent 的人](./harness-engineering-official-notes.md)
 - 想要"怎么设计 agent 更稳"的清单 → [官方笔记 · 5.2 当好造 agent 的人](./harness-engineering-official-notes.md)
 - 准备改本项目了 → [重构计划](./harness-refactor-plan.md)
+- 重构已落地、想读懂 `harness/` 代码 → [读源码 · 7 站路线](./harness-code-reading.md)
 
 ---
 
 ## 🔗 相关（非 harness 主线）
 
 - [LangChain LCEL `|` 写法笔记](./langchain-lcel-notes.md) —— 重构会用到 LangChain，这篇讲 `prompt | llm` 的原理，新手向。
+- [Pydantic 学习笔记](./pydantic-notes.md) —— 工具层的地基。讲 `args_schema(**raw_args)` 是什么、Pydantic 元类如何自动校验，以及它为何是「单一真相源」。新手向。
 
 ---
 

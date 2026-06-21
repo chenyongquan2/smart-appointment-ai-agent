@@ -1,0 +1,58 @@
+<svg viewBox="0 0 680 524" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>一次 delegate 调用的真实调用栈（约技师为例）</title>
+<desc>按时间顺序展示一条用户消息的调用栈：用户 → ProcessUserInput_stream → 主 AgentLoop.run → LLM 决定调 delegate → delegate handler → SubAgent.run → 子 AgentLoop.run（与主 run 是同一个方法，只是栈更深）→ LLM 调 find_technician → Tool.run → services → 子 loop 出 REPLY → 逐层 return 回灌 → 主 loop 出 REPLY → yield 给用户。缩进越深表示调用栈越深，▸ 是 LLM 决策，↩ 是返回出栈。</desc>
+<style>
+text{font-family:ui-sans-serif,system-ui,"Microsoft YaHei",sans-serif}
+.ts{font-size:12px}
+.th{font-size:12.5px;font-weight:600}
+.lbl{fill:#5F5E5A;font-size:12px}
+.b rect{fill:#E6F1FB;stroke:#85B7EB;stroke-width:1}
+.b text{fill:#0C447C}
+.g rect{fill:#E1F5EE;stroke:#5DCAA5;stroke-width:1}
+.g text{fill:#0F6E56}
+.n rect{fill:#F1EFE8;stroke:#B4B2A9;stroke-width:1}
+.n text{fill:#444441}
+.ret rect{stroke-dasharray:5 4}
+.hl rect{stroke-width:2.5}
+</style>
+
+<!-- 图例 -->
+<rect x="30" y="8" width="12" height="12" rx="3" fill="#E6F1FB" stroke="#85B7EB"/>
+<text class="lbl" x="46" y="18">父层</text>
+<rect x="92" y="8" width="12" height="12" rx="3" fill="#E1F5EE" stroke="#5DCAA5"/>
+<text class="lbl" x="108" y="18">子层</text>
+<rect x="154" y="8" width="12" height="12" rx="3" fill="#F1EFE8" stroke="#B4B2A9"/>
+<text class="lbl" x="170" y="18">工具/services</text>
+<text class="lbl" x="30" y="40">▸ = LLM 决策　　↩ = 返回(出栈)　　缩进越深 = 调用栈越深</text>
+
+<g class="b"><rect x="30" y="58" width="635" height="26" rx="6"/>
+<text class="ts" x="40" y="75">1　用户：「帮我约明天的技师」</text></g>
+<g class="b"><rect x="52" y="88" width="613" height="26" rx="6"/>
+<text class="ts" x="62" y="105">2　ProcessUserInput_stream()　—　取记忆、写入用户输入</text></g>
+<g class="b"><rect x="74" y="118" width="591" height="26" rx="6"/>
+<text class="ts" x="84" y="135">3　主 AgentLoop.run(input, history, suffix)　—　组装上下文</text></g>
+<g class="b"><rect x="96" y="148" width="569" height="26" rx="6"/>
+<text class="ts" x="106" y="165">4　▸ LLM 决定：调 delegate(subagent=appointment, task=“约明天”)</text></g>
+<g class="b"><rect x="96" y="178" width="569" height="26" rx="6"/>
+<text class="ts" x="106" y="195">5　_dispatch → Tool.run → delegate._handler()</text></g>
+<g class="g"><rect x="118" y="208" width="547" height="26" rx="6"/>
+<text class="ts" x="128" y="225">6　SubAgent.run(appointment)　—　subset 切子集 + 写死 prompt〔换装〕</text></g>
+<g class="g hl"><rect x="140" y="238" width="525" height="26" rx="6"/>
+<text class="th" x="150" y="255">7　子 AgentLoop.run(task)　← 和第 3 行是同一个方法，只是栈更深</text></g>
+<g class="g"><rect x="162" y="268" width="503" height="26" rx="6"/>
+<text class="ts" x="172" y="285">8　▸ LLM 决定：调 find_technician</text></g>
+<g class="n"><rect x="162" y="298" width="503" height="26" rx="6"/>
+<text class="ts" x="172" y="315">9　_dispatch → Tool.run → services/　↩ 返回「张三可约」</text></g>
+<g class="g"><rect x="162" y="328" width="503" height="26" rx="6"/>
+<text class="ts" x="172" y="345">10　▸ LLM 出 [REPLY]「已为您找到张三」</text></g>
+<g class="g ret"><rect x="118" y="358" width="547" height="26" rx="6"/>
+<text class="ts" x="128" y="375">11　↩ return「已为您找到张三」（子 Agent 只回最终文本）</text></g>
+<g class="b ret"><rect x="74" y="388" width="591" height="26" rx="6"/>
+<text class="ts" x="84" y="405">12　↩ return {result}（回灌为主 loop 的 ToolMessage）</text></g>
+<g class="b"><rect x="74" y="418" width="591" height="26" rx="6"/>
+<text class="ts" x="84" y="435">13　▸ LLM 出 [REPLY]「已为您约好张三」</text></g>
+<g class="b ret"><rect x="52" y="448" width="613" height="26" rx="6"/>
+<text class="ts" x="62" y="465">14　↩ yield [REPLY] + append_turn 回写 SessionStore</text></g>
+<g class="b"><rect x="30" y="478" width="635" height="26" rx="6"/>
+<text class="ts" x="40" y="495">15　用户 ← 「已为您约好张三」</text></g>
+</svg>
