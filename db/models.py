@@ -80,7 +80,13 @@ class ConversationSummary(Base):
     # session_id 唯一：一个会话只保留一条"最新"摘要（滚动 upsert，不堆历史快照）。
     session_id = Column(String, nullable=False, unique=True, index=True)
     summary_text = Column(Text, nullable=False)
-    # 已压缩覆盖到的末条 turn id（单调游标）；其后的窗外新回合在下次压缩时滚动并入。
+    # covered_upto = "这条摘要已经把历史压缩到了哪一条为止" 的书签/游标。
+    #   值 = 被压进本摘要的【最后一条 ConversationTurn 的 id】。
+    #   语义："covered up to id=X" → 所有 id ≤ X 的回合，其信息都已并入 summary_text。
+    #   用途（滚动压缩）：下次压缩时只需处理 id > covered_upto 的「新出窗回合」，
+    #     id ≤ covered_upto 的老回合不再重读（它们已在摘要里）。
+    #   例：covered_upto=4 表示 1~4 已压缩；当 5~8 又滑出窗口时，只把 5~8 增量并入。
+    #   为何用 turn id 而非"第几条"计数：id 单调递增、抗并发，"id 之后即新增"语义稳定。
     covered_upto = Column(Integer, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

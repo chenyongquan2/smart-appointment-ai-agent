@@ -48,7 +48,8 @@ class ConversationSummaryRepository:
         Args:
             session_id: 会话 ID
             summary_text: 渲染后的摘要文本
-            covered_upto: 已压缩覆盖到的末条 turn id（单调游标）
+            covered_upto: 书签/游标——本摘要已覆盖到的【末条 turn id】（id ≤ 此值的回合
+                信息都已并入 summary_text）。下次压缩据此只处理 id 更大的新出窗回合。
         """
         with self.session_manager.session_scope() as session:
             row = (

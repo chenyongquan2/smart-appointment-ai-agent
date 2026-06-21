@@ -20,12 +20,15 @@ class ShortTermMemory:
     """把对话历史裁剪为最近 N 轮并转为消息列表。
 
     Args:
-        window_turns: 窗口轮数（一轮 = 一条消息记录）。默认 10。
+        window_turns: **短期记忆窗口的大小**——保留最近多少条消息原样喂给 LLM。默认 10。
+            单位是「条消息」而非「问答对」：一问一答算两条（用户一条 + 助手一条），
+            故 window_turns=10 ≈ 最近 5 个来回。
     """
 
     def __init__(self, window_turns: int = 10) -> None:
-        # 窗口大小：只把「最近这么多条」喂给 LLM。设小一点能省 token、防上下文爆掉；
-        # 代价是更早的对话模型「看不到」（但它们仍安静地躺在 DB 里，没被删）。
+        # window_turns = 短期记忆窗口的大小：只把「最近这么多条消息」喂给 LLM。
+        # 设小一点能省 token、防上下文爆掉；代价是更早的对话模型「看不到」
+        # （但它们仍安静地躺在 DB 里，没被删，可由摘要压缩接住——见 memory/summary.py）。
         self.window_turns = window_turns
 
     def to_messages(self, history: Sequence[Turn]) -> List[BaseMessage]:

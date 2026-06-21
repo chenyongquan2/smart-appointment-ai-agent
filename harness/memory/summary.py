@@ -88,6 +88,32 @@ _SUMMARY_SYSTEM_PROMPT = (
 class LLMSummaryMemory:
     """生产级摘要记忆：token 阈值触发 + 结构化 + 滚动压缩 + 持久化缓存 + 降级 + 可观测。
 
+    ── 先搞懂三个核心概念（下文反复出现，层层叠加）──────────────────────────────
+    用一段进行到 6 条的对话举例（窗口设 4）：
+
+        turn id │ 内容
+           1    │ 我要约按摩，只要女技师   ┐ 窗外（旧）——AI 看不到原文
+           2    │ 好的                     ┘
+          ─────────────────────────────────
+           3    │ 时长 60 分钟             ┐
+           4    │ 好的                     │ 窗内 = 最近 window_turns 条
+           5    │ 你们几点关门             │   ——AI 看得到原文
+           6    │ 晚上 10 点               ┘
+
+    - **turn id**：每条消息存进 DB（``conversation_turns`` 表）时自动分配的递增主键，
+      即「这是第几条消息」的编号（1,2,3… 永不重复/回退）。我们拿它当书签用。
+    - **window_turns**：**短期记忆窗口的大小**——「只把最近这么多条原文喂给 AI」（默认 10；
+      单位是条消息，一问一答=两条）。它是一道分界线：线右边（近的）进上下文，线左边
+      （旧的=窗外）被挤出。窗外旧消息正是压缩要接住的对象（否则像 id=1 的「只要女技师」
+      聊久就被挤出、AI 失忆）。``out_of_window = rows[:-window_turns]``。
+    - **covered_upto**：一个书签，值是某个 turn id，含义=「摘要已把 id ≤ 此值的消息都压进去了」。
+      作用：下次压缩只处理「书签之后」(id > covered_upto) 的新出窗消息，老的不重读——像看书
+      的书签，下次翻到下一页接着读。压缩后书签前移到本次覆盖的末条 id。
+
+    一句话：window_turns 决定「谁掉出窗口要被压」，turn id 是每条消息的编号，
+    covered_upto 用一个 turn id 当书签记住「压到第几条了」，好让滚动压缩不重复劳动。
+    ──────────────────────────────────────────────────────────────────────────
+
     读/写分离（design.md D1/D7）：
 
     - 写侧 ``compact_if_needed(session_id)``：回合收尾时调用，判触发→滚动压缩→写缓存；
@@ -99,7 +125,8 @@ class LLMSummaryMemory:
             ``covered_upto`` 游标需要稳定的 turn id（in-memory ``Turn`` 不带 id，故从持久层读）。
         summaries_repo: 提供 ``get_summary`` / ``upsert_summary``，摘要缓存的真相源。
         tracer: 可观测（Phase 6）；缺省 ``NoopTracer``。
-        window_turns: 短期窗口轮数，应与 ``ShortTermMemory`` 一致；窗外 = 除最近 N 条外的更早回合。
+        window_turns: 短期记忆窗口的大小（保留最近多少条消息，单位是条消息、非问答对），
+            应与 ``ShortTermMemory`` 一致；窗外 = 除最近 N 条外的更早回合。
         summary_trigger_tokens / min_old_turns: 触发阈值（见上）。
         full_recompute_after_turns: 漂移纠偏开关——覆盖回合数达此上限触发一次全量重算；
             ``None`` 表示关闭（默认），本业务一般用不到。
@@ -178,32 +205,44 @@ class LLMSummaryMemory:
             except Exception:  # noqa: BLE001
                 logger.warning("读取既有摘要失败，按无摘要处理", exc_info=True)
 
+            # covered_upto = 上次摘要的「书签」：已把历史压缩覆盖到的【末条 turn id】。
+            #   语义：id ≤ covered_upto 的回合，信息都已在 existing["summary_text"] 里。
+            #   首次（无摘要）置 0，等于「什么都还没覆盖」，下面会把全部窗外回合都算进去。
             covered_upto = existing["covered_upto"] if existing else 0
             full_recompute = self._should_full_recompute(out_of_window, covered_upto)
 
+            # rows_to_summarize = 本次「要喂给 LLM 的窗外回合」。两分支喂的集合不同，
+            # 但**收尾时覆盖范围相同**（都覆盖到 out_of_window 末条）→ 故 covered_to 在下方
+            # if/else 外只算一次即对两者都成立（见 covered_to 处注释）。
             if full_recompute:
-                # 漂移纠偏：忽略前序摘要，对全部窗外回合重算一次。
-                new_rows = out_of_window
+                # 漂移纠偏：丢掉前序摘要，把【全部】窗外回合原文重读一遍重算（贵，但纠正累积漂移）。
+                # 注意这里是「全部」而非「新增」——含 id ≤ covered_upto 已压过的，故 prior_summary=None。
+                rows_to_summarize = out_of_window
                 prior_summary = None
                 trigger_reason = "full_recompute"
             else:
-                # 常规滚动：只并入「尚未被缓存覆盖（id > covered_upto）」的窗外新回合。
-                new_rows = [r for r in out_of_window if r["id"] > covered_upto]
+                # 常规滚动：只并入「书签之后」的新出窗回合（id > covered_upto），它是 out_of_window
+                # 的尾部切片，故其末条 == out_of_window 末条。id ≤ covered_upto 的老回合不再重读——
+                # 其信息已在 prior_summary 里，这正是「滚动/增量压缩」省 token 的关键。
+                rows_to_summarize = [r for r in out_of_window if r["id"] > covered_upto]
                 prior_summary = existing["summary_text"] if existing else None
                 trigger_reason = "rolling"
 
-            if not new_rows:
+            if not rows_to_summarize:
                 return  # 缓存已覆盖全部窗外回合 → 命中，不调 LLM
 
             # 阈值判定：未覆盖窗外回合的估算 token 与条数都要够，否则先不压缩（攒着）。
-            approx_tokens = self._estimate_tokens(new_rows)
-            if approx_tokens <= self.summary_trigger_tokens and len(new_rows) < self.min_old_turns:
+            approx_tokens = self._estimate_tokens(rows_to_summarize)
+            if approx_tokens <= self.summary_trigger_tokens and len(rows_to_summarize) < self.min_old_turns:
                 return  # 量太小，不值得一次 LLM 调用
 
             # ---- 触发压缩 ---- #
-            covered_to = out_of_window[-1]["id"]  # 本次覆盖到的末条 turn id（单调游标）
+            # 本次压缩后，书签前移到「最后一条窗外回合的 id」——因为到这一刻为止，
+            # 全部窗外回合（含刚并入的 rows_to_summarize）都已被摘要覆盖。它将作为新的 covered_upto 落库，
+            # 供下一轮判断「哪些才是又新掉出窗口、还没压过的回合」。
+            covered_to = out_of_window[-1]["id"]
             try:
-                summary_text = await self._summarize_rows(new_rows, prior_summary)
+                summary_text = await self._summarize_rows(rows_to_summarize, prior_summary)
             except GuardrailExhausted:
                 # 降级：LLM 重试耗尽 → 不写缓存、记 degraded、不抛；读侧退回纯窗口。
                 logger.warning("摘要压缩 LLM 调用失败，降级（不写缓存）", exc_info=True)
@@ -225,7 +264,7 @@ class LLMSummaryMemory:
                     "tokens_before": approx_tokens,
                     "tokens_after": self._estimate_text_tokens(summary_text),
                     "covered_upto": covered_to,
-                    "new_turns": len(new_rows),
+                    "new_turns": len(rows_to_summarize),
                     "degraded": False,
                 },
             )
