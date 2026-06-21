@@ -593,7 +593,7 @@ turn id │ 谁说的 │ 内容                       ← turn id = 每条消�
 
 ![记忆压缩流程图](diagrams/memory-compaction-flow.svg)
 
-图上半是某一刻的快照：消息按 `turn id` 排开，`window_turns` 罩住最近 4 条（绿，喂 AI），`covered_upto` 书签把窗外切成「已压入摘要（蓝）」与「夹缝·待压（黄）」；摘要单独存一张表、原消息不删。图下半是触发节奏：压完夹缝归零，每回合 +2 条，攒到 `min_old_turns`（默认 4）即再压。**关键公式：夹缝条数 = 自上次压缩以来新增的消息数。**
+图上半是某一刻的快照（**已是修复后的「无盲区」模型**）：消息按 `turn id` 排开，**可见性分界 = `covered_upto`**——id ≤ covered_upto 以摘要注入（蓝），id > covered_upto **一律以原文注入**（黄=曾经的夹缝、绿=窗内，现都进上下文）；`window_turns` 只决定写侧压缩节奏、不再是可见性上限；摘要单独存一张表、原消息不删。图下半是压缩触发节奏：压完夹缝归零，每回合 +2 条，攒到 `min_old_turns`（默认 4）即再压。**关键公式：夹缝条数 = 自上次压缩以来新增的消息数。**
 
 > 🔧 **读侧无盲区**（change `fix-compaction-gap-blindspot`）：图里黄色「夹缝」回合（掉出窗口、还没压进摘要）**也会以原文注入**给 LLM——读侧真正的可见性分界是 `covered_upto`，不是窗口：**没进摘要的(id>covered_upto)一律原文保留**。于是 `window_turns` 只决定「写侧何时压缩（节奏）」，不再是「读侧能看几条」的上限。读侧据此从持久层取 `id>covered_upto` 的原文（见 `LLMSummaryMemory.get_read_context` 与 `ConversationRepository.get_turns_after`），与摘要拼成：系统提示 → 摘要(id≤covered_upto) → 未覆盖原文(id>covered_upto) → 当前输入。
 
