@@ -53,6 +53,9 @@ class FakeConvRepo:
     def get_turns(self, session_id):
         return list(self._rows)
 
+    def get_turns_after(self, session_id, after_id):
+        return [r for r in self._rows if r["id"] > after_id]
+
 
 class FakeSumRepo:
     def __init__(self):
@@ -215,3 +218,58 @@ async def test_tracer_records_compaction_event():
     for key in ("trigger_reason", "tokens_before", "tokens_after", "covered_upto", "degraded"):
         assert key in payload
     assert payload["degraded"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 读侧 get_read_context：无盲区（fix-compaction-gap-blindspot）
+# --------------------------------------------------------------------------- #
+def test_read_context_no_summary_returns_all_verbatim():
+    sum_repo = FakeSumRepo()  # 空：无摘要
+    mem = _make(FakeChain(), _rows(6), sum_repo)
+
+    summary_text, uncovered = mem.get_read_context("s1")
+
+    assert summary_text == ""
+    # covered_upto 视作 0 → 全部原文
+    assert [r["id"] for r in uncovered] == [1, 2, 3, 4, 5, 6]
+
+
+def test_read_context_with_summary_splits_at_covered_upto():
+    sum_repo = FakeSumRepo()
+    sum_repo.store["s1"] = {"summary_text": "早期：女技师/周末", "covered_upto": 4}
+    mem = _make(FakeChain(), _rows(6), sum_repo)
+
+    summary_text, uncovered = mem.get_read_context("s1")
+
+    # 摘要覆盖 id≤4；未覆盖原文只含 id 5、6（已覆盖的 1..4 不以原文重复注入）
+    assert summary_text == "早期：女技师/周末"
+    assert [r["id"] for r in uncovered] == [5, 6]
+
+
+def test_read_context_no_blindspot_invariant():
+    """无盲区不变量：每条回合要么被摘要覆盖(id≤covered_upto)、要么以原文出现。"""
+    sum_repo = FakeSumRepo()
+    sum_repo.store["s1"] = {"summary_text": "S", "covered_upto": 3}
+    rows = _rows(6)
+    mem = _make(FakeChain(), rows, sum_repo)
+
+    summary_text, uncovered = mem.get_read_context("s1")
+    covered_ids = {r["id"] for r in rows if r["id"] <= 3}
+    verbatim_ids = {r["id"] for r in uncovered}
+
+    # 并集覆盖全部回合，且两者不相交（不重复）
+    assert covered_ids | verbatim_ids == {r["id"] for r in rows}
+    assert covered_ids & verbatim_ids == set()
+
+
+def test_read_context_summary_read_failure_degrades_to_no_summary():
+    class _BoomSumRepo:
+        def get_summary(self, sid):
+            raise RuntimeError("db down")
+
+    mem = _make(FakeChain(), _rows(3), _BoomSumRepo())
+    summary_text, uncovered = mem.get_read_context("s1")
+
+    # 摘要读失败 → 按无摘要处理：空摘要 + 全部原文
+    assert summary_text == ""
+    assert [r["id"] for r in uncovered] == [1, 2, 3]

@@ -45,7 +45,14 @@ class CapturingModel(BaseChatModel):
 
 
 class _NoopSummaryMemory:
-    """离线占位摘要记忆：读侧恒空、写侧 no-op（不触网/不碰 DB）。"""
+    """离线占位摘要记忆：读侧恒空、写侧 no-op（不触网/不碰 DB）。
+
+    get_read_context 故意抛错 → 触发 handler 的兜底路径（短期窗口 + get_summary_hint），
+    使既有 e2e 断言（从 session.history 回放）在不接真 repo 时仍成立。
+    """
+
+    def get_read_context(self, session_id: str):
+        raise NotImplementedError("offline noop: force fallback to short-term path")
 
     def get_summary_hint(self, session_id: str) -> str:
         return ""

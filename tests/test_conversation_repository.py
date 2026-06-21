@@ -53,3 +53,28 @@ def test_limit_returns_recent_in_ascending_order(repo):
 
 def test_empty_session_returns_empty(repo):
     assert repo.get_turns("nope") == []
+
+
+def test_get_turns_after_filters_by_id(repo):
+    # 写 4 条，记录各自 id（自增）
+    ids = [
+        repo.append_turn("s1", "user", "m0"),
+        repo.append_turn("s1", "assistant", "m1"),
+        repo.append_turn("s1", "user", "m2"),
+        repo.append_turn("s1", "assistant", "m3"),
+    ]
+
+    # after_id=0：返回全部，按 id 升序
+    assert [t["content"] for t in repo.get_turns_after("s1", 0)] == ["m0", "m1", "m2", "m3"]
+    # after_id=中间值：只返回其后
+    assert [t["content"] for t in repo.get_turns_after("s1", ids[1])] == ["m2", "m3"]
+    # after_id=最大 id：返回空
+    assert repo.get_turns_after("s1", ids[-1]) == []
+
+
+def test_get_turns_after_isolated_by_session(repo):
+    repo.append_turn("s1", "user", "a")
+    repo.append_turn("s2", "user", "b")
+    # 仅返回本会话的回合（按 id>0 取全部）
+    assert [t["content"] for t in repo.get_turns_after("s1", 0)] == ["a"]
+    assert [t["content"] for t in repo.get_turns_after("s2", 0)] == ["b"]

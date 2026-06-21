@@ -136,7 +136,7 @@ async def run(self, messages, session):
 - 持久化到 DB，重启不丢。
 - **验收**：两个 session 并发互不干扰；重启后能恢复会话。
 - **技能点**：会话隔离、context engineering、记忆压缩。
-- **📌 记忆压缩后续升级**（OpenSpec change `add-context-compaction`，2026-06-21）：Phase 4 的摘要层当时留 `NoOpSummary` 占位桩，已升级为**生产级实现** `LLMSummaryMemory`——固定 token 阈值触发（不锚模型窗口）、结构化滚动压缩（summary-of-summary）、`ConversationSummary` 表持久化缓存（`covered_upto`=末条 turn id）、读/写分离（写侧回合收尾 inline-after-stream 算、读侧请求开始纯读缓存）、LLM 失败降级回纯窗口、tracer 可观测。选型依据见 [harness-study-notes.md §9](./harness-study-notes.md)（Claude Code 高水位全量 vs 滚动缓冲摘要两流派）。
+- **📌 记忆压缩后续升级**（OpenSpec change `add-context-compaction`，2026-06-21）：Phase 4 的摘要层当时留 `NoOpSummary` 占位桩，已升级为**生产级实现** `LLMSummaryMemory`——固定 token 阈值触发（不锚模型窗口）、结构化滚动压缩（summary-of-summary）、`ConversationSummary` 表持久化缓存（`covered_upto`=末条 turn id）、读/写分离（写侧回合收尾 inline-after-stream 算、读侧请求开始纯读缓存）、LLM 失败降级回纯窗口、tracer 可观测。选型依据见 [harness-study-notes.md §9](./harness-study-notes.md)（Claude Code 高水位全量 vs 滚动缓冲摘要两流派）。后续 change `fix-compaction-gap-blindspot` 又修掉了「夹缝盲区」——把读侧可见性分界从窗口改为 `covered_upto`（未压缩回合一律原文注入），详见学习笔记 §9.5。
 - **简历话术**：重构全局状态为按会话隔离 + 分层记忆，支持并发用户与跨会话偏好。
 
 ### Phase 5 — 护栏 Guardrails（1 天）

@@ -177,6 +177,32 @@ class LLMSummaryMemory:
             return ""
         return row.get("summary_text") or ""
 
+    def get_read_context(self, session_id: str) -> tuple[str, List[Any]]:
+        """读侧组装：返回 (摘要文本, 未覆盖回合原文列表)，消除夹缝盲区。
+
+        可见性分界 = ``covered_upto``（change: fix-compaction-gap-blindspot）：
+        - id ≤ covered_upto 的回合 → 以摘要文本注入（调用方包成 SystemMessage）；
+        - id > covered_upto 的回合 → 一律以原文注入（即便已掉出 window_turns 窗口）。
+
+        因 in-memory ``Turn`` 不带 id，未覆盖原文从持久层（``conversations_repo``）按
+        id 过滤读取。无摘要缓存时 covered_upto 视作 0 → 返回全部历史原文（首次压缩前
+        历史长度有上界 ≈ window_turns + min_old_turns，不会无界膨胀）。
+
+        失败安全：摘要缓存读失败按无摘要处理；历史读失败抛出，由编排层兜底（退回
+        ``ShortTermMemory`` 旧路径）。
+        """
+        try:
+            row = self._summaries.get_summary(session_id)
+        except Exception:  # noqa: BLE001 —— 摘要读失败按「无摘要」降级处理
+            logger.warning("读取会话摘要失败，按无摘要组装读侧上下文", exc_info=True)
+            row = None
+        summary_text = (row.get("summary_text") or "") if row else ""
+        covered_upto = row["covered_upto"] if row else 0
+        # 未覆盖回合（id > covered_upto）的原文——这正是「夹缝 + 窗内」的并集，
+        # 用 covered_upto 当分界保证「没进摘要的必有原文」，盲区不可能存在。
+        uncovered = self._conversations.get_turns_after(session_id, covered_upto)
+        return summary_text, uncovered
+
     # ---- 写侧：回合收尾时滚动压缩并落库 ---------------------------------- #
     async def compact_if_needed(self, session_id: str) -> None:
         """按需把窗外未覆盖的较旧回合滚动压缩为摘要并写缓存（回合收尾时调用）。
