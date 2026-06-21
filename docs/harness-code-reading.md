@@ -702,6 +702,40 @@ def get_read_context(self, session_id):
 
 > 注：更早的 `get_summary_hint`（只返回摘要文本、配合短期窗口取原文）仍保留，作为持久层读失败时的**兜底路径**。
 
+#### 压缩后的摘要「怎么被用」：render() → SystemMessage → 进 prompt
+
+前面讲了摘要怎么**算/存/取**，这里补最后一环——**取到的摘要到底怎么喂给 LLM、长什么样**。分三步：
+
+**① 结构化对象 → 文本**：缓存里 `summary_text` 不是裸 JSON，而是 `ConversationSummary.render()`（[summary_schema.py](../harness/memory/summary_schema.py)）渲染出的**分段提示文本**——压缩时就已 render 好落库（[summary.py `_summarize_rows`](../harness/memory/summary.py#L311) 末尾 `return summary.render()`）。格式形如：
+
+```
+以下是更早对话的摘要（窗口外较旧回合，已压缩）：
+【用户约束/偏好】
+- 只要女技师
+- 只能周末
+【已做决定】
+- 已确认推拿 60 分钟
+【待办/未确认】
+- 待定周六下午的具体时间
+【关键实体】
+- 张伟技师
+```
+
+> 为何分这四段、且约束/未完成项靠前：让模型一眼分清「已定 / 未定 / 硬约束」，**尤其别违背早期约束**（render 里 `user_constraints`、`open_items` 刻意排在前面）。
+
+**② 文本 → 一条 `SystemMessage`，置于 history 首条**：编排层（[chat_handler.py:136-137](../api/chat_handler.py#L136)）把这段文本包成**独立的 `SystemMessage`**，插到 `history` 最前——它和「系统提示」「长期偏好（system_suffix）」「未覆盖原文」是**各自独立**的消息，互不混淆。
+
+**③ LLM 这一轮实际收到的 `messages`**（第 1 站 `AgentLoop` 组装，顺序固定）：
+
+```
+[SystemMessage] 角色/行为纲领 + 长期偏好（system_suffix）
+[SystemMessage] ← 摘要 render 文本（上面那段「以下是更早对话的摘要…」）   ← 压缩成果在这被用
+[Human/AI ...]  id > covered_upto 的未覆盖原文（升序）
+[Human]         本轮用户输入
+```
+
+**所以「被用」= 以 System 角色、作为一段背景交接，排在近期原文之前喂给模型**。模型把它当「更早发生过、已确认的事实/约束」来读——既不占满上下文（一段浓缩文本），又能让早期约束在原文早已滚出窗口后继续生效。这就是压缩的最终兑现点。
+
 **跟着一个真实长对话走一遍**（最直观的方式）。为方便看，把窗口设小到 **N=4**（即只保留最近 4 条消息 = 2 问 2 答），触发阈值也设低。每条消息一个自增 `id`。盯住一件事：**第 1 轮说的「只要女技师」，到第 4 轮早就掉出 4 条窗口了，凭什么模型还记得？**
 
 | 轮 | 本轮新增（id） | 全部历史条数 | 窗内（最近 4 条，喂原文） | 窗外（掉出窗口） | 写侧 `compact_if_needed` 干了啥 | 缓存里的摘要 S（`covered_upto`） |
