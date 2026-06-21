@@ -68,6 +68,22 @@ class ConversationTurn(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class ConversationSummary(Base):
+    """会话摘要缓存（add-context-compaction：记忆压缩）。
+
+    每个 ``session_id`` 至多一条摘要：把短期窗口外的较旧回合滚动压缩为一段文本，
+    供下一轮请求注入上下文。``covered_upto`` 记录"已被压缩进摘要的最后一条
+    ``ConversationTurn`` 的 id"，作为滚动/失效的稳定游标（见 design.md D5）。
+    """
+    __tablename__ = 'conversation_summaries'
+    id = Column(Integer, primary_key=True)
+    # session_id 唯一：一个会话只保留一条"最新"摘要（滚动 upsert，不堆历史快照）。
+    session_id = Column(String, nullable=False, unique=True, index=True)
+    summary_text = Column(Text, nullable=False)
+    # 已压缩覆盖到的末条 turn id（单调游标）；其后的窗外新回合在下次压缩时滚动并入。
+    covered_upto = Column(Integer, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 class BadCase(Base):
     """坏 case 回流记录（Phase 6：评估闭环）。
 
