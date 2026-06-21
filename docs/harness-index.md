@@ -51,7 +51,7 @@
 
 ## 🔗 相关（非 harness 主线）
 
-- [LangChain LCEL `|` 写法笔记](./langchain-lcel-notes.md) —— 重构会用到 LangChain，这篇讲 `prompt | llm` 的原理，新手向。
+- [LangChain LCEL 管道写法笔记](./langchain-lcel-notes.md) —— 重构会用到 LangChain，这篇讲 `prompt | llm`（LCEL 的 `|`）的原理，新手向。
 - [Pydantic 学习笔记](./pydantic-notes.md) —— 工具层的地基。讲 `args_schema(**raw_args)` 是什么、Pydantic 元类如何自动校验，以及它为何是「单一真相源」。新手向。
 
 ---
