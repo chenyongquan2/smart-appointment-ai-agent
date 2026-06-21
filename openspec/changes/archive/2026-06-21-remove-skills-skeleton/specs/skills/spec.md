@@ -1,12 +1,10 @@
-# skills Specification
-
-## Purpose
-
-定义 harness 的 Skill 机制：把可复用能力封装为薄声明，对齐 Claude Code skills 的按需加载模式——skill 默认不常驻，仅在被判定与当前任务相关时由 `SkillRegistry` 显式加载并注入子 Agent 上下文。
-
-## Requirements
+## REMOVED Requirements
 
 ### Requirement: Skill 声明结构
+
+**Reason**: harness 的关键词版 `Skill` 骨架从未接入运行路径（`chat_handler` / `AgentLoop` / `SubAgent.run` / `delegate` 均未调用），属非生产级教学骨架；按 YAGNI 在生产化阶段移除。详见 docs/skills-notes.md §8。
+
+**Migration**: 无需迁移——该能力从未在运行路径中被使用，删除后对外行为不变。将来若真需要渐进披露能力，按 `SKILL.md` 开放标准（agentskills.io）+ 模型驱动加载重做，不复活关键词版骨架。
 
 系统 SHALL 提供一个 `Skill` 抽象，定义在 `harness/skills/` 下（一个概念一个文件），声明：唯一 `name`、面向加载决策的 `description`（说明该 skill 提供什么能力、何时该加载）、以及该 skill 注入子 Agent 上下文的**内容**（如补充提示片段或可用工具引用）。Skill MUST 为可复用能力的薄声明，不重写业务逻辑。对齐 Claude Code skills 机制：skill 默认不常驻，仅在被判定相关时按需加载。
 
@@ -16,6 +14,10 @@
 - **THEN** 该 skill 暴露非空 `name`、非空 `description`、以及可注入上下文的内容
 
 ### Requirement: SkillRegistry 按需加载
+
+**Reason**: 同上——`SkillRegistry` 与 `Skill` 一并属未接入的骨架，移除以消除死代码。
+
+**Migration**: 无需迁移——`SkillRegistry` / `load_for` 仅出现在定义与单测中，运行路径无引用。
 
 系统 SHALL 提供一个 `SkillRegistry`，支持注册 skill、按 `name` 查找、并按任务/描述匹配**按需加载**相关 skill（而非全量常驻注入）。注册重名 skill MUST 报错。加载 MUST 是显式可观测的（可被测试断言哪些 skill 被加载、哪些未被加载）。当没有 skill 匹配时，MUST 返回空集合而非报错。
 
