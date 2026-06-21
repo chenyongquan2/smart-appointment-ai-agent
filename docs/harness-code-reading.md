@@ -1185,7 +1185,7 @@ _main_registry.register(_delegate_tool)   # ☜ 主 Agent 手里「只有」dele
 ## 6.5 harness 的 `Skill`（已移除 · 曾是仿 Agent Skill 的骨架）
 
 > 术语：**Agent Skill** = 开放标准（`SKILL.md`）；**harness 的 `Skill` 类** = 本仓库曾仿这个理念的玩具类。用词约定见 [skills-notes.md §0](./skills-notes.md)。
-> ⚠️ **已删除（2026-06-21，OpenSpec change `remove-skills-skeleton`）**：`harness/skills/` 整目录 + `tests/test_skills.py` + `openspec/specs/skills/` 均已移除（git 历史留底）。本节保留为「为何曾经有、为何删」的存档。
+> ⚠️ **已删除（2026-06-21，OpenSpec change `remove-skills-skeleton`，PR #2 已合并 master）**：`harness/skills/` 整目录 + `tests/test_skills.py` + `openspec/specs/skills/` 均已移除（git 历史留底）。本节保留为「为何曾经有、为何删」的存档。
 
 理念是**按需加载可复用能力、不常驻**（渐进式披露，对齐 Agent Skill）。Phase 7 曾留一个关键词版 `Skill` 类（`name`/`description`/`content`/`triggers`）+ `SkillRegistry.load_for(task)`，但**从未接进运行路径**（`chat_handler`/`AgentLoop`/`SubAgent.run`/`delegate` 都不调它），属扩展点骨架。生产化阶段按 YAGNI 删除。
 
