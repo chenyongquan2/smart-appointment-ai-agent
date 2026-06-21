@@ -14,8 +14,9 @@
 | 2️⃣ | [官方手册 · harness-engineering-official-notes.md](./harness-engineering-official-notes.md) | OpenAI / Anthropic 两篇官方文精读 + **两份操作手册**（当好"用 agent 的人 / 造 agent 的人"） | 想知道**高手具体怎么做**时 |
 | 3️⃣ | [重构计划 · harness-refactor-plan.md](./harness-refactor-plan.md) | 把本预约项目从 **workflow 重构成 harness** 的分 Phase 落地方案 | **动手改本项目**时 |
 | 4️⃣ | [读源码 · harness-code-reading.md](./harness-code-reading.md) | 按数据流的 **7 站精读路线**（每站：读哪个文件 / 配哪个测试 / 带什么问题），带可勾选清单 | **重构已落地、想读懂 `harness/` 代码**时 |
+| 5️⃣ | [专题 · agent-eval-fieldguide.md](./agent-eval-fieldguide.md) | **agent / LLM 应用评估**领域教材（面试向）：评估分层、离线/在线、数据集、指标、LLM-judge、RAG 评估、非确定性、回归门禁、业界工具速览，每点锚定本项目代码 + 高频面试问答 | 想系统补**评估**这块知识、或**准备面试**时 |
 
-> 简记：**1 学概念 → 2 学方法 → 3 动手做 → 4 读懂代码**。
+> 简记：**1 学概念 → 2 学方法 → 3 动手做 → 4 读懂代码 → 5 会评估**。
 
 ---
 
@@ -46,6 +47,7 @@
 - 想要"怎么设计 agent 更稳"的清单 → [官方笔记 · 5.2 当好造 agent 的人](./harness-engineering-official-notes.md)
 - 准备改本项目了 → [重构计划](./harness-refactor-plan.md)
 - 重构已落地、想读懂 `harness/` 代码 → [读源码 · 7 站路线](./harness-code-reading.md)
+- 想补 agent 评估知识 / 准备面试 → [专题 · agent 评估领域教材](./agent-eval-fieldguide.md)
 
 ---
 
