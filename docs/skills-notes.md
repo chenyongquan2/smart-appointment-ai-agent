@@ -60,7 +60,9 @@
 
 ## 2. 本项目现状（最重要的一条）
 
-**harness 的 `Skill` 类「定义了 + 有单测，但没接进运行路径」——本项目并未实际使用。**
+> **⚠️ 更新（2026-06-21，OpenSpec change `remove-skills-skeleton`）**：下述「定义了但没接入」的 harness `Skill` 骨架（`harness/skills/` + `tests/test_skills.py` + `openspec/specs/skills/`）**已按 §8 结论整体移除**（YAGNI，git 历史留底）。本节描述保留作为「为何删」的依据存档；将来真需要时按开放标准重做，**勿复活关键词版**。
+
+**（已移除）harness 的 `Skill` 类「定义了 + 有单测，但没接进运行路径」——本项目并未实际使用。**
 
 - 全仓库搜索，`Skill`/`SkillRegistry`/`load_for` 只出现在 `harness/skills/`（定义）、`tests/test_skills.py`（单测）、设计文档与学习笔记里。
 - 运行路径（`chat_handler` / `AgentLoop` / `SubAgent.run` / `delegate`）**一处都没调用**；没有 `build_default_skill_registry`，也没有任何具体 Skill 实例。
@@ -157,4 +159,4 @@
 - [Agent Skills 规范 + skills-ref](https://agentskills.io/specification) · [github.com/agentskills/agentskills](https://github.com/agentskills/agentskills) · [PyPI: skills-ref](https://pypi.org/project/skills-ref/)
 - [LangChain Deep Agents — Skills](https://docs.langchain.com/oss/python/deepagents/skills) · [langchain-skills](https://github.com/langchain-ai/langchain-skills)
 - [Claude Agent SDK — Skills](https://platform.claude.com/docs/en/agent-sdk/skills) · [Anthropic：Equipping agents with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)
-- 本项目源码：[harness/skills/](../harness/skills) · 现状结论见本文 §2
+- 本项目源码：~~harness/skills/~~（已于 OpenSpec change `remove-skills-skeleton` 移除，见 git 历史）· 现状结论见本文 §2

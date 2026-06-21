@@ -1,4 +1,4 @@
-"""harness 子 Agent 层（Phase 7：子 Agent / Skills 化）。
+"""harness 子 Agent 层（Phase 7：子 Agent / delegate 派生）。
 
 把领域能力（预约 / 咨询 / 行为分析）沉淀为专用子 Agent，由主 Agent 通过 ``delegate``
 工具自主派生——而非硬编码路由。每个子 Agent 在独立上下文、独立工具子集里复用

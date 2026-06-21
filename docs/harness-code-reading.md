@@ -1083,8 +1083,8 @@ def end_span(self, span):                      # tracer.py:85
 - [ ] [subagents/base.py](../harness/subagents/base.py) — 子 Agent 基类
 - [ ] [subagents/delegate.py](../harness/subagents/delegate.py) — **关键：`delegate` 本身就是一个工具**
 - [ ] [subagents/registry.py](../harness/subagents/registry.py) + 三个具体子 Agent（appointment / consultant / user_behavior）
-- [ ] [skills/base.py](../harness/skills/base.py) + [skills/registry.py](../harness/skills/registry.py) — **骨架、未接入，扫一眼即可**（详见 6.5）
-- [ ] 测试 [test_subagents.py](../tests/test_subagents.py) + [test_skills.py](../tests/test_skills.py) + [test_system_prompt_subagents.py](../tests/test_system_prompt_subagents.py)
+- [ ] ~~skills/base.py + skills/registry.py~~ — **骨架已移除**（OpenSpec change `remove-skills-skeleton`，详见 6.5）
+- [ ] 测试 [test_subagents.py](../tests/test_subagents.py) + [test_system_prompt_subagents.py](../tests/test_system_prompt_subagents.py)
 
 ## 6.3 关键代码 ①：delegate 本身就是一个工具
 
@@ -1182,16 +1182,15 @@ _main_registry.register(_delegate_tool)   # ☜ 主 Agent 手里「只有」dele
 >
 > 两条渠道都同源于各 `Tool.description` / `args_schema`（第 2 站「单一真相源」），不会漂。唯一小维护点：子 Agent 写死的 prose 里若用文字提了某工具（如 consultant 写「用知识库检索工具」），改了 `tool_names` 却忘改这句 prose，**模型仍能正常调工具（靠渠道 ①），只是那句文字会过时**——无伤大雅。
 
-## 6.5 harness 的 `Skill`（骨架 · 仿 Agent Skill，未接入）
+## 6.5 harness 的 `Skill`（已移除 · 曾是仿 Agent Skill 的骨架）
 
-> 📄 源码：[harness/skills/base.py](../harness/skills/base.py) + [harness/skills/registry.py](../harness/skills/registry.py)
-> 术语：**Agent Skill** = 开放标准（`SKILL.md`）；**harness 的 `Skill` 类** = 本仓库仿这个理念的玩具类。用词约定见 [skills-notes.md §0](./skills-notes.md)。
+> 术语：**Agent Skill** = 开放标准（`SKILL.md`）；**harness 的 `Skill` 类** = 本仓库曾仿这个理念的玩具类。用词约定见 [skills-notes.md §0](./skills-notes.md)。
+> ⚠️ **已删除（2026-06-21，OpenSpec change `remove-skills-skeleton`）**：`harness/skills/` 整目录 + `tests/test_skills.py` + `openspec/specs/skills/` 均已移除（git 历史留底）。本节保留为「为何曾经有、为何删」的存档。
 
-理念是**按需加载可复用能力、不常驻**（渐进式披露，对齐 Agent Skill）。harness 里就是一个 `Skill` 类（`name`/`description`/`content`/`triggers`）+ [`SkillRegistry.load_for(task)`](../harness/skills/registry.py#L39) 用关键词匹配挑相关项。
+理念是**按需加载可复用能力、不常驻**（渐进式披露，对齐 Agent Skill）。Phase 7 曾留一个关键词版 `Skill` 类（`name`/`description`/`content`/`triggers`）+ `SkillRegistry.load_for(task)`，但**从未接进运行路径**（`chat_handler`/`AgentLoop`/`SubAgent.run`/`delegate` 都不调它），属扩展点骨架。生产化阶段按 YAGNI 删除。
 
-- **现状（重要）**：**定义了 + 有单测，但没接进运行路径——本项目并未实际使用。** `chat_handler`/`AgentLoop`/`SubAgent.run`/`delegate` 都不调它，也没有具体 Skill 实例。它是 Phase 7 故意留的**扩展点骨架**，同第 3 站 3.4 的 `summary.py` 摘要 stub。
 - **什么时候才会用到**：当「运营 SOP/话术」积累到几十套、且想让运营自助维护时（信号：子 Agent 的 `system_prompt` 越写越长、改话术要发版）。在那之前，**工具 + RAG + 子 Agent + 系统提示已覆盖需求，用不上 skill**。
-- **演进方向（生产）**：这个关键词版骨架对未来生产版**几乎零复用**，生产化时建议**移除**；真要做时采用开放 **`SKILL.md` 标准 + 模型驱动加载**（`skills-ref` 或 LangChain Deep Agents），**不复活关键词版**。
+- **演进方向（生产）**：那个关键词版骨架对未来生产版**几乎零复用**，故已移除；真要做时采用开放 **`SKILL.md` 标准 + 模型驱动加载**（`skills-ref` 或 LangChain Deep Agents），**不复活关键词版**。
 
 > 📎 完整分析（要不要 / 何时 / 选型 / `skills-ref` 成熟度实测 / 术语三分）见 [skills-notes.md](./skills-notes.md)。
 
@@ -1224,8 +1223,6 @@ _main_registry.register(_delegate_tool)   # ☜ 主 Agent 手里「只有」dele
 
 > [`test_delegate_unknown_subagent_returns_structured_error`](../tests/test_subagents.py#L197)：在 [delegate.py:67](../harness/subagents/delegate.py#L67) `if not subagent_registry.has(...)` 打点，看未知子 Agent 名返回结构化错误而非抛。
 > [`test_delegate_description_lists_subagents`](../tests/test_subagents.py#L209)：看构造期把三个专员渲染进 `description`。
-
-> Skills（骨架、未接入）只需扫一眼单测即可：[`test_load_for_returns_only_matching_skill`](../tests/test_skills.py#L30) 看关键词命中判定；不必深究，理由见 6.5 与 [skills-notes.md](./skills-notes.md)。
 
 ---
 
