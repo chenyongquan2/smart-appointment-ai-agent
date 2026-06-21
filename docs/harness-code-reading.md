@@ -564,7 +564,7 @@ for turn in recent:                          # 再逐条转成 LangChain 消息�
 
 > 📄 源码出处：[harness/memory/summary.py](../harness/memory/summary.py)（`SummaryMemory` 协议 + `NoOpSummary` 桩 + `LLMSummaryMemory` 生产实现）、[summary_schema.py](../harness/memory/summary_schema.py)
 
-[`SummaryMemory`](../harness/memory/summary.py#L40) 协议与 [`NoOpSummary`](../harness/memory/summary.py#L53)（永远返回空串）**仍保留不动**——前者是契约、后者作降级/测试基线。真正干活的是新增的 [`LLMSummaryMemory`](../harness/memory/summary.py)。
+[`SummaryMemory`](../harness/memory/summary.py#L40) 协议与 [`NoOpSummary`](../harness/memory/summary.py#L53)（永远返回空串）**仍保留不动**——前者是契约、后者作降级/测试基线。真正干活的是新增的 [`LLMSummaryMemory`](../harness/memory/summary.py#L88)。
 
 #### 先扫盲：`turn id` / `window_turns` / `covered_upto` 三个词（看代码前务必搞懂）
 
@@ -983,7 +983,7 @@ uv run python scripts/debug_memory_flow.py     # 直接看打印出的记忆流
 
 **E1 · 触发 + 写缓存**（图 A 的「攒够量才压」+ 落库）
 
-> 启动测试：[`test_triggers_and_caches_and_hint_readable`](../tests/test_summary_memory.py)（造 6 条、`window_turns=2` → 窗外 = id 1..4；阈值设 0 强制触发）。
+> 启动测试：[`test_triggers_and_caches_and_hint_readable`](../tests/test_summary_memory.py#L128)（造 6 条、`window_turns=2` → 窗外 = id 1..4；阈值设 0 强制触发）。
 
 | 断点 | 位置 | F5 到达后看什么 |
 |---|---|---|
@@ -995,20 +995,20 @@ uv run python scripts/debug_memory_flow.py     # 直接看打印出的记忆流
 
 **E2 · 滚动并入**（图 B：只喂「上次摘要 + 新出窗回合」）
 
-> 启动测试：[`test_rolling_includes_prior_summary_and_only_new_turns`](../tests/test_summary_memory.py)（预置缓存 `covered_upto=2`）。
+> 启动测试：[`test_rolling_includes_prior_summary_and_only_new_turns`](../tests/test_summary_memory.py#L147)（预置缓存 `covered_upto=2`）。
 > 在 [summary.py:253](../harness/memory/summary.py#L253) 打点：看 `rows_to_summarize` **只含 id 3、4**（id≤2 的老回合被游标挡掉，不再重读）；F11 进 `_summarize_rows` 看 `prior_summary` 已是上次摘要文本——印证「在上次结论上累积」。
 
 **E3 · 缓存命中，零 LLM**（图 C 的省钱路径）
 
-> 启动测试：[`test_cache_hit_skips_llm`](../tests/test_summary_memory.py)（预置 `covered_upto=4`，已覆盖全部窗外）。
+> 启动测试：[`test_cache_hit_skips_llm`](../tests/test_summary_memory.py#L169)（预置 `covered_upto=4`，已覆盖全部窗外）。
 > 在 [summary.py:257](../harness/memory/summary.py#L257) `if not rows_to_summarize:` 打点：`rows_to_summarize` 为空 → 直接 return，**根本不走到 LLM**（fake chain 的 `calls` 保持 0）。
 
 **E4 · LLM 失败 → 优雅降级**（图 C 右下：不写缓存 → 读侧退回纯窗口）
 
-> 启动测试：[`test_llm_failure_degrades_without_crash`](../tests/test_summary_memory.py)（fake chain 抛 `asyncio.TimeoutError`）。
+> 启动测试：[`test_llm_failure_degrades_without_crash`](../tests/test_summary_memory.py#L185)（fake chain 抛 `asyncio.TimeoutError`）。
 > 在 [summary.py:271](../harness/memory/summary.py#L271) 打点并 F10 越过：看 `GuardrailExhausted` 被接住、**不写缓存、不抛**；再看 `get_summary_hint` 返回 `""`——压缩失败完全等价于「这轮没新摘要」，主流程毫发无伤（读侧 `get_read_context` 仍会把 id>covered_upto 原文注入，不丢）。
 
-> 想看读侧在真实 `chat_handler` 里如何把摘要注入 history 首条、写侧如何在回合收尾被调用，见第 7 站端到端动线 + [`test_chat_handler_e2e.py`](../tests/test_chat_handler_e2e.py) 的 `test_compaction_runs_after_assistant_writeback`（断言压缩发生在 assistant 回写之后）。
+> 想看读侧在真实 `chat_handler` 里如何把摘要注入 history 首条、写侧如何在回合收尾被调用，见第 7 站端到端动线 + [`test_compaction_runs_after_assistant_writeback`](../tests/test_chat_handler_e2e.py#L132)（断言压缩发生在 assistant 回写之后）。
 
 ## 3.8 它在你项目里的什么位置 / 想改时动哪里
 
