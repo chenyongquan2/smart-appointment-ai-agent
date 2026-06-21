@@ -159,7 +159,7 @@ async def run(self, messages, session):
 **目标**：对齐 Claude Code 的 sub-agents 与 OpenClaw 的 Skills System。
 - 把"预约""咨询""行为分析"做成**专用子 Agent**，由主 harness 通过一个 `delegate(sub_agent, task)` 工具派生调用（而非硬编码路由）。
 - 复杂任务可并行派生、各自独立上下文，结果汇总回主 Agent。
-- 可选：把可复用能力沉淀为 **Skill**（带描述、按需加载），对齐 Claude Code skills 机制。
+- ~~可选：把可复用能力沉淀为 **Skill**（带描述、按需加载），对齐 Claude Code skills 机制。~~ → **已撤销**：Phase 7 曾搭关键词版 Skill 骨架，但从未接入运行路径，已于 2026-06-21 移除（PR #2，YAGNI）；真要做按开放 `SKILL.md` 标准重做，理由见 [skills-notes.md §8](./skills-notes.md)。
 - **验收**：主 Agent 能自主决定"这个任务交给哪个子 Agent"。
 - **技能点**：multi-agent orchestration、sub-agent 派生、skills 设计。
 

@@ -13,7 +13,7 @@
 |---|---|---|
 | **#1 理念** | 「按需加载可复用能力、不常驻」（渐进式披露） | **这一层大家都一样**——你若觉得「没区别」，说的就是这一层，没错 |
 | **#2 Agent Skill（开放标准）** | `SKILL.md` 目录 + 渐进披露（agentskills.io 规范） | 一个**目录**（指令+脚本+资源）、**模型驱动**选择、能跑代码、**生产功能**、多厂通用 |
-| **#3 harness 的 `Skill` 类** | 本仓库 `harness/skills/` 那个 dataclass | **纯文本 `content` + 关键词匹配**的最小类，无文件/无脚本/无模型驱动、**没接进项目** |
+| **#3 harness 的 `Skill` 类** | 本仓库**曾经**有的那个 dataclass（`harness/skills/`，**已于 2026-06-21 删除**） | **纯文本 `content` + 关键词匹配**的最小类，无文件/无脚本/无模型驱动、**从未接进项目**，故移除 |
 
 **一句话**：三者**理念相同（#1）**，但**实现/能力/标准/是否在用差一个量级（#3 ≪ #2）**。#3 不是「另一种 skill」，而是 #1 理念的一个「借了名字的 ~50 行教学影子」。
 
@@ -55,18 +55,20 @@
 
 ## 1. harness 的 `Skill` 类是什么（#3）
 
-- **定义**：一个 frozen dataclass —— `name` / `description` / `content` / `triggers`；`matches(task)` 用**确定性关键词子串匹配**判断相关；`SkillRegistry.load_for(task)` 返回命中的 skill。设计意图：把「可复用能力」声明成片段，**任务相关时才把 `content` 注入子 Agent 上下文**。
+> 🗑️ **已删除（2026-06-21）**：本节及 §2/§3 描述的 harness `Skill` 类**已整体移除并合并入 `master`**（OpenSpec change `remove-skills-skeleton`，PR #2）。以下为「它曾是什么、为何删」的**历史存档**——代码请查 git 历史，不要据此以为仓库里还有这个类。
+
+- **（曾经的）定义**：一个 frozen dataclass —— `name` / `description` / `content` / `triggers`；`matches(task)` 用**确定性关键词子串匹配**判断相关；`SkillRegistry.load_for(task)` 返回命中的 skill。设计意图：把「可复用能力」声明成片段，**任务相关时才把 `content` 注入子 Agent 上下文**。
 - **核心理念**：**渐进式披露 / 按需加载、不常驻**——别把所有能力说明永远塞进每个 Agent 的提示，用到哪类才加载哪类（对齐 Claude Code skills）。
 
 ## 2. 本项目现状（最重要的一条）
 
-> **⚠️ 更新（2026-06-21，OpenSpec change `remove-skills-skeleton`）**：下述「定义了但没接入」的 harness `Skill` 骨架（`harness/skills/` + `tests/test_skills.py` + `openspec/specs/skills/`）**已按 §8 结论整体移除**（YAGNI，git 历史留底）。本节描述保留作为「为何删」的依据存档；将来真需要时按开放标准重做，**勿复活关键词版**。
+**现状：harness 里已没有任何 `Skill` 代码——骨架于 2026-06-21 整体移除并合并入 `master`（OpenSpec change `remove-skills-skeleton`，PR #2）。本项目从未、现在也不使用 skill。**
 
-**（已移除）harness 的 `Skill` 类「定义了 + 有单测，但没接进运行路径」——本项目并未实际使用。**
+> 下面这段是**移除的依据存档**（「为何当初留、为何现在删」）：
 
-- 全仓库搜索，`Skill`/`SkillRegistry`/`load_for` 只出现在 `harness/skills/`（定义）、`tests/test_skills.py`（单测）、设计文档与学习笔记里。
-- 运行路径（`chat_handler` / `AgentLoop` / `SubAgent.run` / `delegate`）**一处都没调用**；没有 `build_default_skill_registry`，也没有任何具体 Skill 实例。
-- 它是 **Phase 7 故意留的扩展点骨架**，和第 3 站的 `summary.py` 摘要 stub 是同一种「先搭骨架、接口就位、可测、功能待后续 Phase 填」的套路。
+- 删除前全仓库搜索，`Skill`/`SkillRegistry`/`load_for` 只出现在 `harness/skills/`（定义）、`tests/test_skills.py`（单测）、设计文档与学习笔记里——**运行路径一处都没调用**。
+- 运行路径（`chat_handler` / `AgentLoop` / `SubAgent.run` / `delegate`）从未调用它；没有 `build_default_skill_registry`，也没有任何具体 Skill 实例。
+- 它曾是 **Phase 7 故意留的扩展点骨架**，与第 3 站 `summary.py` 摘要 stub 同属「先搭骨架待后续 Phase 填」的套路；但生产化阶段判定该填的内容应走开放标准（见 §8），骨架本身零复用，故删。
 
 ## 3. harness 的 `Skill` 类 vs Agent Skill（以 Claude Code 实现为例）
 
@@ -79,7 +81,7 @@
 | 加载 | 一段字符串注入提示（设计意图） | **渐进式披露**：常驻 name+description；激活后载完整正文；按引用载脚本/资源 |
 | 能力 | 仅纯文本提示片段 | 可含**可执行脚本、参考文档、多文件工作流** |
 | 界面 | 内部 `load_for`，无独立工具 | 通过 **Skill 工具**调用 |
-| 现状 | 本项目未接入（骨架+单测） | Claude 生产功能，真在用 |
+| 现状 | **已删除**（2026-06-21，PR #2）；曾仅有骨架+单测、未接入 | Claude 生产功能，真在用 |
 | 取向 | 离线、确定、可单测（牺牲语义匹配/代码能力） | 在线、模型驱动、灵活 |
 
 > harness 的 `Skill` 类 = Agent Skill 的「最小化、纯文本、关键词触发、可离线单测」的**教学影子版**。
@@ -148,7 +150,7 @@
 
 ## 8. 一句话总结 / 决策
 
-- **现在**：harness 里那个**关键词版 Skill 骨架（#3），生产化阶段建议移除**（YAGNI，未接入、非生产级设计）；本项目用不上 skill。
+- **现在**：harness 里那个**关键词版 Skill 骨架（#3）已移除**（2026-06-21，PR #2 合并入 master；YAGNI，未接入、非生产级设计）；本项目用不上 skill。
 - **它对未来生产版几乎零复用**：真要做生产级渐进披露 skill，需要 SKILL.md 格式解析、frontmatter 校验、三级披露、资源加载、模型驱动选择——这些 harness 类**一个都没有**，等于另起炉灶。所以**别「进化」这个关键词类**，那只是重写一遍 `skills-ref`/Deep Agents 已经做好的东西、还偏离开放标准。能从它继承的只有「理念理解」，不是代码。
 - **将来**：真撞上「SOP/话术库膨胀 + 运营自助」→ 采用**开放 `SKILL.md` 标准 + 模型驱动加载**；按届时成熟度三选一：`skills-ref` 已 1.0 → `skills-ref`+薄胶水（留自研循环）；仍 0.x → pin+包 或 迁 **LangChain Deep Agents**（更 production-ready）；需求极小 → 照 SKILL.md 标准自写 ~百行 loader。**都不要复活关键词版。**
 - **「以后也许用得到」≠ 需求**：先删，git 历史留底，真需要时按标准重做。
