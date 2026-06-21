@@ -58,7 +58,7 @@ _agent_loop = AgentLoop(
 
 # 持久化与记忆组件（DatabaseRouter 复用既有 SQLite + Repository）。
 _db = DatabaseRouter()
-_WINDOW_TURNS = 10                                           # 短期窗口轮数（压缩窗外边界与此一致）
+_WINDOW_TURNS = 10                                           # 短期记忆窗口的大小：保留最近多少条消息（单位=条消息，一问一答=两条；压缩窗外边界与此一致）
 _session_store = SessionStore(repo=_db.conversations)       # 按 session_id 隔离会话历史
 _short_term = ShortTermMemory(window_turns=_WINDOW_TURNS)    # 短期记忆：只回放最近 10 轮
 _long_term = LongTermMemory(repo=_db.user_behavior)          # 长期记忆：跨会话的用户偏好
