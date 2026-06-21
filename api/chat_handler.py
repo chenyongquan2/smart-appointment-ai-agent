@@ -17,10 +17,13 @@
 import uuid
 from typing import Optional, Tuple
 
+from langchain_core.messages import SystemMessage
+
 from config.model_provider import create_chat_model
 from db.db_router import DatabaseRouter
 from harness.memory.long_term import LongTermMemory
 from harness.memory.short_term import ShortTermMemory
+from harness.memory.summary import LLMSummaryMemory
 from harness.runtime import AgentLoop
 from harness.runtime.session import SessionStore
 from harness.runtime.system_prompt import build_system_prompt
@@ -55,9 +58,18 @@ _agent_loop = AgentLoop(
 
 # 持久化与记忆组件（DatabaseRouter 复用既有 SQLite + Repository）。
 _db = DatabaseRouter()
+_WINDOW_TURNS = 10                                           # 短期窗口轮数（压缩窗外边界与此一致）
 _session_store = SessionStore(repo=_db.conversations)       # 按 session_id 隔离会话历史
-_short_term = ShortTermMemory(window_turns=10)               # 短期记忆：只回放最近 10 轮
+_short_term = ShortTermMemory(window_turns=_WINDOW_TURNS)    # 短期记忆：只回放最近 10 轮
 _long_term = LongTermMemory(repo=_db.user_behavior)          # 长期记忆：跨会话的用户偏好
+# 摘要记忆（记忆压缩）：窗外较旧回合滚动压缩为摘要，下一轮注入。读/写分离——
+# 写侧在回合收尾算（不挡关键路径），读侧请求开始时纯读缓存。窗口轮数与短期记忆一致。
+_summary = LLMSummaryMemory(
+    llm=_llm,
+    conversations_repo=_db.conversations,
+    summaries_repo=_db.summaries,
+    window_turns=_WINDOW_TURNS,
+)
 
 # 与 AgentLoop 的约定前缀：loop 把「最终回复」以 [REPLY]... 形式 yield 出来，
 # 本模块据此从一串 token 里择出真正的回复文本（其余如 [THOUGHT] 是过程，不回写历史）。
@@ -97,6 +109,13 @@ async def ProcessUserInput_stream(
     history_msgs = _short_term.to_messages(session.history)
     preference_hint = _long_term.build_preference_hint(session.user_id)
 
+    #    - 摘要（记忆压缩）：读侧纯读上一轮预算好的摘要缓存（不调 LLM）。非空则作为独立
+    #      SystemMessage 置于 history 首条——落在「系统提示之后、短期窗口之前」，与长期偏好
+    #      （走 system_suffix）物理分开。摘要承载被短期窗口裁掉的早期约束/未完成槽位。
+    summary_hint = _summary.get_summary_hint(sid)
+    if summary_hint:
+        history_msgs = [SystemMessage(content=summary_hint)] + history_msgs
+
     # ③ 先写「用户输入」入会话（内存窗口 + 持久化 SQLite）。
     #    注意：必须在 ② 取完历史「之后」再写，否则当前这句会污染本轮注入的历史。
     _session_store.append_turn(sid, "user", user_input)
@@ -121,6 +140,11 @@ async def ProcessUserInput_stream(
     #    （兜底回复——如 loop 跑满步数的那句——同样记入，保证历史不断档。）
     if reply_text:
         _session_store.append_turn(sid, "assistant", reply_text)
+
+    # ⑦ 写侧记忆压缩（inline-after-stream）：回复已流式送达，此处趁收尾把「下一轮要用的」
+    #    摘要算好落库——LLM 调用移出关键路径、不卡首 token；inline（非 fire-and-forget）
+    #    保证确定性完成与可观测。失败已在内部降级（不写缓存、不抛），不影响本轮。
+    await _summary.compact_if_needed(sid)
 
 
 def resolve_session_id(session_id: Optional[str]) -> str:

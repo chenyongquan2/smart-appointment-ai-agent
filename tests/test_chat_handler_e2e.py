@@ -44,14 +44,25 @@ class CapturingModel(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.reply))])
 
 
+class _NoopSummaryMemory:
+    """离线占位摘要记忆：读侧恒空、写侧 no-op（不触网/不碰 DB）。"""
+
+    def get_summary_hint(self, session_id: str) -> str:
+        return ""
+
+    async def compact_if_needed(self, session_id: str) -> None:
+        return None
+
+
 @pytest.fixture
 def offline_handler(monkeypatch):
-    """把 chat_handler 的模块级单例替换为离线 fake（内存 SessionStore、无偏好）。"""
+    """把 chat_handler 的模块级单例替换为离线 fake（内存 SessionStore、无偏好、无压缩）。"""
     llm = CapturingModel()
     loop = AgentLoop(llm=llm, registry=ToolRegistry())
     monkeypatch.setattr(ch, "_agent_loop", loop)
     monkeypatch.setattr(ch, "_session_store", SessionStore(repo=None))
     monkeypatch.setattr(ch, "_long_term", LongTermMemory(None))
+    monkeypatch.setattr(ch, "_summary", _NoopSummaryMemory())
     return llm
 
 
@@ -108,3 +119,30 @@ async def test_session_id_generated_when_absent(offline_handler):
     # 不传 session_id 也应正常工作（内部生成）
     out = "".join([tok async for tok in ch.ProcessUserInput_stream("你好")])
     assert out == "[REPLY]好的。"
+
+
+@pytest.mark.asyncio
+async def test_compaction_runs_after_assistant_writeback(monkeypatch, offline_handler):
+    """写侧压缩应在 assistant 回复回写之后触发（inline-after-stream）。"""
+
+    class _RecordingSummary:
+        def __init__(self):
+            self.snapshot_at_compact = None
+
+        def get_summary_hint(self, session_id):
+            return ""
+
+        async def compact_if_needed(self, session_id):
+            # 压缩触发时，本轮 user + assistant 都应已落入会话历史。
+            state = ch._session_store.get_or_create(session_id)
+            self.snapshot_at_compact = [(t.role, t.content) for t in state.history]
+
+    rec = _RecordingSummary()
+    monkeypatch.setattr(ch, "_summary", rec)
+
+    await _run("帮我约一下", session_id="s1")
+
+    assert rec.snapshot_at_compact == [
+        ("user", "帮我约一下"),
+        ("assistant", "好的。"),
+    ]

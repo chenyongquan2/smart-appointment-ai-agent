@@ -4,6 +4,7 @@ from .repositories import (
     KnowledgeRepository,
     UserBehaviorRepository,
     ConversationRepository,
+    ConversationSummaryRepository,
 )
 from typing import Optional
 
@@ -32,6 +33,7 @@ class DatabaseRouter:
         self.knowledge_repo = KnowledgeRepository(self.session_manager)
         self.user_behavior_repo = UserBehaviorRepository(self.session_manager)
         self.conversation_repo = ConversationRepository(self.session_manager)
+        self.conversation_summary_repo = ConversationSummaryRepository(self.session_manager)
 
     @property
     def technicians(self) -> TechnicianRepository:
@@ -52,6 +54,11 @@ class DatabaseRouter:
     def conversations(self) -> ConversationRepository:
         """获取会话历史数据仓库"""
         return self.conversation_repo
+
+    @property
+    def summaries(self) -> ConversationSummaryRepository:
+        """获取会话摘要缓存数据仓库"""
+        return self.conversation_summary_repo
 
     def close(self):
         """关闭数据库连接"""
