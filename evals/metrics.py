@@ -28,8 +28,12 @@ class EvalResult:
     input: str
     expected_intent: str
     actual_intent: Optional[str] = None       # 实际分类结果；None=未分类
-    expected_tools: Optional[list[str]] = None
-    actual_tools: Optional[list[str]] = None   # None=本次没端到端跑 loop，拿不到实际工具
+    expected_tools: Optional[list[str]] = None  # 期望工具名（顺序无关）；标准答案侧仍只记名字
+    # actual_tools「采全」：有序的 {"name", "args"} 列表（name 与 args 一并保留、保序）。
+    # None=本次没端到端跑 loop，拿不到实际工具。
+    # 设计：采全比松——数据采下 name+args+顺序，但下方 tool_call_correctness 仅按名字集合比较；
+    # 参数级/序列级比对留给后续改造（届时无需回头改采集层）。
+    actual_tools: Optional[list[dict[str, Any]]] = None
     expected_slots: Optional[dict[str, Any]] = None
     actual_slots: Optional[dict[str, Any]] = None
     latency_s: Optional[float] = None          # 这条用例耗时（秒）；None=没计时
@@ -80,7 +84,13 @@ def tool_call_correctness(results: list[EvalResult]) -> Metric:
             note="本次运行未捕获实际工具调用（需端到端执行 AgentLoop）",
         )
     # 用 set 比较：「调了哪些工具」算对，与调用「顺序」无关（顺序不在本指标考核范围内）。
-    correct = sum(1 for r in eligible if set(r.actual_tools or []) == set(r.expected_tools or []))
+    # actual_tools 是采全的 {"name", "args"} 列表，这里只取 name 组成集合（采全比松：
+    # 参数与顺序虽采下但不参与本指标，留给后续改造做参数级/序列级比对）。
+    correct = sum(
+        1
+        for r in eligible
+        if {t["name"] for t in (r.actual_tools or [])} == set(r.expected_tools or [])
+    )
     total = len(eligible)
     return Metric("工具调用正确率", value=correct / total, numerator=correct, denominator=total)
 

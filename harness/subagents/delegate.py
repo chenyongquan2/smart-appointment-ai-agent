@@ -11,9 +11,12 @@ TAO 循环 / 显式优于隐式）。
 
 from __future__ import annotations
 
+from typing import Optional
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field
 
+from harness.observability.tracer import Tracer
 from harness.subagents.registry import SubAgentRegistry
 from harness.tools.base import Tool
 from harness.tools.registry import ToolRegistry
@@ -34,6 +37,7 @@ def build_delegate_tool(
     llm: BaseChatModel,
     full_registry: ToolRegistry,
     subagent_registry: SubAgentRegistry,
+    tracer: Optional[Tracer] = None,
 ) -> Tool:
     """构造 ``delegate`` 工具。
 
@@ -41,6 +45,9 @@ def build_delegate_tool(
         llm: 子 Agent 运行所用的聊天模型（与主 Agent 共用 provider）。
         full_registry: 全量工具注册中心；子 Agent 据自身 ``tool_names`` 从中切片。
         subagent_registry: 可派生子 Agent 的注册中心。
+        tracer: 可选 tracer；透传给被派生子 Agent 的 ``run``，使其内层工具调用被导出
+            （消除子 Agent 工具调用的可观测盲区）。缺省 ``None`` 时子 Agent 退化
+            ``NoopTracer``，行为与透传前完全一致。
 
     Returns:
         一个遵循工具四要素的 ``Tool``，handler 把任务转交对应子 Agent 并回传其结果。
@@ -73,8 +80,9 @@ def build_delegate_tool(
                 ),
             }
         # 取出目标子 Agent，在其独立上下文里跑一遍 mini TAO；result 是已剥 [REPLY] 的最终文本。
+        # tracer 透传：注入时子 Agent 内层工具调用会被导出（盲区修复）；缺省 None 行为不变。
         agent = subagent_registry.get(args.subagent)
-        result = await agent.run(args.task, full_registry, llm)
+        result = await agent.run(args.task, full_registry, llm, tracer=tracer)
         # 结构化返回（success/subagent/result）——主 Agent 拿到的是「子 Agent 的结论」这一条干净结果。
         return {"success": True, "subagent": args.subagent, "result": result}
 

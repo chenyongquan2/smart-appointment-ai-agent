@@ -18,6 +18,7 @@ from typing import Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from harness.observability.tracer import Tracer
 from harness.runtime.agent_loop import AgentLoop
 from harness.tools.registry import ToolRegistry
 
@@ -50,6 +51,7 @@ class SubAgent:
         full_registry: ToolRegistry,
         llm: BaseChatModel,
         session_id: Optional[str] = None,
+        tracer: Optional[Tracer] = None,
     ) -> str:
         """在独立上下文里跑一次 mini TAO 循环，返回最终文本回复。
 
@@ -58,6 +60,10 @@ class SubAgent:
             full_registry: 全量工具注册中心；据 ``tool_names`` 切片出本子 Agent 的子集。
             llm: 聊天模型（与主 Agent 共用 provider）。
             session_id: 透传的会话标识（用于 tracer 关联）；不改变隔离语义。
+            tracer: 可选 tracer；透传进内层 ``AgentLoop`` 使子 Agent 步内的
+                tool_call / observation 被导出（消除子 Agent 工具调用对可观测层的盲区）。
+                缺省 ``None`` 时内层 loop 退化 ``NoopTracer``，行为与透传前完全一致。
+                内层 loop 仍自开 root span（不嵌套进主 trace 树，见 design.md D2）。
 
         Returns:
             子 Agent 的最终文本回复（已剥离 ``[REPLY]`` 前缀）。
@@ -69,7 +75,10 @@ class SubAgent:
         # ② 复用主循环 AgentLoop——不重写 TAO 循环、不重写护栏/tracer/错误隔离。
         #    与主 Agent 的唯一差别只有两处：① 工具子集（subset），② 专用 system_prompt。
         #    每次 run 都现场 new 一个 loop：子 Agent 自身无状态，故天然并发安全。
-        loop = AgentLoop(llm=llm, registry=subset, system_prompt=self.system_prompt)
+        #    tracer 透传：注入时子 Agent 工具调用可见；缺省 None 时 AgentLoop 退化 NoopTracer。
+        loop = AgentLoop(
+            llm=llm, registry=subset, system_prompt=self.system_prompt, tracer=tracer
+        )
 
         # ③ 在「独立上下文」里跑 mini TAO：这里只传 task，不传主 Agent 的 history——
         #    子 Agent 的中间思考/工具调用都困在自己的 messages 里，绝不回流到主 Agent。

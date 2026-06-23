@@ -96,11 +96,18 @@ async def run_baseline(cases: list[dict]) -> int:
     from config.model_provider import create_chat_model
     from agents.task_classification.task_classifier import TaskClassifier
     from evals.metrics import EvalResult, build_report, format_report
+    from evals.agent_capture import capture_tool_calls
+    from harness.subagents import build_default_subagent_registry
+    from harness.tools.registry import build_default_registry
 
     try:
-        classifier = TaskClassifier(create_chat_model(temperature=0))  # temperature=0 求确定性
+        llm = create_chat_model(temperature=0)  # temperature=0 求确定性（分类器与 loop 共用）
+        classifier = TaskClassifier(llm)
+        # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
+        full_registry = build_default_registry()
+        subagents = build_default_subagent_registry()
     except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
-        print(f"[ERROR] 创建分类器失败: {exc}", file=sys.stderr)
+        print(f"[ERROR] 创建分类器/工具失败: {exc}", file=sys.stderr)
         return 2
 
     results: list[EvalResult] = []
@@ -115,7 +122,16 @@ async def run_baseline(cases: list[dict]) -> int:
             actual = await classifier.classify_task(text)  # ← 真正调用 LLM 分类
         except Exception as exc:  # 网络/鉴权异常: 标注出来, 不中断整轮（一条挂了别拖垮全量）
             actual = f"<异常:{type(exc).__name__}>"
-        latency = time.perf_counter() - start
+        latency = time.perf_counter() - start  # 仅计分类器单次调用（与既有口径一致，不含 loop）
+
+        # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集实际工具序列。
+        # 与分类器并存——意图准确率不依赖真跑；工具调用正确率靠这里出真数。单条失败不拖垮全量。
+        actual_tools = None
+        try:
+            actual_tools = await capture_tool_calls(text, llm, full_registry, subagents)
+        except Exception as exc:  # 真跑异常: 该条 actual_tools 记 None（指标对该条标 N/A，不伪造）
+            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具调用对该条记 N/A: {text[:30]}",
+                  file=sys.stderr)
 
         # setdefault：该意图首次出现就初始化 [correct=0, total=0]，随后累加。
         stat = by_intent.setdefault(expected, [0, 0])
@@ -129,10 +145,10 @@ async def run_baseline(cases: list[dict]) -> int:
                 input=text,
                 expected_intent=expected,
                 actual_intent=actual,
-                # expected_tools 为前瞻注解；本运行不端到端执行 AgentLoop，故 actual_tools
-                # 留空（报告会据此把"工具调用正确率"标 N/A 并注明原因）。
+                # actual_tools 采全为有序 [{name, args}]；指标只比名字集合（采全比松）。
+                # 真跑失败/无工具时为 None/[]，报告据此对该条标 N/A 而非伪造分母。
                 expected_tools=case.get("expected_tools"),
-                actual_tools=None,
+                actual_tools=actual_tools,
                 expected_slots=case.get("expected_slots"),
                 actual_slots=None,
                 latency_s=latency,

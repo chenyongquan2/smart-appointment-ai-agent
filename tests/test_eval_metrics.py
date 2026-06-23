@@ -33,12 +33,16 @@ def test_tool_call_correctness_set_compare_and_na():
         EvalResult(
             "a", "appointment",
             expected_tools=["find_technician", "create_appointment"],
-            actual_tools=["create_appointment", "find_technician"],  # 顺序不同 → 算对
+            # actual_tools 采全为 {name, args} 列表；指标只比名字集合，故顺序不同仍算对。
+            actual_tools=[
+                {"name": "create_appointment", "args": {}},
+                {"name": "find_technician", "args": {}},
+            ],
         ),
         EvalResult(
             "b", "appointment",
             expected_tools=["check_availability"],
-            actual_tools=["find_technician"],  # 不同 → 算错
+            actual_tools=[{"name": "find_technician", "args": {}}],  # 不同 → 算错
         ),
     ]
     m = tool_call_correctness(results)
