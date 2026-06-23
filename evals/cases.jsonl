@@ -1,14 +1,17 @@
 // 评估用例集 — Phase 0 回归基线
 // expected_intent 口径来自真实分类器 agents/task_classification/task_classifier.py:
 //   appointment(预约) / query(查询) / pay(支付) / statistics(统计) / other(其他)
-// expected_tools 为 Phase 2 工具层的前瞻注解，当前不计分。
-// 格式: {"input": 用户输入, "expected_intent": 期望意图, "expected_tools": [前瞻工具]}
+// expected_tools 为期望工具名（其顺序同时驱动集合/部分给分/序列三种判法）。
+// expected_tool_args（可选，改造 2）: {工具名: {稳定键: 值}}——只标可确定性校验的稳定键
+//   (gender/duration/project/technician)；相对时间/自由文本不标（语义等价留给 LLM-judge）。
+//   缺省即对该用例的「参数级」档记 N/A，不伪造分母。
+// 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}}
 
 // --- appointment(预约) ---
-{"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
-{"input": "请帮我预约今天下午3点的服务1小时", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
-{"input": "约个李师傅，他这周六有空吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"]}
-{"input": "我要约后天上午的推拿，要力度大的男技师", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"]}
+{"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"project": "按摩"}, "create_appointment": {"project": "按摩"}}}
+{"input": "请帮我预约今天下午3点的服务1小时", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"create_appointment": {"duration": 60}}}
+{"input": "约个李师傅，他这周六有空吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"], "expected_tool_args": {"find_technician": {"technician": "李师傅"}}}
+{"input": "我要约后天上午的推拿，要力度大的男技师", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"gender": "male", "project": "推拿"}, "create_appointment": {"project": "推拿"}}}
 {"input": "帮我把今天的预约改到明天同一时间", "expected_intent": "appointment", "expected_tools": ["check_availability", "create_appointment"]}
 {"input": "8号技师反馈这个客人需要延长30分钟", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
 
@@ -16,7 +19,7 @@
 {"input": "你们都有哪些按摩项目?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
 {"input": "推拿一个小时多少钱?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
 {"input": "按摩房在哪里？怎么过去", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
-{"input": "有哪些女技师？她们各自擅长什么", "expected_intent": "query", "expected_tools": ["search_knowledge", "find_technician"]}
+{"input": "有哪些女技师？她们各自擅长什么", "expected_intent": "query", "expected_tools": ["search_knowledge", "find_technician"], "expected_tool_args": {"find_technician": {"gender": "female"}}}
 {"input": "李师傅的手法怎么样", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
 
 // --- pay(支付) ---

@@ -149,6 +149,7 @@ async def run_baseline(cases: list[dict]) -> int:
                 # 真跑失败/无工具时为 None/[]，报告据此对该条标 N/A 而非伪造分母。
                 expected_tools=case.get("expected_tools"),
                 actual_tools=actual_tools,
+                expected_tool_args=case.get("expected_tool_args"),  # 参数级比对标注（可选）
                 expected_slots=case.get("expected_slots"),
                 actual_slots=None,
                 latency_s=latency,

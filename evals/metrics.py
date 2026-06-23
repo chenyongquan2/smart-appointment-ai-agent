@@ -31,9 +31,12 @@ class EvalResult:
     expected_tools: Optional[list[str]] = None  # 期望工具名（顺序无关）；标准答案侧仍只记名字
     # actual_tools「采全」：有序的 {"name", "args"} 列表（name 与 args 一并保留、保序）。
     # None=本次没端到端跑 loop，拿不到实际工具。
-    # 设计：采全比松——数据采下 name+args+顺序，但下方 tool_call_correctness 仅按名字集合比较；
-    # 参数级/序列级比对留给后续改造（届时无需回头改采集层）。
+    # 设计：采全——数据采下 name+args+顺序；下方工具调用分档据此算召回/精确/F1（name 级）、
+    # 参数级 F1（逐键比稳定键）、序列正确率（子序列匹配），各档独立 N/A。
     actual_tools: Optional[list[dict[str, Any]]] = None
+    # 参数级比对的标注（改造 2，旁挂格式）：{工具名: {键: 值}}，只标稳定键。
+    # 缺省 None → 参数级档对该用例记 N/A（不伪造）。比对时只比标注的键，actual 多出忽略。
+    expected_tool_args: Optional[dict[str, dict[str, Any]]] = None
     expected_slots: Optional[dict[str, Any]] = None
     actual_slots: Optional[dict[str, Any]] = None
     latency_s: Optional[float] = None          # 这条用例耗时（秒）；None=没计时
@@ -66,33 +69,153 @@ def intent_accuracy(results: list[EvalResult]) -> Metric:
     return Metric("意图分类准确率", value=correct / total, numerator=correct, denominator=total)
 
 
-def tool_call_correctness(results: list[EvalResult]) -> Metric:
-    """工具调用正确率：实际触发工具集合 == 期望工具集合（顺序无关）的占比。
-
-    仅统计**同时**含 ``expected_tools`` 与 ``actual_tools`` 的用例；否则该用例不计入
-    （分母只含可评估样本）。一条可评估样本都没有时返回 N/A。
-    """
-    # 必须 expected 和 actual「都有」才可评估：少任一边都没法对比，故剔出分母。
-    eligible = [
+def _tool_eligible(results: list[EvalResult]) -> list[EvalResult]:
+    """工具调用各档的公共可评估筛选：expected_tools 与 actual_tools 都有才可比。"""
+    # 少任一边都没法对比，故剔出分母（典型：只跑了分类器、没驱动 loop → actual 为 None）。
+    return [
         r for r in results if r.expected_tools is not None and r.actual_tools is not None
     ]
+
+
+def _actual_names(r: EvalResult) -> list[str]:
+    """从采全的 actual_tools（[{name, args}]）取出有序工具名列表。"""
+    return [t["name"] for t in (r.actual_tools or [])]
+
+
+def _normalize_arg(v: Any) -> str:
+    """参数值的轻量归一化：统一成可比较的规范串（只覆盖稳定键涉及的类型）。
+
+    - 数字与其字符串形态视为相等：``60`` ≡ ``"60"``（duration 常见歧义）。
+    - 字符串去空白、转小写（gender ``Male``≡``male``）；中文不受 lower 影响。
+    语义/相对时间等价不在此处（那需 LLM-judge，见改造 4），故只做确定性规范化。
+    """
+    if isinstance(v, bool):
+        return str(v)  # bool 是 int 子类，单列以免 True 被当作 1
+    if isinstance(v, (int, float)):
+        # 整数值的 float（60.0）规整为 "60"，与 int 60 / 字符串 "60" 对齐。
+        return str(int(v)) if float(v).is_integer() else str(v)
+    return str(v).strip().lower()
+
+
+def _args_match(expected_args: dict[str, Any], actual_args: dict[str, Any]) -> bool:
+    """参数级匹配谓词：只比 expected 标注的键，逐键归一化后相等（actual 多出的键忽略）。"""
+    for key, exp_val in expected_args.items():
+        if key not in actual_args:
+            return False  # 标注的键 actual 没有 → 不匹配
+        if _normalize_arg(actual_args[key]) != _normalize_arg(exp_val):
+            return False
+    return True
+
+
+def tool_call_recall_precision_f1(results: list[EvalResult]) -> list[Metric]:
+    """颗粒度·部分给分：per-tool 的召回率/精确率/F1（name 级，按用例宏平均）。
+
+    对每条可评估用例算 命中=set(actual名)∩set(expected名)，得 recall/precision/F1，
+    再跨用例宏平均（每条等权，不被工具多的用例带偏）。无可评估样本时三档均 N/A。
+    """
+    eligible = _tool_eligible(results)
     if not eligible:
-        # 典型场景：本次只跑了分类器、没真正驱动 AgentLoop，自然没有 actual_tools → N/A。
+        note = "本次运行未捕获实际工具调用（需端到端执行 AgentLoop）"
+        return [
+            Metric("工具调用-召回率", na=True, note=note),
+            Metric("工具调用-精确率", na=True, note=note),
+            Metric("工具调用-F1", na=True, note=note),
+        ]
+    recalls: list[float] = []
+    precisions: list[float] = []
+    f1s: list[float] = []
+    for r in eligible:
+        expected = set(r.expected_tools or [])
+        actual = set(_actual_names(r))
+        hit = len(expected & actual)
+        # 空集边界：期望为空时召回记 1（无所需即满足）；实际为空时精确记 1（没乱调）。
+        recall = hit / len(expected) if expected else 1.0
+        precision = hit / len(actual) if actual else 1.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        recalls.append(recall)
+        precisions.append(precision)
+        f1s.append(f1)
+    n = len(eligible)
+    return [
+        Metric("工具调用-召回率", value=sum(recalls) / n, denominator=n),
+        Metric("工具调用-精确率", value=sum(precisions) / n, denominator=n),
+        Metric("工具调用-F1", value=sum(f1s) / n, denominator=n),
+    ]
+
+
+def tool_call_exact_match(results: list[EvalResult]) -> Metric:
+    """对照档·完全匹配率：实际工具名集合 == 期望集合（全有或全无、顺序无关）。"""
+    eligible = _tool_eligible(results)
+    if not eligible:
         return Metric(
-            "工具调用正确率",
+            "工具调用-完全匹配率",
             na=True,
             note="本次运行未捕获实际工具调用（需端到端执行 AgentLoop）",
         )
-    # 用 set 比较：「调了哪些工具」算对，与调用「顺序」无关（顺序不在本指标考核范围内）。
-    # actual_tools 是采全的 {"name", "args"} 列表，这里只取 name 组成集合（采全比松：
-    # 参数与顺序虽采下但不参与本指标，留给后续改造做参数级/序列级比对）。
-    correct = sum(
-        1
-        for r in eligible
-        if {t["name"] for t in (r.actual_tools or [])} == set(r.expected_tools or [])
-    )
+    correct = sum(1 for r in eligible if set(_actual_names(r)) == set(r.expected_tools or []))
     total = len(eligible)
-    return Metric("工具调用正确率", value=correct / total, numerator=correct, denominator=total)
+    return Metric("工具调用-完全匹配率", value=correct / total, numerator=correct, denominator=total)
+
+
+def tool_call_param_f1(results: list[EvalResult]) -> Metric:
+    """严格度·参数级 F1：在 name 命中基础上，再要求该工具参数逐键匹配（只比标注的键）。
+
+    仅对含 ``expected_tool_args`` 的用例计入（否则该用例 N/A，不伪造分母）。对一条用例：
+    一个期望工具算「命中」当且仅当 actual 调了同名工具且其参数与标注逐键匹配；据此算
+    参数级 recall/precision，取 F1，再跨用例宏平均。
+    """
+    eligible = [r for r in _tool_eligible(results) if r.expected_tool_args]
+    if not eligible:
+        return Metric(
+            "工具调用-参数级F1",
+            na=True,
+            note="无用例标注 expected_tool_args（参数级比对需稳定键标注）",
+        )
+    f1s: list[float] = []
+    for r in eligible:
+        expected = list(r.expected_tools or [])
+        # name → 该名下任一实际调用的 args（取首个同名调用比对；本项目无同名两次）。
+        actual_by_name: dict[str, dict] = {}
+        for t in r.actual_tools or []:
+            actual_by_name.setdefault(t["name"], t.get("args") or {})
+        exp_args = r.expected_tool_args or {}
+        # 命中：名字调了 + （若该工具有参数标注则）参数逐键匹配。
+        hit = 0
+        for name in expected:
+            if name not in actual_by_name:
+                continue
+            if name in exp_args and not _args_match(exp_args[name], actual_by_name[name]):
+                continue
+            hit += 1
+        actual_names = set(actual_by_name)
+        recall = hit / len(expected) if expected else 1.0
+        precision = hit / len(actual_names) if actual_names else 1.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        f1s.append(f1)
+    return Metric("工具调用-参数级F1", value=sum(f1s) / len(f1s), denominator=len(f1s))
+
+
+def _is_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    """needle 是否为 haystack 的子序列（保持相对顺序，允许 haystack 中间夹杂其它元素）。"""
+    it = iter(haystack)
+    return all(x in it for x in needle)  # 对每个 needle 元素在剩余 haystack 里顺序找下一处
+
+
+def tool_call_sequence_correctness(results: list[EvalResult]) -> Metric:
+    """严格度·序列级：expected_tools（有序）是否为 actual 名字序列的子序列（按用例宏平均）。
+
+    子序列匹配容忍 actual 多调/重复工具，只罚真实顺序违例（逆序）。
+    """
+    eligible = _tool_eligible(results)
+    if not eligible:
+        return Metric(
+            "工具调用-序列正确率",
+            na=True,
+            note="本次运行未捕获实际工具调用（需端到端执行 AgentLoop）",
+        )
+    correct = sum(1 for r in eligible if _is_subsequence(list(r.expected_tools or []), _actual_names(r)))
+    total = len(eligible)
+    return Metric("工具调用-序列正确率", value=correct / total, numerator=correct, denominator=total)
 
 
 def slot_completeness(results: list[EvalResult]) -> Metric:
@@ -144,10 +267,15 @@ def latency_summary(results: list[EvalResult]) -> Metric:
 
 def build_report(results: list[EvalResult]) -> dict[str, Any]:
     """汇总全部指标 + 判错/异常用例清单。"""
-    # 一次性算齐四个指标；每个指标各自决定要不要标 N/A（见上面各函数）。
+    # 一次性算齐各指标；每个指标各自决定要不要标 N/A（见上面各函数）。
+    # 工具调用分档（改造 2）：召回/精确/F1（颗粒度）→ 参数级F1、序列正确率（严格度）
+    # → 完全匹配率（全有或全无对照），与宽松召回并列，一眼看出差距。
     metrics = [
         intent_accuracy(results),
-        tool_call_correctness(results),
+        *tool_call_recall_precision_f1(results),
+        tool_call_param_f1(results),
+        tool_call_sequence_correctness(results),
+        tool_call_exact_match(results),
         slot_completeness(results),
         latency_summary(results),
     ]
