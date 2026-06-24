@@ -82,11 +82,12 @@ def print_cases(cases: list[dict]) -> None:
         print(f"  [{intent:11}] {text[:42]}")
 
 
-async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn):
+async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn, judge_fn=None):
     """跑一遍全部用例，返回填好的 ``EvalResult`` 列表（多采样时被调用 N 次）。
 
-    单次的「跑分类器 + 端到端真跑采集工具」逻辑都收敛在这里，故 N=1 与 N>1 走同一条路，
-    保证两者口径完全一致。``capture_fn`` 注入便于复用同一组 llm/registry。
+    单次的「跑分类器 + 端到端真跑采集(工具+回复) + 可选 judge」逻辑都收敛在这里，故
+    N=1 与 N>1 走同一条路，口径完全一致。``capture_fn`` 返回 ``CaptureResult``（工具+回复）；
+    ``judge_fn`` 非 None 时对回复做质量裁决（改造 4），缺省不评（回复质量记 N/A）。
     """
     import time
 
@@ -101,13 +102,19 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
             actual = f"<异常:{type(exc).__name__}>"
         latency = time.perf_counter() - start  # 仅计分类器单次调用（与既有口径一致，不含 loop）
 
-        # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集实际工具序列。
-        # 与分类器并存——意图准确率不依赖真跑；工具调用正确率靠这里出真数。单条失败不拖垮全量。
+        # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集工具序列 + 最终回复。
+        # 与分类器并存——意图准确率不依赖真跑。单条失败不拖垮全量。
         actual_tools = None
+        judge_passed = None
         try:
-            actual_tools = await capture_fn(text, llm, full_registry, subagents)
-        except Exception as exc:  # 真跑异常: 该条 actual_tools 记 None（指标对该条标 N/A，不伪造）
-            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具调用对该条记 N/A: {text[:30]}",
+            cap = await capture_fn(text, llm, full_registry, subagents)  # CaptureResult
+            actual_tools = cap.tool_calls
+            # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决。
+            if judge_fn is not None:
+                verdict = await judge_fn(text, cap.reply, llm)
+                judge_passed = verdict.passed
+        except Exception as exc:  # 真跑异常: 该条工具/judge 记 None（指标对该条标 N/A，不伪造）
+            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具/质量对该条记 N/A: {text[:30]}",
                   file=sys.stderr)
 
         # 把这条用例的「实际值」装进 EvalResult，交给 metrics 模块统一算分。
@@ -124,6 +131,7 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
                 expected_slots=case.get("expected_slots"),
                 actual_slots=None,
                 latency_s=latency,
+                judge_passed=judge_passed,  # 回复质量裁决（改造 4）；未开 --judge 时 None→N/A
             )
         )
     return results
@@ -147,12 +155,13 @@ def _print_by_intent(results) -> None:
 _EvalResult = None
 
 
-async def run_baseline(cases: list[dict], samples: int = 1) -> int:
+async def run_baseline(cases: list[dict], samples: int = 1, judge: bool = False) -> int:
     """跑真实分类器 + 端到端真跑, 输出多指标报告。返回进程退出码。
 
     ``samples<=1``：单次跑，输出多指标报告 + 判错清单 + 按类目视图（与既有一致）。
-    ``samples>1``（改造 3）：整套用例独立重跑 N 次，对每个聚合指标输出 ``mean ± 95% t-CI``，
-    量化 temp=0 下的 run-to-run 残余抖动；CI 只反映 LLM 抖动、不含数据集大小的不确定性。
+    ``samples>1``（改造 3）：整套用例独立重跑 N 次，对每个聚合指标输出 ``mean ± 95% t-CI``。
+    ``judge=True``（改造 4）：对每条 agent 最终回复跑 LLM-judge，产出回复质量通过率
+    （judge 未与人工校准前报告标「未校准」）。
     """
     # 这些 import 放在函数内（而非文件顶部）：只有「确认要真跑」时才加载重依赖，
     # 也让无 key 的纯清单路径（main 里的 print_cases）不必触碰 provider/分类器。
@@ -165,7 +174,8 @@ async def run_baseline(cases: list[dict], samples: int = 1) -> int:
         aggregate_runs,
         format_multisample_report,
     )
-    from evals.agent_capture import capture_tool_calls
+    from evals.agent_capture import run_and_capture
+    from evals.judge import judge_response
     from harness.subagents import build_default_subagent_registry
     from harness.tools.registry import build_default_registry
 
@@ -173,7 +183,7 @@ async def run_baseline(cases: list[dict], samples: int = 1) -> int:
     _EvalResult = EvalResult  # 供 _run_once 构造（避免它再触发一次重 import）
 
     try:
-        llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）
+        llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）；judge 同用
         classifier = TaskClassifier(llm)
         # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
         full_registry = build_default_registry()
@@ -182,9 +192,14 @@ async def run_baseline(cases: list[dict], samples: int = 1) -> int:
         print(f"[ERROR] 创建分类器/工具失败: {exc}", file=sys.stderr)
         return 2
 
+    judge_fn = judge_response if judge else None  # 改造 4：开启时对回复做质量裁决
+    if judge:
+        print("[提示] 已开启 LLM-judge 评回复质量；judge 与 agent 同模型，未经人工校准 → "
+              "报告将标「未校准」，结果仅供参考（自我偏好等偏差未验证）。", file=sys.stderr)
+
     # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
     if samples <= 1:
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, capture_tool_calls)
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
         print(format_report(build_report(results)))
         _print_by_intent(results)
         return 0
@@ -193,7 +208,7 @@ async def run_baseline(cases: list[dict], samples: int = 1) -> int:
     reports = []
     for i in range(samples):
         print(f"[采样 {i + 1}/{samples}] 跑整套用例…", file=sys.stderr)
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, capture_tool_calls)
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
         reports.append(build_report(results))  # 每次跑的聚合指标快照
     # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
     print(format_multisample_report(aggregate_runs(reports), samples, len(cases)))
@@ -207,6 +222,10 @@ def main() -> int:
     parser.add_argument(
         "--samples", type=int, default=1,
         help="整套用例重跑次数(改造 3)；>1 时输出 mean±95%% t-CI 量化 run-to-run 抖动；默认 1(单次,不烧钱)",
+    )
+    parser.add_argument(
+        "--judge", action="store_true",
+        help="开启 LLM-judge 评回复质量(改造 4)；每条额外一次 LLM 调用；默认关。judge 未校准会在报告标注",
     )
     args = parser.parse_args()
 
@@ -232,7 +251,7 @@ def main() -> int:
         return 2  # 2 = 优雅降级（没真跑分类器）
 
     # 有 key：进入真正的异步评估。asyncio.run 负责建/关事件循环跑这个协程。
-    return asyncio.run(run_baseline(cases, samples=args.samples))
+    return asyncio.run(run_baseline(cases, samples=args.samples, judge=args.judge))
 
 
 if __name__ == "__main__":

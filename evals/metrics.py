@@ -25,6 +25,8 @@ __all__ = [
     "aggregate_runs",
     "format_multisample_report",
     "student_t_halfwidth",
+    "response_quality",
+    "judge_human_agreement",
 ]
 
 
@@ -49,6 +51,8 @@ class EvalResult:
     expected_slots: Optional[dict[str, Any]] = None
     actual_slots: Optional[dict[str, Any]] = None
     latency_s: Optional[float] = None          # 这条用例耗时（秒）；None=没计时
+    # LLM-as-judge 对最终回复的二元裁决（改造 4）：None=本次未开 --judge（回复质量记 N/A）。
+    judge_passed: Optional[bool] = None
     error: Optional[str] = None
 
 
@@ -227,6 +231,56 @@ def tool_call_sequence_correctness(results: list[EvalResult]) -> Metric:
     return Metric("工具调用-序列正确率", value=correct / total, numerator=correct, denominator=total)
 
 
+def response_quality(results: list[EvalResult], calibrated: bool = False) -> Metric:
+    """回复质量通过率（LLM-as-judge，改造 4）：judge 判 passed 的占比。
+
+    仅统计含 ``judge_passed`` 的用例（未开 ``--judge`` 时全 None → N/A，不伪造分母）。
+    ``calibrated=False`` 时在 note 标「未校准」——judge 未与人工标注算过一致率前，其结果
+    MUST NOT 被当作可信真值（与全项目 N/A 诚实一致）。
+    """
+    eligible = [r for r in results if r.judge_passed is not None]
+    if not eligible:
+        return Metric(
+            "回复质量通过率",
+            na=True,
+            note="本次未开启 LLM-judge（--judge）或未捕获回复",
+        )
+    passed = sum(1 for r in eligible if r.judge_passed)
+    note = "" if calibrated else "judge 未校准（κ 未测）——自我偏好等偏差未经人工验证"
+    return Metric(
+        "回复质量通过率",
+        value=passed / len(eligible),
+        numerator=passed,
+        denominator=len(eligible),
+        note=note,
+    )
+
+
+def judge_human_agreement(
+    judge_labels: list[bool], human_labels: list[bool]
+) -> dict[str, float]:
+    """judge 与人工二元标注的一致率与 Cohen's κ（校准用，纯函数）。
+
+    一致率 = 两者判定相同的占比；κ 在此基础上扣除「随机一致」的部分（κ=1 完全一致、
+    κ≈0 仅随机水平）。要求两列等长且非空。
+    """
+    if len(judge_labels) != len(human_labels):
+        raise ValueError("judge 与人工标注数量不一致，无法配对")
+    n = len(judge_labels)
+    if n == 0:
+        raise ValueError("校准集为空")
+    po = sum(1 for j, h in zip(judge_labels, human_labels) if j == h) / n  # 观测一致率
+    # 期望（随机）一致率：两列各自「判 pass」的边缘概率，按独立假设组合。
+    pj = sum(1 for j in judge_labels if j) / n
+    ph = sum(1 for h in human_labels if h) / n
+    pe = pj * ph + (1 - pj) * (1 - ph)
+    if pe >= 1.0:  # 退化：一方全 pass 或全 fail 且与另一方边缘一致 → κ 无定义，按一致与否取 1/0
+        kappa = 1.0 if po >= 1.0 else 0.0
+    else:
+        kappa = (po - pe) / (1 - pe)
+    return {"n": float(n), "agreement": po, "kappa": kappa}
+
+
 def slot_completeness(results: list[EvalResult]) -> Metric:
     """槽位抽取完整率：对每条用例，期望槽位中被正确填出的比例，再跨用例求平均。
 
@@ -285,6 +339,7 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
         tool_call_param_f1(results),
         tool_call_sequence_correctness(results),
         tool_call_exact_match(results),
+        response_quality(results),  # 回复质量（LLM-judge，改造 4）；未开 --judge 时 N/A
         slot_completeness(results),
         latency_summary(results),
     ]
@@ -317,7 +372,9 @@ def _fmt_metric(m: Metric) -> str:
         if m.numerator is not None and m.denominator is not None
         else f"（n={m.denominator}）" if m.denominator is not None else ""
     )
-    return f"  {m.name:12} {pct:.1f}%{frac}"
+    # 非 N/A 但带 note（如 judge「未校准」提示）的也要打出来，不静默吞掉。
+    suffix = f"  ⚠ {m.note}" if m.note else ""
+    return f"  {m.name:12} {pct:.1f}%{frac}{suffix}"
 
 
 def format_report(report: dict[str, Any]) -> str:

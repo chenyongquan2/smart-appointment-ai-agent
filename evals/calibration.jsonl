@@ -1,0 +1,14 @@
+// LLM-judge 校准集（改造 4）。
+// 用途：人工对一批 (用户输入, agent 回复) 标注「合格/不合格」，与 judge 的裁决比对，
+//       用 evals.metrics.judge_human_agreement 算「一致率 + Cohen's κ」，验证 judge 可信度。
+//
+// ⚠️ 本文件目前为空占位：在你（人）填入真实标注前，评估报告会把 judge 标为「未校准（κ 未测）」。
+//    工具不会、也不应替你伪造人工标注——那会让校准失去意义。
+//
+// 怎么填：每行一个 JSON 对象（// 开头的注释行与空行会被跳过），建议 8-10 条、覆盖合格与不合格各几条：
+//   {"input": "用户说的话", "reply": "agent 的回复", "human_pass": true}
+//   {"input": "...", "reply": "...", "human_pass": false}
+// 其中 human_pass 是你（人）的判定：这条回复是否恰当且正确地回应了用户请求。
+//
+// 填好后即可用同一批 (input, reply) 跑 judge 得到 judge 的 passed，与此处 human_pass 配对，
+// 交 judge_human_agreement 算一致率与 κ；κ 越接近 1 说明 judge 越贴近人类判断、越可信。

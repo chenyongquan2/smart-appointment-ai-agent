@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -28,14 +29,27 @@ from harness.subagents import build_delegate_tool
 from harness.subagents.registry import SubAgentRegistry
 from harness.tools.registry import ToolRegistry
 
+# 与 AgentLoop 的约定前缀：loop 把「最终回复」以 [REPLY]... 形式 yield 出来。
+_REPLY_PREFIX = "[REPLY]"
 
-async def capture_tool_calls(
+
+@dataclass
+class CaptureResult:
+    """单条用例端到端真跑的采集结果：工具序列 + agent 最终回复文本。"""
+
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    reply: str = ""  # agent 最终回复（剥离 [REPLY] 前缀）；judge（改造 4）的输入
+
+
+async def run_and_capture(
     user_input: str,
     llm: BaseChatModel,
     full_registry: ToolRegistry,
     subagents: SubAgentRegistry,
-) -> list[dict[str, Any]]:
-    """跑一次端到端主 loop，返回实际触发的有序工具序列 ``[{name, args}, ...]``。
+) -> CaptureResult:
+    """跑一次端到端主 loop，采集实际工具序列**与最终回复文本**。
+
+    工具调用正确率（改造 1/2）用 ``tool_calls``；回复质量 judge（改造 4）用 ``reply``。
 
     Args:
         user_input: 单条用例的用户输入。
@@ -44,7 +58,7 @@ async def capture_tool_calls(
         subagents: 子 Agent 注册中心。
 
     Returns:
-        有序工具序列；编排工具 ``delegate`` 默认不计入（见 ``collect_tool_calls``）。
+        ``CaptureResult``：有序工具序列（编排工具 ``delegate`` 默认不计入）+ 最终回复。
     """
     # ① 每条用例一个独立 exporter 沙盒 + tracer：采集边界清晰、用例间互不污染。
     exporter = InMemoryExporter()
@@ -62,9 +76,22 @@ async def capture_tool_calls(
         tracer=tracer,  # 主 loop 自身的 delegate span 也进沙盒（采集时按默认剔除）
     )
 
-    # ③ 驱动循环，消费全部 token（评估只关心副作用：tracer 把工具调用记进 exporter）。
-    async for _token in loop.run(user_input):
-        pass
+    # ③ 驱动循环：截留最终回复（[REPLY] 那条），其余 token 仅触发 tracer 副作用。
+    reply = ""
+    async for token in loop.run(user_input):
+        if token.startswith(_REPLY_PREFIX):
+            reply = token[len(_REPLY_PREFIX):]  # 多次 [REPLY] 以最后一条为准（与 chat_handler 一致）
 
     # ④ 从沙盒里所有 span 还原有序工具序列（不按单一 trace_id 过滤——子 Agent 自开 root）。
-    return collect_tool_calls(exporter.spans)
+    return CaptureResult(tool_calls=collect_tool_calls(exporter.spans), reply=reply)
+
+
+async def capture_tool_calls(
+    user_input: str,
+    llm: BaseChatModel,
+    full_registry: ToolRegistry,
+    subagents: SubAgentRegistry,
+) -> list[dict[str, Any]]:
+    """薄封装：只取工具序列（向后兼容改造 1 的既有调用点与单测）。"""
+    result = await run_and_capture(user_input, llm, full_registry, subagents)
+    return result.tool_calls
