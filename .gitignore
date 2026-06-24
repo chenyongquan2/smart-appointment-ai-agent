@@ -61,3 +61,5 @@ Thumbs.db
 
 # Claude Code 运行期锁文件（非项目产物）
 .claude/scheduled_tasks.lock
+
+xiaohongshu/*
