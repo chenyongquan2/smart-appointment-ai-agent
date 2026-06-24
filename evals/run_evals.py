@@ -82,38 +82,15 @@ def print_cases(cases: list[dict]) -> None:
         print(f"  [{intent:11}] {text[:42]}")
 
 
-async def run_baseline(cases: list[dict]) -> int:
-    """跑真实分类器, 输出多指标报告 + 错误清单。返回进程退出码。
+async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn):
+    """跑一遍全部用例，返回填好的 ``EvalResult`` 列表（多采样时被调用 N 次）。
 
-    Phase 6：在意图准确率之外，按用例计时（端到端延迟），并把每条用例填成
-    ``EvalResult`` 交给 ``evals.metrics`` 汇总。工具调用正确率/槽位完整率仅在对应
-    数据可得时计入，否则报告显式标 N/A（不伪造分母）。
+    单次的「跑分类器 + 端到端真跑采集工具」逻辑都收敛在这里，故 N=1 与 N>1 走同一条路，
+    保证两者口径完全一致。``capture_fn`` 注入便于复用同一组 llm/registry。
     """
     import time
 
-    # 这些 import 放在函数内（而非文件顶部）：只有「确认要真跑」时才加载重依赖，
-    # 也让无 key 的纯清单路径（main 里的 print_cases）不必触碰 provider/分类器。
-    from config.model_provider import create_chat_model
-    from agents.task_classification.task_classifier import TaskClassifier
-    from evals.metrics import EvalResult, build_report, format_report
-    from evals.agent_capture import capture_tool_calls
-    from harness.subagents import build_default_subagent_registry
-    from harness.tools.registry import build_default_registry
-
-    try:
-        llm = create_chat_model(temperature=0)  # temperature=0 求确定性（分类器与 loop 共用）
-        classifier = TaskClassifier(llm)
-        # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
-        full_registry = build_default_registry()
-        subagents = build_default_subagent_registry()
-    except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
-        print(f"[ERROR] 创建分类器/工具失败: {exc}", file=sys.stderr)
-        return 2
-
-    results: list[EvalResult] = []
-    by_intent: dict[str, list[int]] = {}  # intent -> [correct, total]，给「按类目」视图累计
-
-    # ── 逐条用例：跑真分类器 → 计时 → 填一个 EvalResult ──────────────────────
+    results = []
     for case in cases:
         text = case.get("input", "")
         expected = case["expected_intent"]
@@ -128,20 +105,14 @@ async def run_baseline(cases: list[dict]) -> int:
         # 与分类器并存——意图准确率不依赖真跑；工具调用正确率靠这里出真数。单条失败不拖垮全量。
         actual_tools = None
         try:
-            actual_tools = await capture_tool_calls(text, llm, full_registry, subagents)
+            actual_tools = await capture_fn(text, llm, full_registry, subagents)
         except Exception as exc:  # 真跑异常: 该条 actual_tools 记 None（指标对该条标 N/A，不伪造）
             print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具调用对该条记 N/A: {text[:30]}",
                   file=sys.stderr)
 
-        # setdefault：该意图首次出现就初始化 [correct=0, total=0]，随后累加。
-        stat = by_intent.setdefault(expected, [0, 0])
-        stat[1] += 1                 # total +1
-        if actual == expected:
-            stat[0] += 1             # correct +1
-
         # 把这条用例的「实际值」装进 EvalResult，交给 metrics 模块统一算分。
         results.append(
-            EvalResult(
+            _EvalResult(
                 input=text,
                 expected_intent=expected,
                 actual_intent=actual,
@@ -155,16 +126,77 @@ async def run_baseline(cases: list[dict]) -> int:
                 latency_s=latency,
             )
         )
+    return results
 
-    # 把填好的 results 交给纯函数 metrics 汇总并渲染（计算与展示和「跑分类器」解耦）。
-    report = build_report(results)
-    print(format_report(report))
 
-    # 按意图类目分项（保留 Phase 0 的分类目视图）。
+def _print_by_intent(results) -> None:
+    """按意图类目分项打印 correct/total（保留 Phase 0 的分类目视图，仅单次跑用）。"""
+    by_intent: dict[str, list[int]] = {}
+    for r in results:
+        stat = by_intent.setdefault(r.expected_intent, [0, 0])
+        stat[1] += 1
+        if r.actual_intent == r.expected_intent:
+            stat[0] += 1
     print("\n按类目（意图）:")
     for intent in sorted(by_intent):
         c, t = by_intent[intent]
         print(f"  {intent:11} {c}/{t}")
+
+
+# 模块级占位：真正的 EvalResult 在 run_baseline 内按需 import 后赋给它（避免无 key 路径触碰重依赖）。
+_EvalResult = None
+
+
+async def run_baseline(cases: list[dict], samples: int = 1) -> int:
+    """跑真实分类器 + 端到端真跑, 输出多指标报告。返回进程退出码。
+
+    ``samples<=1``：单次跑，输出多指标报告 + 判错清单 + 按类目视图（与既有一致）。
+    ``samples>1``（改造 3）：整套用例独立重跑 N 次，对每个聚合指标输出 ``mean ± 95% t-CI``，
+    量化 temp=0 下的 run-to-run 残余抖动；CI 只反映 LLM 抖动、不含数据集大小的不确定性。
+    """
+    # 这些 import 放在函数内（而非文件顶部）：只有「确认要真跑」时才加载重依赖，
+    # 也让无 key 的纯清单路径（main 里的 print_cases）不必触碰 provider/分类器。
+    from config.model_provider import create_chat_model
+    from agents.task_classification.task_classifier import TaskClassifier
+    from evals.metrics import (
+        EvalResult,
+        build_report,
+        format_report,
+        aggregate_runs,
+        format_multisample_report,
+    )
+    from evals.agent_capture import capture_tool_calls
+    from harness.subagents import build_default_subagent_registry
+    from harness.tools.registry import build_default_registry
+
+    global _EvalResult
+    _EvalResult = EvalResult  # 供 _run_once 构造（避免它再触发一次重 import）
+
+    try:
+        llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）
+        classifier = TaskClassifier(llm)
+        # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
+        full_registry = build_default_registry()
+        subagents = build_default_subagent_registry()
+    except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
+        print(f"[ERROR] 创建分类器/工具失败: {exc}", file=sys.stderr)
+        return 2
+
+    # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
+    if samples <= 1:
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, capture_tool_calls)
+        print(format_report(build_report(results)))
+        _print_by_intent(results)
+        return 0
+
+    # ── 多采样（改造 3）：整套重跑 N 次 → 聚合 mean ± t-CI ────────────────────
+    reports = []
+    for i in range(samples):
+        print(f"[采样 {i + 1}/{samples}] 跑整套用例…", file=sys.stderr)
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, capture_tool_calls)
+        reports.append(build_report(results))  # 每次跑的聚合指标快照
+    # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
+    print(format_multisample_report(aggregate_runs(reports), samples, len(cases)))
     return 0  # 0 = 正常跑完（哪怕某些用例判错，「跑完」本身就算成功）
 
 
@@ -172,6 +204,10 @@ def main() -> int:
     # 返回 int 退出码（而非直接 sys.exit）：逻辑可单测，退出动作交给最底下的入口统一做。
     parser = argparse.ArgumentParser(description="评估集运行器 (Phase 0)")
     parser.add_argument("--limit", type=int, default=None, help="只跑前 N 条(冒烟)")
+    parser.add_argument(
+        "--samples", type=int, default=1,
+        help="整套用例重跑次数(改造 3)；>1 时输出 mean±95%% t-CI 量化 run-to-run 抖动；默认 1(单次,不烧钱)",
+    )
     args = parser.parse_args()
 
     if not CASES_FILE.exists():
@@ -196,7 +232,7 @@ def main() -> int:
         return 2  # 2 = 优雅降级（没真跑分类器）
 
     # 有 key：进入真正的异步评估。asyncio.run 负责建/关事件循环跑这个协程。
-    return asyncio.run(run_baseline(cases))
+    return asyncio.run(run_baseline(cases, samples=args.samples))
 
 
 if __name__ == "__main__":

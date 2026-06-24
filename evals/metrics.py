@@ -13,10 +13,19 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-__all__ = ["EvalResult", "Metric", "build_report", "format_report"]
+__all__ = [
+    "EvalResult",
+    "Metric",
+    "build_report",
+    "format_report",
+    "aggregate_runs",
+    "format_multisample_report",
+    "student_t_halfwidth",
+]
 
 
 @dataclass
@@ -324,4 +333,130 @@ def format_report(report: dict[str, Any]) -> str:
             lines.append(f"    期望: {r.expected_intent}  实际: {r.actual_intent}")
     else:
         lines.append("\n意图全部判对。")
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 多次采样与置信区间（改造 3：治非确定性）
+#
+# 量的是 temp=0 下的 run-to-run 残余抖动：整套用例重跑 N 次，把每次的聚合指标值
+# 当作「一个观测」，对 N 个观测算 mean ± t 分布置信区间。CI 反映的是 LLM 抖动，
+# 不含数据集大小的不确定性（20 条太小那块需更大用例集，见改造 8）。
+# 计算全为纯函数、不触网，故可离线确定性单测（与触网的采样循环解耦）。
+# ════════════════════════════════════════════════════════════════════════════
+
+# 95% 双侧 t 临界值表（t_{df, 0.975}），df=1..30。小样本必须用 t 而非正态 z=1.96。
+# 硬编码而非引 scipy：为一张静态表加重依赖不划算（零依赖、可单测）。
+_T_CRIT_95: dict[int, float] = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+    15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086, 21: 2.080,
+    22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048,
+    29: 2.045, 30: 2.042,
+}
+# df>30 退化用正态近似（t 已很接近 z=1.96，误差可忽略）。
+_Z_95 = 1.96
+
+
+def _t_crit_95(df: int) -> float:
+    """取自由度 df 的 95% 双侧 t 临界值；df>30 退化用 z=1.96。"""
+    if df <= 0:
+        return 0.0
+    return _T_CRIT_95.get(df, _Z_95)
+
+
+def student_t_halfwidth(values: list[float]) -> float:
+    """一组观测值的 95% t 置信区间「半宽」：``t_(n-1,0.975) · s/√n``。
+
+    - n<2：无法估方差，半宽=0（单次跑没有 run-to-run 不确定性可言）。
+    - s=0（N 次完全相同，如 temp=0 抖动可忽略）：半宽=0，是「链路稳定」的结论而非异常。
+    s 为样本标准差（n-1 分母）。
+    """
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    # 样本方差（n-1 分母）：无偏估计，配合 t 分布。
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    s = math.sqrt(var)
+    # 近零方差按零处理：相同值因浮点累加会留下 ~1e-16 的残渣，不应据此报出非零 CI。
+    if s < 1e-9:
+        return 0.0
+    return _t_crit_95(n - 1) * s / math.sqrt(n)
+
+
+@dataclass
+class AggregatedMetric:
+    """跨 N 次跑聚合后的单个指标：mean ± 半宽（run-to-run 抖动的 95% t-CI）。"""
+
+    name: str
+    mean: Optional[float] = None   # N 次非 N/A 观测的均值；全 N/A 时 None
+    half_width: float = 0.0        # 95% t-CI 半宽；n<2 或零方差时为 0
+    n: int = 0                     # 纳入的非 N/A 观测数
+    na: bool = False               # True=N 次全 N/A
+    is_latency: bool = False       # 延迟指标渲染为秒而非百分比
+
+
+def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
+    """把 N 次跑的报告（各含 ``metrics``）按指标名聚合为 mean ± t-CI 半宽。
+
+    每个指标只纳入「该次跑非 N/A」的观测值；某指标 N 次全 N/A 则整体标 N/A。
+    指标顺序沿用第一次跑的顺序（保持报告可读性一致）。
+    """
+    if not reports:
+        return []
+    # 以第一次跑的指标顺序为准，逐个指标跨 run 收集非 N/A 的 value。
+    ordered_names = [m.name for m in reports[0]["metrics"]]
+    out: list[AggregatedMetric] = []
+    for name in ordered_names:
+        values: list[float] = []
+        is_latency = name == "端到端延迟"
+        for rep in reports:
+            for m in rep["metrics"]:
+                if m.name == name and not m.na and m.value is not None:
+                    values.append(m.value)
+                    break
+        if not values:
+            out.append(AggregatedMetric(name=name, na=True, is_latency=is_latency))
+            continue
+        mean = sum(values) / len(values)
+        out.append(
+            AggregatedMetric(
+                name=name,
+                mean=mean,
+                half_width=student_t_halfwidth(values),
+                n=len(values),
+                is_latency=is_latency,
+            )
+        )
+    return out
+
+
+def format_multisample_report(
+    aggregated: list[AggregatedMetric], n_runs: int, total_cases: int
+) -> str:
+    """渲染多采样报告：每指标 ``mean ± 半宽（n=N 次）``，并标注 CI 含义。"""
+    lines = [
+        f"\n评估多采样报告（{total_cases} 条用例 × {n_runs} 次跑）:",
+        "  （置信区间为 95% t 分布；反映 run-to-run 的 LLM 抖动，"
+        "不含数据集大小的不确定性——后者需更大用例集）",
+    ]
+    for a in aggregated:
+        if a.na:
+            lines.append(f"  {a.name:14} N/A（{n_runs} 次均无可评估样本）")
+            continue
+        if a.is_latency:
+            # 延迟：秒；半宽也以秒计。
+            stable = "（稳定）" if a.half_width == 0.0 else ""
+            lines.append(
+                f"  {a.name:14} {a.mean:.3f}s ± {a.half_width:.3f}s（n={a.n} 次）{stable}"
+            )
+            continue
+        # 比率：转百分比；零方差标注稳定。
+        mean_pct = a.mean * 100
+        hw_pct = a.half_width * 100
+        stable = "（稳定，零方差）" if a.half_width == 0.0 else ""
+        lines.append(
+            f"  {a.name:14} {mean_pct:.1f}% ± {hw_pct:.1f}%（n={a.n} 次）{stable}"
+        )
     return "\n".join(lines)
