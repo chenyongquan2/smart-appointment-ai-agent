@@ -29,7 +29,11 @@ description: 取 harness-refactor-plan.md 里的某个 Phase，按 OpenSpec SDD 
    - 批准后，用 **openspec-apply-change** skill 按 `tasks.md` 实现。
 
 5. **⏸ 闸门 2 —— 验证（不可跳过）**
-   - 跑 `uv run pytest`；若 `evals/` 有运行器，也跑 `uv run python evals/run_evals.py`。
+   - 跑 `uv run pytest`。
+   - 回归门禁（改造 6）：若 `evals/baseline.json` 存在，跑 `uv run python evals/run_evals.py --gate`，按退出码判定——
+     - `3`（检测到回归）→ **阻断归档**，先报告并修复；
+     - `2`（无 API key 优雅降级）或 `1`（缺基线）→ 视为**跳过/警告**，不阻断（门禁是有 key 时尽力跑的纪律，非硬依赖）；
+     - `0` → 通过。
    - **成功静默、只报失败。** 任何失败先报告并修复，**不得带病归档**。
    - 核对第 1 步那条 Phase 的**验收标准**是否达成。
 

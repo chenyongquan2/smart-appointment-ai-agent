@@ -27,6 +27,15 @@ __all__ = [
     "student_t_halfwidth",
     "response_quality",
     "judge_human_agreement",
+    # 回归门禁（改造 6）
+    "GATED_METRICS",
+    "BASELINE_SCHEMA_VERSION",
+    "GateVerdict",
+    "GateReport",
+    "report_to_baseline",
+    "aggregated_to_baseline",
+    "compare_to_baseline",
+    "format_gate_report",
 ]
 
 
@@ -516,4 +525,206 @@ def format_multisample_report(
         lines.append(
             f"  {a.name:14} {mean_pct:.1f}% ± {hw_pct:.1f}%（n={a.n} 次）{stable}"
         )
+    return "\n".join(lines)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 基线持久化与回归门禁（改造 6）
+#
+# 设计取舍（见 change evals-ci-regression-gate 的 design.md）：
+# - 基线存「全部非 N/A 指标」的快照（供历史/参照），但门禁只守 GATED_METRICS 子集。
+# - 排除 latency（环境噪声、非正确性信号）与 response_quality（judge 未校准、不可当真值）；
+#   工具调用 6 个子指标里只守 F1（name 级部分给分、平滑退化）。
+# - 比对/序列化全为纯函数（不触网、不读写文件），IO 与退出码留在 run_evals.py。
+# - 容差吸收 LLM 的 run-to-run 抖动：比率回归 ⟺ 当前 < 基线 − 容差。
+# ════════════════════════════════════════════════════════════════════════════
+
+# 门禁只守的指标子集（显式常量）。槽位当前结构性恒 N/A（actual_slots 未接线、
+# 无用例标 expected_slots），列入是前瞻——接上即自动生效；今天恒被标 skipped。
+GATED_METRICS: tuple[str, ...] = (
+    "意图分类准确率",
+    "工具调用-F1",
+    "槽位抽取完整率",
+)
+
+# 基线 JSON 结构版本；将来结构变化时门禁可据此拒绝/迁移旧基线。
+BASELINE_SCHEMA_VERSION = 1
+
+# 延迟型指标名（比对方向相反：越大越差）。当前不在 GATED_METRICS 内，保留供将来。
+_LATENCY_METRIC = "端到端延迟"
+
+
+@dataclass
+class GateVerdict:
+    """单个被守指标的门禁裁决。
+
+    status:
+    - ``ok``        当前未较基线回归（在容差内）。
+    - ``regressed`` 当前较基线回归超过容差。
+    - ``skipped``   基线有该指标但本次为 N/A（无法比对，不判对错）。
+    - ``new``       本次有该指标但基线没有（信息提示，不判对错）。
+    """
+
+    name: str
+    status: str
+    baseline: Optional[float] = None
+    current: Optional[float] = None
+    delta: Optional[float] = None  # current - baseline（正=升，负=降）；仅 ok/regressed 有
+    is_latency: bool = False
+
+
+@dataclass
+class GateReport:
+    """门禁整体结果：逐指标裁决 + 是否通过 + 实守指标数。"""
+
+    verdicts: list[GateVerdict] = field(default_factory=list)
+    passed: bool = True            # 无任一 regressed 即通过
+    guarded_count: int = 0         # 真正比对到的（ok/regressed）项数——「门禁实守 N 项」
+    tolerance: float = 0.0
+
+
+def _metric_value_view(m: Metric) -> Optional[tuple[float, bool]]:
+    """把一个 ``Metric`` 提成 ``(value, is_latency)``；N/A 或无值返回 None（不入比对视图）。"""
+    if m.na or m.value is None:
+        return None
+    return (m.value, m.name == _LATENCY_METRIC)
+
+
+def _aggregated_value_view(a: "AggregatedMetric") -> Optional[tuple[float, bool]]:
+    """把一个 ``AggregatedMetric`` 提成 ``(mean, is_latency)``；N/A 返回 None。"""
+    if a.na or a.mean is None:
+        return None
+    return (a.mean, a.is_latency)
+
+
+def report_to_baseline(
+    report: dict[str, Any], *, total_cases: int, samples: int
+) -> dict[str, Any]:
+    """单次报告 → 基线 dict（D1 结构）。收全部非 N/A 指标，记 value + is_latency。"""
+    metrics: dict[str, dict[str, Any]] = {}
+    for m in report["metrics"]:
+        view = _metric_value_view(m)
+        if view is None:  # N/A 不写入基线（不伪造可比项）
+            continue
+        value, is_latency = view
+        metrics[m.name] = {"value": value, "is_latency": is_latency}
+    return {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "meta": {"total_cases": total_cases, "samples": samples},
+        "metrics": metrics,
+    }
+
+
+def aggregated_to_baseline(
+    aggregated: list["AggregatedMetric"], *, total_cases: int, samples: int
+) -> dict[str, Any]:
+    """多采样聚合（用 mean）→ 基线 dict。跳过 N/A 指标。"""
+    metrics: dict[str, dict[str, Any]] = {}
+    for a in aggregated:
+        view = _aggregated_value_view(a)
+        if view is None:
+            continue
+        value, is_latency = view
+        metrics[a.name] = {"value": value, "is_latency": is_latency}
+    return {
+        "schema_version": BASELINE_SCHEMA_VERSION,
+        "meta": {"total_cases": total_cases, "samples": samples},
+        "metrics": metrics,
+    }
+
+
+def compare_to_baseline(
+    current: dict[str, tuple[float, bool]],
+    baseline: dict[str, Any],
+    tolerance: float,
+    *,
+    gated: tuple[str, ...] = GATED_METRICS,
+) -> GateReport:
+    """门禁裁决（纯函数）：只比对 ``gated`` 子集，对回归出整体 pass/fail。
+
+    Args:
+        current: ``{指标名: (value, is_latency)}``——本次跑的可比指标（N/A 项不应入此 dict）。
+        baseline: 基线 dict（``report_to_baseline``/``aggregated_to_baseline`` 的产物）。
+        tolerance: 容差；比率回归 ⟺ 当前 < 基线 − 容差，延迟回归 ⟺ 当前 > 基线 + 容差。
+        gated: 要守的指标名集合（默认 GATED_METRICS）。
+
+    Returns:
+        ``GateReport``：逐项 ``GateVerdict`` + ``passed`` + ``guarded_count``。
+        基线有当前缺 → skipped；当前有基线缺 → new；二者皆不影响 passed。
+    """
+    base_metrics: dict[str, Any] = baseline.get("metrics", {})
+    verdicts: list[GateVerdict] = []
+    passed = True
+    guarded = 0
+    for name in gated:
+        in_base = name in base_metrics
+        cur = current.get(name)  # (value, is_latency) 或 None
+        if in_base and cur is None:
+            # 基线有、当前 N/A：无法比对（如槽位恒 N/A），不判对错。
+            verdicts.append(
+                GateVerdict(name=name, status="skipped",
+                            baseline=base_metrics[name].get("value"),
+                            is_latency=base_metrics[name].get("is_latency", False))
+            )
+            continue
+        if not in_base and cur is not None:
+            verdicts.append(
+                GateVerdict(name=name, status="new", current=cur[0], is_latency=cur[1])
+            )
+            continue
+        if not in_base and cur is None:
+            # 基线、当前都没有：彻底无可比，跳过且不计入实守数（不产出噪声裁决）。
+            continue
+        # 两边都有：真正比对。
+        base_val = base_metrics[name].get("value")
+        cur_val, is_latency = cur  # type: ignore[misc]
+        delta = cur_val - base_val
+        if is_latency:
+            regressed = cur_val > base_val + tolerance  # 延迟越大越差
+        else:
+            regressed = cur_val < base_val - tolerance  # 比率越小越差
+        guarded += 1
+        if regressed:
+            passed = False
+        verdicts.append(
+            GateVerdict(
+                name=name,
+                status="regressed" if regressed else "ok",
+                baseline=base_val,
+                current=cur_val,
+                delta=delta,
+                is_latency=is_latency,
+            )
+        )
+    return GateReport(verdicts=verdicts, passed=passed, guarded_count=guarded,
+                      tolerance=tolerance)
+
+
+def _fmt_gate_value(v: Optional[float], is_latency: bool) -> str:
+    """门禁数值渲染：延迟为秒、比率为百分比。"""
+    if v is None:
+        return "—"
+    return f"{v:.3f}s" if is_latency else f"{v * 100:.1f}%"
+
+
+def format_gate_report(gate: GateReport) -> str:
+    """渲染门禁结果：成功静默——回归/无法比对详列，通过项简列，末行给结论。"""
+    lines = [f"\n回归门禁（容差 {gate.tolerance:.3f}）:"]
+    for v in gate.verdicts:
+        b = _fmt_gate_value(v.baseline, v.is_latency)
+        c = _fmt_gate_value(v.current, v.is_latency)
+        if v.status == "regressed":
+            unit = "s" if v.is_latency else "pp"
+            d = (v.delta or 0.0) * (1 if v.is_latency else 100)
+            lines.append(f"  ✗ {v.name:14} 回归: 基线 {b} → 当前 {c}（Δ{d:+.1f}{unit}）")
+        elif v.status == "skipped":
+            lines.append(f"  – {v.name:14} 无法比对（本次 N/A；基线 {b}）")
+        elif v.status == "new":
+            lines.append(f"  + {v.name:14} 新增（基线无；当前 {c}）")
+        else:  # ok
+            lines.append(f"  ✓ {v.name:14} 基线 {b} → 当前 {c}")
+    verdict = "PASS" if gate.passed else "FAIL"
+    lines.append(f"\n门禁结论: {verdict}（实守 {gate.guarded_count} 项指标）")
+    if not gate.passed:
+        lines.append("  → 检测到回归，进程将以退出码 3 结束。")
     return "\n".join(lines)

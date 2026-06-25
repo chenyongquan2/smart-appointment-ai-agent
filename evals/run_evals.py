@@ -7,6 +7,23 @@
 接入真实意图分类器(经 config.model_provider)，对每条用例跑 classify_task，
 与 expected_intent 比对，输出意图分类准确率基线 + 按类目分项 + 错误清单。
 成功静默、只详列错误。缺 API key 时优雅降级(提示 + 非零退出，不崩)。
+
+退出码契约（CI/闸门 2 据此判定）:
+    0 = 正常跑完（哪怕个别用例判错，"跑完"即成功）
+    1 = 环境/文件缺失（含 --gate 时基线文件不存在）
+    2 = 用例非法 / 无 API key 优雅降级 / --gate 与 --update-baseline 互斥
+    3 = 检测到回归（改造 6：--gate 模式下被守指标低于基线−容差）
+
+回归门禁（改造 6）:
+    --update-baseline  把本次跑分落盘为基线（默认 evals/baseline.json）
+    --gate             跑完比对基线，被守指标回归则以退出码 3 结束
+    --tolerance        容差（默认 0.20）吸收 LLM 抖动；门禁只守正确性子集
+                       （意图准确率 / 工具调用-F1 / 槽位完整率），不守延迟与回复质量
+
+容差 0.20 的依据（改造 6 生成基线时实测）：当前模型(deepseek-v4-flash)结构化输出不稳，
+意图准确率 run-to-run 95% t-CI 半宽达 ±19pp、工具 F1 ±7pp（n=3）。默认容差取 0.20 以覆盖
+最差半宽，故单次门禁跑不会被噪声误报——代价是只拦得住「大幅回归」。要更紧的门禁需更稳的
+模型或 `--gate --samples 3`（守均值、方差更小）。详见 evals/README.md。
 """
 from __future__ import annotations
 
@@ -33,6 +50,7 @@ from dotenv import load_dotenv  # noqa: E402  （此 import 必须在上面改�
 load_dotenv()  # 读 .env 里的 API key / MODEL_PROVIDER 等到环境变量
 
 CASES_FILE = Path(__file__).parent / "cases.jsonl"  # 用例文件与本脚本同目录
+BASELINE_FILE = Path(__file__).parent / "baseline.json"  # 回归门禁基线（改造 6），与本脚本同目录
 
 # 真实分类器的 5 类口径（来源: agents/task_classification/task_classifier.py）
 # 加载用例时据此校验 expected_intent 合法——防手滑写错类名，问题尽早暴露。
@@ -155,13 +173,23 @@ def _print_by_intent(results) -> None:
 _EvalResult = None
 
 
-async def run_baseline(cases: list[dict], samples: int = 1, judge: bool = False) -> int:
+async def run_baseline(
+    cases: list[dict],
+    samples: int = 1,
+    judge: bool = False,
+    *,
+    gate: bool = False,
+    update_baseline: bool = False,
+    baseline_path: Path | None = None,
+    tolerance: float = 0.05,
+) -> int:
     """跑真实分类器 + 端到端真跑, 输出多指标报告。返回进程退出码。
 
     ``samples<=1``：单次跑，输出多指标报告 + 判错清单 + 按类目视图（与既有一致）。
     ``samples>1``（改造 3）：整套用例独立重跑 N 次，对每个聚合指标输出 ``mean ± 95% t-CI``。
     ``judge=True``（改造 4）：对每条 agent 最终回复跑 LLM-judge，产出回复质量通过率
     （judge 未与人工校准前报告标「未校准」）。
+    ``update_baseline``/``gate``（改造 6）：跑完后把结果落盘为基线，或比对基线对回归非零退出。
     """
     # 这些 import 放在函数内（而非文件顶部）：只有「确认要真跑」时才加载重依赖，
     # 也让无 key 的纯清单路径（main 里的 print_cases）不必触碰 provider/分类器。
@@ -173,6 +201,10 @@ async def run_baseline(cases: list[dict], samples: int = 1, judge: bool = False)
         format_report,
         aggregate_runs,
         format_multisample_report,
+        report_to_baseline,
+        aggregated_to_baseline,
+        compare_to_baseline,
+        format_gate_report,
     )
     from evals.agent_capture import run_and_capture
     from evals.judge import judge_response
@@ -197,12 +229,48 @@ async def run_baseline(cases: list[dict], samples: int = 1, judge: bool = False)
         print("[提示] 已开启 LLM-judge 评回复质量；judge 与 agent 同模型，未经人工校准 → "
               "报告将标「未校准」，结果仅供参考（自我偏好等偏差未验证）。", file=sys.stderr)
 
+    baseline_path = baseline_path or BASELINE_FILE
+
+    def _finish(baseline_dict: dict, current_view: dict) -> int:
+        """改造 6 收尾：按 --update-baseline / --gate 写或比对基线，返回退出码。
+
+        ``current_view``：``{指标名: (value, is_latency)}``，只含非 N/A 指标。
+        既不开门禁也不写基线时返回 0（默认行为不变）。
+        """
+        if update_baseline:
+            baseline_path.write_text(
+                json.dumps(baseline_dict, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"[基线] 已写入 {baseline_path}"
+                  f"（{len(baseline_dict['metrics'])} 个非 N/A 指标，samples={baseline_dict['meta']['samples']}）")
+            return 0
+        if gate:
+            if not baseline_path.exists():
+                print(f"[ERROR] --gate 需要基线文件，但 {baseline_path} 不存在；"
+                      f"请先跑 `--update-baseline` 建立基线。", file=sys.stderr)
+                return 1  # 1 = 文件缺失
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            gate_report = compare_to_baseline(current_view, baseline, tolerance)
+            print(format_gate_report(gate_report))
+            return 0 if gate_report.passed else 3  # 3 = 检测到回归
+        return 0
+
+    # 端到端延迟是唯一的延迟型指标（与 metrics 内部口径一致）。
+    _LATENCY = "端到端延迟"
+
     # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
     if samples <= 1:
         results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
-        print(format_report(build_report(results)))
+        rep = build_report(results)
+        print(format_report(rep))
         _print_by_intent(results)
-        return 0
+        current_view = {
+            m.name: (m.value, m.name == _LATENCY)
+            for m in rep["metrics"] if not m.na and m.value is not None
+        }
+        baseline_dict = report_to_baseline(rep, total_cases=len(cases), samples=1)
+        return _finish(baseline_dict, current_view)
 
     # ── 多采样（改造 3）：整套重跑 N 次 → 聚合 mean ± t-CI ────────────────────
     reports = []
@@ -211,8 +279,14 @@ async def run_baseline(cases: list[dict], samples: int = 1, judge: bool = False)
         results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
         reports.append(build_report(results))  # 每次跑的聚合指标快照
     # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
-    print(format_multisample_report(aggregate_runs(reports), samples, len(cases)))
-    return 0  # 0 = 正常跑完（哪怕某些用例判错，「跑完」本身就算成功）
+    aggregated = aggregate_runs(reports)
+    print(format_multisample_report(aggregated, samples, len(cases)))
+    current_view = {
+        a.name: (a.mean, a.is_latency)
+        for a in aggregated if not a.na and a.mean is not None
+    }
+    baseline_dict = aggregated_to_baseline(aggregated, total_cases=len(cases), samples=samples)
+    return _finish(baseline_dict, current_view)  # 0/1/3 据门禁；无门禁则 0
 
 
 def main() -> int:
@@ -227,7 +301,34 @@ def main() -> int:
         "--judge", action="store_true",
         help="开启 LLM-judge 评回复质量(改造 4)；每条额外一次 LLM 调用；默认关。judge 未校准会在报告标注",
     )
+    parser.add_argument(
+        "--update-baseline", action="store_true",
+        help="把本次跑分落盘为基线(改造 6)；建议配 --samples 3 取稳定均值。与 --gate 互斥",
+    )
+    parser.add_argument(
+        "--gate", action="store_true",
+        help="跑完比对基线(改造 6)；被守指标低于基线−容差则以退出码 3 结束。与 --update-baseline 互斥",
+    )
+    parser.add_argument(
+        "--baseline", type=Path, default=BASELINE_FILE,
+        help=f"基线文件路径(改造 6)；默认 {BASELINE_FILE.name}(与本脚本同目录)",
+    )
+    parser.add_argument(
+        "--tolerance", type=float, default=0.20,
+        help="门禁容差(改造 6)；比率即百分点(0.20=20pp)，经实测半宽校准吸收 LLM 抖动；默认 0.20",
+    )
     args = parser.parse_args()
+
+    # --gate 与 --update-baseline 互斥：一次跑要么定基线要么守基线，语义不混。
+    if args.gate and args.update_baseline:
+        print("[ERROR] --gate 与 --update-baseline 互斥，不能同时指定。", file=sys.stderr)
+        return 2  # 2 = 用例/配置错误
+
+    # --gate 早检基线存在：缺基线就别白跑一整轮（比对在跑完后才发生）。
+    if args.gate and not args.baseline.exists():
+        print(f"[ERROR] --gate 需要基线文件，但 {args.baseline} 不存在；"
+              f"请先跑 `--update-baseline` 建立基线。", file=sys.stderr)
+        return 1  # 1 = 文件缺失
 
     if not CASES_FILE.exists():
         print(f"[ERROR] 找不到用例文件: {CASES_FILE}", file=sys.stderr)
@@ -251,7 +352,11 @@ def main() -> int:
         return 2  # 2 = 优雅降级（没真跑分类器）
 
     # 有 key：进入真正的异步评估。asyncio.run 负责建/关事件循环跑这个协程。
-    return asyncio.run(run_baseline(cases, samples=args.samples, judge=args.judge))
+    return asyncio.run(run_baseline(
+        cases, samples=args.samples, judge=args.judge,
+        gate=args.gate, update_baseline=args.update_baseline,
+        baseline_path=args.baseline, tolerance=args.tolerance,
+    ))
 
 
 if __name__ == "__main__":
