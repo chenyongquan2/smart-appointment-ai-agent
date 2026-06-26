@@ -27,6 +27,7 @@ __all__ = [
     "student_t_halfwidth",
     "response_quality",
     "judge_human_agreement",
+    "slots_from_tool_calls",
     # 回归门禁（改造 6）
     "GATED_METRICS",
     "BASELINE_SCHEMA_VERSION",
@@ -290,10 +291,67 @@ def judge_human_agreement(
     return {"n": float(n), "agreement": po, "kappa": kappa}
 
 
-def slot_completeness(results: list[EvalResult]) -> Metric:
-    """槽位抽取完整率：对每条用例，期望槽位中被正确填出的比例，再跨用例求平均。
+# 工具 schema 字段名 → 统一槽位口径键的映射（change evals-wire-slot-completeness D3）。
+# technician_name 归一为 technician（对齐 Phase 1 AppointmentSlots / README 命名）；
+# create_appointment 的 technician_id/session_id 不是「抽取槽位」（ID/会话基建），故不在此。
+_SLOT_ARG_KEYS: dict[str, str] = {
+    "start_time": "start_time",
+    "duration": "duration",
+    "project": "project",
+    "preference": "preference",
+    "gender": "gender",
+    "technician_name": "technician",
+}
+# 工具 schema 的可选槽位默认占位串（见 harness/tools/schemas.py 的 FindTechnicianArgs）——
+# 表示「模型没填、工具兜底」，不算模型抽到的槽位，还原时跳过以免完整率被默认值虚高。
+_SLOT_SENTINELS: frozenset[str] = frozenset({"未知", "无"})
 
-    仅统计同时含 ``expected_slots`` 与 ``actual_slots`` 的用例；否则 N/A。
+
+def slots_from_tool_calls(
+    tool_calls: Optional[list[dict[str, Any]]],
+) -> Optional[dict[str, Any]]:
+    """从有序工具调用序列还原扁平的实际槽位 dict（纯函数，不触网）。
+
+    槽位分散在 find_technician / create_appointment / check_availability 的 args 里，
+    本函数把它们合并进一份扁平 dict，作 ``slot_completeness`` 的 ``actual_slots`` 输入。
+
+    规则（change evals-wire-slot-completeness 的 spec）：
+    - **跨工具合并**：各工具 args 中的槽位字段并入同一 dict；``technician_name`` 归一为
+      槽位键 ``technician``。
+    - **同名冲突 last-write-wins**：按 ``tool_calls`` 顺序，后出现的工具调用覆盖先出现的
+      同名槽位（确定性，不依赖 dict 遍历顺序）。
+    - **哨兵默认值不计入**：``未知`` / ``无`` 视为「未抽取」，跳过（既不写入，也不覆盖已有真值）。
+    - **空/None**：``tool_calls`` 为空或 None（真跑失败/未跑 loop）时返回 ``None``，使该用例
+      槽位指标标 N/A，不伪造空 dict 当作「抽取了 0 个槽位」。有工具调用但无槽位字段则返回 ``{}``
+      （区别于 None：表示「跑了但没抽到」，计 0 分而非 N/A）。
+    """
+    if not tool_calls:
+        return None
+    slots: dict[str, Any] = {}
+    for call in tool_calls:
+        args = call.get("args") or {}
+        for arg_key, slot_key in _SLOT_ARG_KEYS.items():
+            if arg_key not in args:
+                continue
+            val = args[arg_key]
+            if isinstance(val, str) and val in _SLOT_SENTINELS:
+                continue  # 哨兵默认值不算已抽取（也不覆盖先前真值）
+            slots[slot_key] = val  # 顺序遍历，后者覆盖前者 → last-write-wins
+    return slots
+
+
+def slot_completeness(results: list[EvalResult]) -> Metric:
+    """槽位抽取完整率（**存在性口径**）：期望槽位中「被抽出」的比例，跨用例宏平均。
+
+    存在性口径（change evals-wire-slot-completeness D8）：命中 = 期望槽位的**键存在**于
+    ``actual_slots``，**不比精确值**。哨兵默认值已在 ``slots_from_tool_calls`` 剔除，故「键存在」
+    即等价于「抽到了非默认的真实值」。这与 ``expected_tool_args`` 喂的参数级 P/R/F1（比精确值）
+    口径分明：本指标度量「抽没抽到」（coverage），后者度量「抽得对不对」（accuracy）。
+    选此口径的实测依据：当前 agent 抽出的值为自由文本且不规范（如 gender='男'、start_time 可能
+    算错日期），精确匹配会令指标几乎恒 miss、失去意义。
+
+    仅统计同时含 ``expected_slots`` 与 ``actual_slots`` 的用例；否则 N/A。``expected_slots``
+    的**值仅作人类可读说明、不参与判定**——只用其键集合。
     """
     eligible = [
         r for r in results if r.expected_slots and r.actual_slots is not None
@@ -309,8 +367,8 @@ def slot_completeness(results: list[EvalResult]) -> Metric:
     for r in eligible:
         expected = r.expected_slots or {}
         actual = r.actual_slots or {}
-        # 逐个期望槽位看「键存在且值相等」算命中；actual.get(k) 缺键返回 None，自然算未命中。
-        hit = sum(1 for k, v in expected.items() if actual.get(k) == v)
+        # 存在性：期望槽位的键在 actual 中即算命中（值不参与判定）。
+        hit = sum(1 for k in expected if k in actual)
         # 本条得分 = 命中数 / 期望槽位数；expected 为空时记 0 避免除零。
         per_case.append(hit / len(expected) if expected else 0.0)
     return Metric(

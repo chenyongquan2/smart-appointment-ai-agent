@@ -5,13 +5,19 @@
 // expected_tool_args（可选，改造 2）: {工具名: {稳定键: 值}}——只标可确定性校验的稳定键
 //   (gender/duration/project/technician)；相对时间/自由文本不标（语义等价留给 LLM-judge）。
 //   缺省即对该用例的「参数级」档记 N/A，不伪造分母。
-// 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}}
+// expected_slots（可选，change evals-wire-slot-completeness）: 扁平 dict，其【键】=整轮跨工具
+//   应被抽到的槽位键集合 {start_time/duration/project/preference/gender/technician}；喂「槽位
+//   抽取完整率」(存在性口径——只看键是否被抽出，不比值；故 dict 的【值仅作说明、不参与判定】)。
+//   与 expected_tool_args 口径不同：后者比逐工具参数的精确值(P/R/F1)，本字段只看整轮存在性。
+//   标用户输入里明确给出的槽位键（值不必精确、相对时间也可标——存在即命中）；缺省即该用例槽位 N/A。
+// 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}, "expected_slots":{..}}
 
 // --- appointment(预约) ---
-{"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"project": "按摩"}, "create_appointment": {"project": "按摩"}}}
+{"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"project": "按摩"}, "create_appointment": {"project": "按摩"}}, "expected_slots": {"start_time": "明天14:00", "project": "按摩"}}
 {"input": "请帮我预约今天下午3点的服务1小时", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"create_appointment": {"duration": 60}}}
-{"input": "约个李师傅，他这周六有空吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"], "expected_tool_args": {"find_technician": {"technician": "李师傅"}}}
-{"input": "我要约后天上午的推拿，要力度大的男技师", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"gender": "male", "project": "推拿"}, "create_appointment": {"project": "推拿"}}}
+{"input": "约个李师傅，他这周六有空吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"], "expected_tool_args": {"find_technician": {"technician": "李师傅"}}, "expected_slots": {"technician": "李师傅", "start_time": "周六"}}
+{"input": "我要约后天上午的推拿，要力度大的男技师", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"gender": "male", "project": "推拿"}, "create_appointment": {"project": "推拿"}}, "expected_slots": {"project": "推拿", "gender": "男", "preference": "力气大", "start_time": "后天上午"}}
+{"input": "我要预约明天下午2点，做60分钟的中式推拿，要一位力气大的男技师，就约李师傅", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"technician": "李师傅"}}, "expected_slots": {"start_time": "明天14:00", "duration": "60分钟", "project": "中式推拿", "gender": "男", "preference": "力气大", "technician": "李师傅"}}
 {"input": "帮我把今天的预约改到明天同一时间", "expected_intent": "appointment", "expected_tools": ["check_availability", "create_appointment"]}
 {"input": "8号技师反馈这个客人需要延长30分钟", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
 

@@ -134,16 +134,28 @@ def test_tool_call_sequence_subsequence_and_na():
     assert na.na and na.value is None
 
 
-def test_slot_completeness_partial_and_na():
+def test_slot_completeness_presence_based_partial_and_na():
+    # 存在性口径（change evals-wire-slot-completeness D8）：命中 = 期望键存在于 actual，不比值。
     results = [
         EvalResult(
             "a", "appointment",
-            expected_slots={"project": "肩颈", "time": "14:00"},
-            actual_slots={"project": "肩颈", "time": "15:00"},  # 命中 1/2
+            # 期望 2 个键；actual 只抽到 project（time 缺）→ 命中 1/2。
+            expected_slots={"project": "肩颈", "start_time": "14:00"},
+            actual_slots={"project": "肩颈"},
         ),
     ]
     m = slot_completeness(results)
     assert m.value == 0.5
+
+    # 值不同但键存在仍算命中（存在性、不比值）：project 值不等但都在 → 2/2 = 1.0。
+    hit_by_presence = slot_completeness([
+        EvalResult(
+            "c", "appointment",
+            expected_slots={"project": "肩颈", "gender": "female"},
+            actual_slots={"project": "全身", "gender": "男"},  # 值都不等，但键都在
+        ),
+    ])
+    assert hit_by_presence.value == 1.0
 
     # 无 expected_slots → N/A。
     na = slot_completeness([EvalResult("b", "query")])

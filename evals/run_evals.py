@@ -147,7 +147,9 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
                 actual_tools=actual_tools,
                 expected_tool_args=case.get("expected_tool_args"),  # 参数级比对标注（可选）
                 expected_slots=case.get("expected_slots"),
-                actual_slots=None,
+                # 从真跑采集到的工具调用 args 还原扁平槽位（跨工具合并/哨兵跳过/last-write-wins）。
+                # 真跑失败时 actual_tools 为 None → 还原也为 None → 该用例槽位指标标 N/A，不伪造。
+                actual_slots=_slots_from_tool_calls(actual_tools),
                 latency_s=latency,
                 judge_passed=judge_passed,  # 回复质量裁决（改造 4）；未开 --judge 时 None→N/A
             )
@@ -171,6 +173,7 @@ def _print_by_intent(results) -> None:
 
 # 模块级占位：真正的 EvalResult 在 run_baseline 内按需 import 后赋给它（避免无 key 路径触碰重依赖）。
 _EvalResult = None
+_slots_from_tool_calls = None  # 同上：run_baseline 内按需 import 后赋给它
 
 
 async def run_baseline(
@@ -205,14 +208,16 @@ async def run_baseline(
         aggregated_to_baseline,
         compare_to_baseline,
         format_gate_report,
+        slots_from_tool_calls,
     )
     from evals.agent_capture import run_and_capture
     from evals.judge import judge_response
     from harness.subagents import build_default_subagent_registry
     from harness.tools.registry import build_default_registry
 
-    global _EvalResult
+    global _EvalResult, _slots_from_tool_calls
     _EvalResult = EvalResult  # 供 _run_once 构造（避免它再触发一次重 import）
+    _slots_from_tool_calls = slots_from_tool_calls  # 同上：供 _run_once 从工具调用还原槽位
 
     try:
         llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）；judge 同用
