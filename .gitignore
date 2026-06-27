@@ -38,6 +38,9 @@ data/
 *.log
 logs/
 
+# --- 在线评估闭环 trace（改造 7，运行期产物） ---
+evals/traces/
+
 # --- Tests / coverage ---
 .pytest_cache/
 .coverage

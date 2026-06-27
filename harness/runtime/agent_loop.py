@@ -139,10 +139,12 @@ class AgentLoop:
         spin = SpinDetector(self.repeat_limit)
 
         # 整次 run 一个 root span；trace_id 由其生成，每步 child span 继承（Phase 6）。
-        root = self._tracer.start_span(
-            "agent_loop.run",
-            attributes={"session_id": session_id} if session_id else None,
-        )
+        # root attributes 记 session_id（检索用）与 user_input（改造 7：triage 还原用例
+        # input 的唯一来源——span 其余事件只记 AI 产出/工具结果，不含用户原话）。
+        root_attrs: dict[str, Any] = {"user_input": user_input}
+        if session_id:
+            root_attrs["session_id"] = session_id
+        root = self._tracer.start_span("agent_loop.run", attributes=root_attrs)
         try:
             # ════════════════════════════════════════════════════════════════
             # ② 主循环：用 range 而非 while True——天然带硬上限，绝不会死循环

@@ -77,6 +77,30 @@ uv run python evals/run_evals.py --gate
 - **退出码**：`0` 通过 / `1` 文件缺失（含 `--gate` 时缺基线）/ `2` 用例非法·无 key 降级·`--gate` 与 `--update-baseline` 互斥 / `3` 检测到回归。
 - **诚实标注**：基线有、当前 N/A 的被守指标标「无法比对（skipped）」，不判对错。`槽位抽取完整率` 已接线（change `evals-wire-slot-completeness`）：`actual_slots` 从工具调用 args 还原（跨工具合并 / 哨兵 `未知`·`无` 不计 / 同名冲突 last-write-wins），用例标 `expected_slots`，指标采**存在性口径**（只看期望槽位键是否被抽出、不比精确值——因当前 agent 抽出的值是自由文本且 `start_time` 常算错日期，精确匹配会几乎恒 miss；存在性贴合「完整率/coverage」本义，与 `expected_tool_args` 的参数级精确比对口径分明）。该指标列入门禁、出真值即守——门禁**最多守 3 项**（意图 + 工具 F1 + 槽位完整率）。**诚实保留项**：预约子 Agent 对单轮输入保守，工具仅约 1/3 触发，故某次跑若相关用例都没触发工具，槽位指标 N/A、按 skipped 处理，当次**实守回落到 2 项**；报告末行如实给出当次实守项数，不夸大。靠 `--samples` 多跑 + 容差吸收抖动。
 
+## 在线评估闭环（改造 7）
+
+把 §3 的「在线」那条腿接上：**生产对话 → 落 trace → 半自动甄别坏 case → 人审标注 → 回灌 `cases.jsonl`**，形成「线上发现问题 → 离线防住它」的回路。依赖改造 6（有门禁，回灌才有意义）。
+
+```bash
+# ① 扫描 trace 目录，甄别「疑似坏」候选 → 产出标注草稿（JSON 列表）
+uv run python -m evals.triage scan --out drafts.json
+
+# ②（人工）编辑 drafts.json：给每条候选填 expected_intent / expected_tools / expected_tool_args / expected_slots
+#    —— 真值只来自人工，工具绝不自动伪造。
+
+# ③ 去重后回灌进 cases.jsonl（带 source=online），并提示重定基线
+uv run python -m evals.triage append --from drafts.json
+```
+
+- **trace 怎么来的**：生产入口 [../api/chat_handler.py](../api/chat_handler.py) 的主 `AgentLoop` 已接 `Tracer + FileSpanExporter`，真实对话的 span 落 `evals/traces/*.jsonl`（运行期产物，已 gitignore）。tracer 经 `build_delegate_tool(..., tracer=)` 透传子 Agent，故领域工具调用也采得到。
+- **采样**：默认全量（`sample_rate=1.0`）；**命中失控信号的 trace 必留**（不受采样率影响）。采样率经 `EVAL_TRACE_SAMPLE_RATE` 环境变量调。错误优先逻辑见 [../harness/observability/sampling_exporter.py](../harness/observability/sampling_exporter.py)。
+- **甄别信号**（客观、纯函数，见 [../harness/observability/trace_signals.py](../harness/observability/trace_signals.py)）：`guardrail_exhausted` / `spin_detected`（loop 的 error 事件）、`tool_failure`（工具异常被吞成「工具执行失败…」回灌）、`max_steps_reached`（末步仍调工具、未产终态回复）。triage 只产「候选 + 草稿」，**不自动判真值、不自动改用例集**。
+- **回灌不自动重定基线**：`append` 完只打印提醒，`baseline.json` 不动——基线变更走人审，不绕过改造 6 门禁。
+
+> ⚠️ **诚实边界**：本项目自我定位学习/面试，**无真实线上用户流量**。这里的「生产 trace」=开发/手动对话或回放输入跑出的 trace，机制（产→采→标→回灌）是真的，但「在线」是模拟。
+> 另一项已知局限：C-lite 下子 Agent 各自开 root span（`trace_id` 不同），triage 按 `trace_id` 分组，故**子 Agent 内部的工具失败会作为「以被委派 task 为 input」的独立候选**出现，而非挂回原始用户输入。把子 trace 关联回父回合需要一个跨 loop 的 correlation id——属后续工作。
+> 还有：`[ERROR]` 回复前缀是**遗留 `agents/` 路径**的产物，当前生产走的 harness `AgentLoop` 只产 `[REPLY]`（含兜底），故不在甄别信号内——不臆造不存在的信号。
+
 ## 后续（Phase 1+ 落地时）
 
 - [x] Phase 1 结构化输出改造后，重跑本评估集，确认意图准确率不低于基线（此阶段分类器仍在，指标可比）。

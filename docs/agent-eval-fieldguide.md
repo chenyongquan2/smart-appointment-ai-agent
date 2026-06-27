@@ -47,7 +47,7 @@
 | 层 | 本项目落在哪（诚实版） | 对应章节 |
 |---|---|---|
 | 第1层·评哪层 | 已到**端到端**：意图分类 + 工具调用/槽位（改造 1）真评；轨迹级/多轮仍缺 | §2 |
-| 第1层·何时评 | 离线有（`evals/`）；在线只有 tracer 地基、没接 | §3 |
+| 第1层·何时评 | 离线有（`evals/`）；在线闭环已接（改造 7）：生产 trace 落盘 → 半自动甄别 → 人审回灌；无真实流量故「在线」为模拟 | §3 |
 | 第2层·①数据 ②指标 ③判法 | 20 条用例 / 多指标(含 N/A 设计) / 客观比对 + LLM-judge(改造 4) | §4、§5、§6 |
 | 第3层·可信 | 多次采样 + mean±95% CI(改造 3)；judge 带校准；用例仍小 | §7 |
 | 第4层·落地 | 退出码/降级有；基线 + 阈值阻断已落地（改造 6）；槽位接线（存在性口径）后门禁最多守 3 项，工具非确定性触发故偶回落 2 项 | §8、§9 |
@@ -488,9 +488,9 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 | 规模 / 真实分布 / held-out | ⚠️/❌ | 20 条、手写合成、单轮、无留出集 |
 | **— 落地（§8）—** | | |
 | CI 门禁（基线 + 阈值阻断） | ✅ | 改造 6（archive `2026-06-25-evals-ci-regression-gate`）：`--update-baseline` 落盘基线 + `--gate` 比对回归（退出码 3），接进 [phase.md](../.claude/commands/phase.md) 闸门 2。门禁只守正确性子集、容差吸收抖动；槽位接线后（change `evals-wire-slot-completeness`）**实守 3 项**（意图 + 工具 F1 + 槽位完整率） |
-| 在线评估闭环 | ❌ 无 | tracer 数据地基在（[tracer.py](../harness/observability/tracer.py)），未接采样/回灌 |
+| 在线评估闭环 | ✅ | 改造 7（archive `evals-online-eval-loop`）：生产主 loop 接 [`FileSpanExporter`](../harness/observability/file_exporter.py) + [采样](../harness/observability/sampling_exporter.py)（错误优先）落 trace → [`triage.py`](../evals/triage.py) 半自动甄别 + 人审回灌 `cases.jsonl`（`source=online`），不自动重定基线。无真实流量故「在线」为模拟（诚实边界） |
 
-**一句话结论**：**已从「分类器评估」升级为「端到端 agent 评估」并接上回归门禁**——改造 1〜4 落地了工具调用（参数级/序列级）、LLM-judge 回复质量、多次采样置信区间；改造 6 落地了 CI 回归门禁（基线持久化 + 阈值阻断 + 接进闸门 2）。**剩下的缺口集中在「持续投入」**：在线评估闭环（改造 7）、数据集扩充（改造 8）、以及把槽位采集接线让门禁实守项数从 2 升到 3；RAG 评估（改造 5）暂缓待外部 RAG 服务迁移。详见 §13。
+**一句话结论**：**已从「分类器评估」升级为「端到端 agent 评估」并接上回归门禁与在线闭环**——改造 1〜4 落地了工具调用（参数级/序列级）、LLM-judge 回复质量、多次采样置信区间；改造 6 落地了 CI 回归门禁（基线持久化 + 阈值阻断 + 接进闸门 2）；改造 7 落地了在线评估闭环（生产 trace 落盘 → 半自动甄别 → 人审回灌）。**剩下的缺口集中在「持续投入」**：数据集扩充（改造 8，含让门禁实守项数稳定到 3）；RAG 评估（改造 5）暂缓待外部 RAG 服务迁移。详见 §13。
 
 ---
 
@@ -504,8 +504,8 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
    改造1 接 AgentLoop  ──┬──▶ 改造2 工具调用做严          [✅ 改造1-4 已落地]
    (地基/解锁最多)        └──▶ 改造3 治非确定性
    改造4 LLM-judge ───────────▶ (回复质量, 独立可并行)
-   改造1+2 出真数 ────────────▶ 改造6 CI 门禁 [✅ 已落地] ──▶ 改造7 在线闭环   ◀── 当前待做
-   改造8 数据集扩充 ──────────▶ (贯穿始终, 持续做)
+   改造1+2 出真数 ────────────▶ 改造6 CI 门禁 [✅ 已落地] ──▶ 改造7 在线闭环 [✅ 已落地]
+   改造8 数据集扩充 ──────────▶ (贯穿始终, 持续做)   ◀── 当前待做
    改造5 RAG 评估 ────────────▶ ⏸️ 暂缓（待外部 RAG 服务迁移）
 ```
 
@@ -554,10 +554,14 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 - **产出**：兑现 [CLAUDE.md](../CLAUDE.md) 里「闸门 2 跑 evals 防回归」的承诺。**依赖改造 1+2 出真数**。
 - **工作量**：M
 
-### 改造 7 · 在线评估闭环（trace 采样 → 标注 → 回灌）
+### 改造 7 · 在线评估闭环（trace 采样 → 标注 → 回灌）— ✅ 已落地
 
 - **目标**：把 §3 的「在线」那条腿接起来。
-- **改哪里**：用 [tracer 的 exporter](../harness/observability/exporter.py) 采样生产 trace → 人工/半自动标注 bad case → **回灌进 [cases.jsonl](../evals/cases.jsonl)**，形成「线上发现问题 → 离线防住它」的闭环。
+- **怎么做的**（archive `evals-online-eval-loop`）：补上最底层缺失的一环——**生产入口的 `AgentLoop` 此前没接 tracer、压根不产 trace**。
+  1. 新增落盘 [`FileSpanExporter`](../harness/observability/file_exporter.py)（span→单行 JSON 进 `evals/traces/`，不得抛）+ [`SamplingSpanExporter`](../harness/observability/sampling_exporter.py)（按整条 trace 留/弃、**错误优先必留**、`sample_rate` 默认 1.0），接进 [chat_handler](../api/chat_handler.py) 主 loop 并透传子 Agent。
+  2. [`evals/triage.py`](../evals/triage.py) 半自动甄别：信号判定放 harness 层 [`trace_signals.py`](../harness/observability/trace_signals.py)（`guardrail_exhausted`/`spin_detected`/`tool_failure`/`max_steps_reached`，纯函数、与采样 exporter 同口径），`scan` 产标注草稿、人工填 `expected_*`、`append` 去重回灌 `cases.jsonl`（带 `source=online`）。
+  3. **回灌不自动重定基线**：只打印提醒，`baseline.json` 不动（基线变更走人审，不绕过改造 6 门禁）。
+- **两个判断力点**：① 信号口径**严格对齐 `AgentLoop` 真实落点**，`[ERROR]` 前缀属遗留 `agents/` 路径、harness loop 不产，故诚实排除、不臆造信号；② **诚实边界**——本项目无真实流量（「生产 trace」=开发/手动对话），且 C-lite 下子 Agent 自开 root span，子 Agent 内部失败会作为「以被委派 task 为 input」的独立候选出现，跨 loop 关联需 correlation id（后续工作）。
 - **产出**：离线 + 在线双腿齐全。**依赖改造 6**（有了门禁，回灌才有意义）。
 - **工作量**：L
 

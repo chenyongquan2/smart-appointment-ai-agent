@@ -15,6 +15,7 @@
 """
 
 import logging
+import os
 import uuid
 from typing import Any, List, Optional, Tuple
 
@@ -25,6 +26,9 @@ from db.db_router import DatabaseRouter
 from harness.memory.long_term import LongTermMemory
 from harness.memory.short_term import ShortTermMemory
 from harness.memory.summary import LLMSummaryMemory
+from harness.observability.file_exporter import FileSpanExporter
+from harness.observability.sampling_exporter import SamplingSpanExporter
+from harness.observability.tracer import Tracer
 from harness.runtime import AgentLoop
 from harness.runtime.session import SessionStore
 from harness.runtime.system_prompt import build_system_prompt
@@ -41,7 +45,21 @@ from harness.tools.registry import ToolRegistry, build_default_registry
 _llm = create_chat_model(temperature=0)  # temperature=0：尽量确定性，利于评估对照与复现
 _full_registry = build_default_registry()
 _subagents = build_default_subagent_registry()
-_delegate_tool = build_delegate_tool(_llm, _full_registry, _subagents)
+
+# 在线评估闭环（改造 7）：把真实对话 trace 落盘，作为 triage 的 trace 源。
+# - 一个进程一个 trace 文件（run_id=进程级 uuid），主 loop 与子 Agent 共用同一 tracer，
+#   故主/子 span 都进同一文件（子 Agent 各自开 root span，trace_id 不同——triage 按 trace_id 分组）。
+# - 采样：默认全量（sample_rate=1.0）；命中失控信号的 trace 必留（不受采样率影响，见 SamplingSpanExporter）。
+#   采样率经 EVAL_TRACE_SAMPLE_RATE 环境变量调（缺省 1.0）。
+# - tracer 经 build_delegate_tool(..., tracer=) 透传子 Agent（盲区修复，与 evals/agent_capture.py 同款接法）。
+_trace_sample_rate = float(os.getenv("EVAL_TRACE_SAMPLE_RATE", "1.0"))
+_trace_exporter = SamplingSpanExporter(
+    FileSpanExporter(run_id=uuid.uuid4().hex),
+    sample_rate=_trace_sample_rate,
+)
+_tracer = Tracer(_trace_exporter)
+
+_delegate_tool = build_delegate_tool(_llm, _full_registry, _subagents, tracer=_tracer)
 
 # ★ 关键设计：主 registry 里「只放 delegate 这一个工具」。
 #   于是主 Agent 的唯一动作就是「调 delegate(派给哪个专员)」——它只做路由决策，
@@ -55,6 +73,7 @@ _agent_loop = AgentLoop(
     registry=_main_registry,
     # 主 Agent 专用系统提示：把可委派的子 Agent 清单写进去，模型才知道能派给谁。
     system_prompt=build_system_prompt(_main_registry, _subagents),
+    tracer=_tracer,  # 改造 7：主 loop 的 trace 落盘（含 root span 的 user_input/session_id）
 )
 
 # 持久化与记忆组件（DatabaseRouter 复用既有 SQLite + Repository）。

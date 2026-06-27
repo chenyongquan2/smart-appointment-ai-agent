@@ -10,6 +10,7 @@ exporter，OTel 仅作为其中一个 exporter）。
 """
 
 from harness.observability.exporter import InMemoryExporter, SpanExporter
+from harness.observability.file_exporter import FileSpanExporter
 from harness.observability.span import Span
 from harness.observability.tracer import NoopTracer, Tracer
 
@@ -17,6 +18,7 @@ __all__ = [
     "Span",
     "SpanExporter",
     "InMemoryExporter",
+    "FileSpanExporter",
     "Tracer",
     "NoopTracer",
 ]
