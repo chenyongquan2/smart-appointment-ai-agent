@@ -21,6 +21,19 @@
 {"input": "帮我把今天的预约改到明天同一时间", "expected_intent": "appointment", "expected_tools": ["check_availability", "create_appointment"]}
 {"input": "8号技师反馈这个客人需要延长30分钟", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
 
+// --- appointment(预约) · 信息齐全的祈使式锚点（change evals-stabilize-gate-three）---
+// 目的：单条工具触发为 LLM 非确定行为(实测同输入 1/3~3/3 波动)，靠「足量信息齐全+点名技师
+//   的祈使句」做冗余，使「槽位抽取完整率」在常规门禁跑下稳定非 N/A、门禁稳定实守 3 项。
+//   不加 expected_tool_args（参数级非门禁；technician 键与 schema technician_name 的遗留差异不在本切片）。
+{"input": "我要预约明天上午10点做90分钟足疗，要手法轻柔的女技师，就约王师傅，帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天10:00", "duration": "90分钟", "project": "足疗", "preference": "手法轻柔", "gender": "女", "technician": "王师傅"}}
+{"input": "我要预约后天下午4点，做60分钟精油按摩，要一位力气大的男技师，就约刘师傅", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天16:00", "duration": "60分钟", "project": "精油按摩", "preference": "力气大", "gender": "男", "technician": "刘师傅"}}
+{"input": "我要预约今天下午5点做60分钟推拿，就约赵师傅，直接帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "今天17:00", "duration": "60分钟", "project": "推拿", "technician": "赵师傅"}}
+{"input": "请帮我预约明天上午11点的中式推拿，时长90分钟，要个男技师张师傅，直接帮我约", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天11:00", "duration": "90分钟", "project": "中式推拿", "gender": "男", "technician": "张师傅"}}
+{"input": "我要预约后天下午2点，做45分钟肩颈按摩，要一位手法轻柔的女技师孙师傅，帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天14:00", "duration": "45分钟", "project": "肩颈按摩", "preference": "手法轻柔", "gender": "女", "technician": "孙师傅"}}
+{"input": "我要预约今天下午6点做60分钟拔罐，要个力气大的男技师周师傅，帮我下单", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "今天18:00", "duration": "60分钟", "project": "拔罐", "preference": "力气大", "gender": "男", "technician": "周师傅"}}
+{"input": "请直接预约明天下午1点的泰式按摩，时长120分钟，要手法轻柔的女技师陈师傅，帮我订", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天13:00", "duration": "120分钟", "project": "泰式按摩", "preference": "手法轻柔", "gender": "女", "technician": "陈师傅"}}
+{"input": "我要预约后天上午9点做30分钟足疗，就约吴师傅，直接帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天09:00", "duration": "30分钟", "project": "足疗", "technician": "吴师傅"}}
+
 // --- query(查询) ---
 {"input": "你们都有哪些按摩项目?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
 {"input": "推拿一个小时多少钱?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}
