@@ -1,44 +1,44 @@
 {
   "schema_version": 1,
   "meta": {
-    "total_cases": 29,
+    "total_cases": 35,
     "samples": 3
   },
   "metrics": {
     "意图分类准确率": {
-      "value": 0.8505747126436781,
+      "value": 0.7238095238095239,
       "is_latency": false
     },
     "工具调用-召回率": {
-      "value": 0.5306513409961685,
+      "value": 0.46428571428571436,
       "is_latency": false
     },
     "工具调用-精确率": {
-      "value": 0.9808429118773946,
+      "value": 0.9634920634920635,
       "is_latency": false
     },
     "工具调用-F1": {
-      "value": 0.5383141762452107,
+      "value": 0.4774603174603174,
       "is_latency": false
     },
     "工具调用-参数级F1": {
-      "value": 0.15185185185185185,
+      "value": 0.13333333333333333,
       "is_latency": false
     },
     "工具调用-序列正确率": {
-      "value": 0.4482758620689655,
+      "value": 0.37142857142857144,
       "is_latency": false
     },
     "工具调用-完全匹配率": {
-      "value": 0.43678160919540227,
+      "value": 0.3523809523809524,
       "is_latency": false
     },
     "槽位抽取完整率": {
-      "value": 1.0,
+      "value": 0.8492063492063492,
       "is_latency": false
     },
     "端到端延迟": {
-      "value": 4.086609887356363,
+      "value": 2.861246080000308,
       "is_latency": true
     }
   }

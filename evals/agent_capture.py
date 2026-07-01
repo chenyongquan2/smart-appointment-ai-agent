@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from evals.trace_collect import collect_tool_calls
 from harness.observability.exporter import InMemoryExporter
@@ -41,15 +42,47 @@ class CaptureResult:
     reply: str = ""  # agent 最终回复（剥离 [REPLY] 前缀）；judge（改造 4）的输入
 
 
+def _build_capture_loop(
+    llm: BaseChatModel,
+    full_registry: ToolRegistry,
+    subagents: SubAgentRegistry,
+) -> tuple[AgentLoop, InMemoryExporter]:
+    """按生产路径拼一个带独立 exporter 沙盒的主 loop（单/多轮共用，避免两份沙盒代码）。
+
+    主 registry 只含 delegate，领域工具藏在子 Agent 子集里；delegate 带上 tracer，
+    子 Agent 内层工具调用才会被导出（盲区修复的落点）。返回 loop 与其 exporter 沙盒。
+    """
+    exporter = InMemoryExporter()
+    tracer = Tracer(exporter)
+    delegate = build_delegate_tool(llm, full_registry, subagents, tracer=tracer)
+    main_registry = ToolRegistry()
+    main_registry.register(delegate)
+    loop = AgentLoop(
+        llm=llm,
+        registry=main_registry,
+        system_prompt=build_system_prompt(main_registry, subagents),
+        tracer=tracer,  # 主 loop 自身的 delegate span 也进沙盒（采集时按默认剔除）
+    )
+    return loop, exporter
+
+
+def _extract_reply(token: str, prev: str) -> str:
+    """从一个 yield 出的 token 取最终回复：[REPLY] 那条以最后一条为准（与 chat_handler 一致）。"""
+    if token.startswith(_REPLY_PREFIX):
+        return token[len(_REPLY_PREFIX):]
+    return prev
+
+
 async def run_and_capture(
     user_input: str,
     llm: BaseChatModel,
     full_registry: ToolRegistry,
     subagents: SubAgentRegistry,
 ) -> CaptureResult:
-    """跑一次端到端主 loop，采集实际工具序列**与最终回复文本**。
+    """跑一次端到端主 loop，采集实际工具序列**与最终回复文本**（单轮）。
 
     工具调用正确率（改造 1/2）用 ``tool_calls``；回复质量 judge（改造 4）用 ``reply``。
+    单轮在语义上等价于单元素多轮，故直接薄封装 ``run_and_capture_multiturn``（DRY）。
 
     Args:
         user_input: 单条用例的用户输入。
@@ -60,29 +93,45 @@ async def run_and_capture(
     Returns:
         ``CaptureResult``：有序工具序列（编排工具 ``delegate`` 默认不计入）+ 最终回复。
     """
-    # ① 每条用例一个独立 exporter 沙盒 + tracer：采集边界清晰、用例间互不污染。
-    exporter = InMemoryExporter()
-    tracer = Tracer(exporter)
+    return await run_and_capture_multiturn([user_input], llm, full_registry, subagents)
 
-    # ② 按生产路径拼主 loop：主 registry 只含 delegate，领域工具藏在子 Agent 子集里。
-    #    关键：delegate 带上 tracer，子 Agent 内层工具调用才会被导出（盲区修复的落点）。
-    delegate = build_delegate_tool(llm, full_registry, subagents, tracer=tracer)
-    main_registry = ToolRegistry()
-    main_registry.register(delegate)
-    loop = AgentLoop(
-        llm=llm,
-        registry=main_registry,
-        system_prompt=build_system_prompt(main_registry, subagents),
-        tracer=tracer,  # 主 loop 自身的 delegate span 也进沙盒（采集时按默认剔除）
-    )
 
-    # ③ 驱动循环：截留最终回复（[REPLY] 那条），其余 token 仅触发 tracer 副作用。
+async def run_and_capture_multiturn(
+    turns: list[str],
+    llm: BaseChatModel,
+    full_registry: ToolRegistry,
+    subagents: SubAgentRegistry,
+) -> CaptureResult:
+    """按轮逐次驱动**同一**主 loop，跨所有轮次采集工具序列与末轮回复（多轮，change evals-multiturn-cases）。
+
+    覆盖单轮评不到的轨迹场景：跨轮维持状态、追问后补全槽位、把多轮信息汇总成一次正确工具链。
+    复用单轮的沙盒构造（``_build_capture_loop``）与跨 span 工具还原（``collect_tool_calls``），
+    仅在其上加按轮驱动的外层循环。可注入脚本化 fake LLM 离线确定性单测。
+
+    Args:
+        turns: 有序的用户话语列表（每个元素是一轮用户输入）。单元素即单轮。
+        llm / full_registry / subagents: 同 ``run_and_capture``。
+
+    Returns:
+        ``CaptureResult``：**跨所有轮次**按时序还原的有序工具序列 + **末轮**最终回复。
+    """
+    # ① 单个 exporter 沙盒跨所有轮次：所有轮、所有子 Agent 的 span 进同一沙盒，
+    #    collect_tool_calls 据 (span.start, 事件序) 自然跨轮还原全局有序序列。
+    loop, exporter = _build_capture_loop(llm, full_registry, subagents)
+
+    # ② 按轮驱动：history 只累积 user/assistant 文本对（与生产 chat_handler 的窗口口径一致，
+    #    不回灌轮间中间工具消息——每轮 loop.run 自重建 [System]+history+[Human]）。
+    history: list[BaseMessage] = []
     reply = ""
-    async for token in loop.run(user_input):
-        if token.startswith(_REPLY_PREFIX):
-            reply = token[len(_REPLY_PREFIX):]  # 多次 [REPLY] 以最后一条为准（与 chat_handler 一致）
+    for turn in turns:
+        reply = ""
+        # 传入 history 的副本：loop.run 内部会 extend，传副本避免它改到我们累积的列表。
+        async for token in loop.run(turn, history=list(history)):
+            reply = _extract_reply(token, reply)
+        history.append(HumanMessage(content=turn))
+        history.append(AIMessage(content=reply))  # 末轮回复即喂 judge 的 reply
 
-    # ④ 从沙盒里所有 span 还原有序工具序列（不按单一 trace_id 过滤——子 Agent 自开 root）。
+    # ③ 跨所有轮次的全部 span 还原有序工具序列（不按单一 trace_id 过滤——子 Agent 自开 root）。
     return CaptureResult(tool_calls=collect_tool_calls(exporter.spans), reply=reply)
 
 

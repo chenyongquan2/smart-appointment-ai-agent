@@ -10,7 +10,11 @@
 //   抽取完整率」(存在性口径——只看键是否被抽出，不比值；故 dict 的【值仅作说明、不参与判定】)。
 //   与 expected_tool_args 口径不同：后者比逐工具参数的精确值(P/R/F1)，本字段只看整轮存在性。
 //   标用户输入里明确给出的槽位键（值不必精确、相对时间也可标——存在即命中）；缺省即该用例槽位 N/A。
+// 多轮（change evals-multiturn-cases）: 用 "turns":[..]（有序用户话语列表）替代 "input"，二者互斥。
+//   多轮用例的 expected_tools/expected_slots 口径为【整段对话累计】（跨所有轮次合并）；意图对【首轮】判定，
+//   故 expected_intent 跟随首轮（如「先咨询后预约」首轮是 query 即标 query）。单轮 input 等价单元素 turns。
 // 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}, "expected_slots":{..}}
+//   或: {"turns":[..], "expected_intent":.., "expected_tools":[..], "expected_slots":{..}}
 
 // --- appointment(预约) ---
 {"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"project": "按摩"}, "create_appointment": {"project": "按摩"}}, "expected_slots": {"start_time": "明天14:00", "project": "按摩"}}
@@ -33,6 +37,20 @@
 {"input": "我要预约今天下午6点做60分钟拔罐，要个力气大的男技师周师傅，帮我下单", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "今天18:00", "duration": "60分钟", "project": "拔罐", "preference": "力气大", "gender": "男", "technician": "周师傅"}}
 {"input": "请直接预约明天下午1点的泰式按摩，时长120分钟，要手法轻柔的女技师陈师傅，帮我订", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天13:00", "duration": "120分钟", "project": "泰式按摩", "preference": "手法轻柔", "gender": "女", "technician": "陈师傅"}}
 {"input": "我要预约后天上午9点做30分钟足疗，就约吴师傅，直接帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天09:00", "duration": "30分钟", "project": "足疗", "technician": "吴师傅"}}
+
+// --- appointment(预约) · 多轮轨迹用例（change evals-multiturn-cases）---
+// 覆盖单轮评不到的轨迹：①追问补全(首轮信息不全→次轮齐全祈使式触发工具链) ②改约 ③先咨询后预约。
+// expected_tools/expected_slots 为整段累计；首轮含「预约」避免被分类器误判 other。
+// 实测触发特性（诚实）：多轮触发比单轮更不稳定——委派式 harness 的 delegate 给子 Agent 传的是
+//   合成 task 而非完整历史，故次轮若不复述项目会丢跨轮上下文（已让次轮自然复述项目以缓解）；
+//   叠加子 Agent 保守 + 单条触发强非确定，单跑触发约 3/6。触发时跨轮槽位还原可达满命中(实测 5/5)。
+//   未触发的用例按既有约定记 N/A 退出分母(不计 0)，故不破坏门禁槽位项稳定性(那由切片 1 单轮锚点撑)。
+{"turns": ["我想预约按摩", "明天下午2点，做60分钟按摩，要个力气大的男技师，约李师傅，帮我订好"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天14:00", "duration": "60分钟", "project": "按摩", "preference": "力气大", "gender": "男", "technician": "李师傅"}}
+{"turns": ["我要预约足疗", "后天上午10点，做90分钟足疗，要手法轻柔的女技师王师傅，直接帮我订"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天10:00", "duration": "90分钟", "project": "足疗", "preference": "手法轻柔", "gender": "女", "technician": "王师傅"}}
+{"turns": ["帮我预约个推拿", "今天下午5点，推拿60分钟，约赵师傅，帮我下单"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "今天17:00", "duration": "60分钟", "project": "推拿", "technician": "赵师傅"}}
+{"turns": ["我想预约精油按摩", "明天上午11点，做120分钟精油按摩，要个男技师张师傅，直接约"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天11:00", "duration": "120分钟", "project": "精油按摩", "gender": "男", "technician": "张师傅"}}
+{"turns": ["帮我预约明天上午10点的肩颈按摩，60分钟，约孙师傅，帮我订好", "麻烦改到后天同一时间"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天10:00", "duration": "60分钟", "project": "肩颈按摩", "technician": "孙师傅"}}
+{"turns": ["推拿一个小时多少钱？", "好的，那帮我预约明天下午3点的推拿，60分钟，约周师傅，帮我订"], "expected_intent": "query", "expected_tools": ["search_knowledge", "find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天15:00", "duration": "60分钟", "project": "推拿", "technician": "周师傅"}}
 
 // --- query(查询) ---
 {"input": "你们都有哪些按摩项目?", "expected_intent": "query", "expected_tools": ["search_knowledge"]}

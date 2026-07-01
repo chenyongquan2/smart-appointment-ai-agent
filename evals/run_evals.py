@@ -80,8 +80,37 @@ def load_cases(path: Path) -> list[dict]:
                 file=sys.stderr,
             )
             raise SystemExit(2)  # 退出码 2：约定的「用例/配置错误」码（见 main 的各处 return 2）
+        # 用例「输入」支持单轮 input(字符串) 与多轮 turns(字符串列表) 两形态，二者互斥。
+        # 归一：给每条用例补一个 case["turns"]=list[str]（单轮 input → 单元素列表），
+        # 让下游 _run_once 统一按 turns 处理，单轮等价单元素 turns。
+        case["turns"] = _normalize_turns(case, lineno)
         cases.append(case)
     return cases
+
+
+def _normalize_turns(case: dict, lineno: int) -> list[str]:
+    """把用例的 input/turns 归一为 turns 列表；校验互斥与类型。
+
+    一条用例 MUST 恰好提供 input 或 turns 之一：两者皆有/皆无都报行号 SystemExit(2)
+    （与「坏用例不静默」一致）。多轮 turns SHALL 为非空字符串列表。
+    """
+    has_input = "input" in case
+    has_turns = "turns" in case
+    if has_input == has_turns:  # 同真(都给)或同假(都缺)都非法
+        which = "同时提供了 input 与 turns" if has_input else "既无 input 也无 turns"
+        print(f"[ERROR] 第 {lineno} 行 {which}; 必须恰好提供其一", file=sys.stderr)
+        raise SystemExit(2)
+    if has_input:
+        text = case["input"]
+        if not isinstance(text, str):
+            print(f"[ERROR] 第 {lineno} 行 input 必须是字符串", file=sys.stderr)
+            raise SystemExit(2)
+        return [text]
+    turns = case["turns"]
+    if not isinstance(turns, list) or not turns or not all(isinstance(t, str) for t in turns):
+        print(f"[ERROR] 第 {lineno} 行 turns 必须是非空字符串列表", file=sys.stderr)
+        raise SystemExit(2)
+    return turns
 
 
 def _has_api_key() -> bool:
@@ -96,26 +125,34 @@ def print_cases(cases: list[dict]) -> None:
     """无 key 退路: 仅打印用例清单。"""
     for case in cases:
         intent = case.get("expected_intent", "?")
-        text = case.get("input", "")
-        print(f"  [{intent:11}] {text[:42]}")
+        turns = case.get("turns") or [case.get("input", "")]
+        text = turns[0]
+        suffix = f" (+{len(turns) - 1}轮)" if len(turns) > 1 else ""  # 多轮用例标注轮数
+        print(f"  [{intent:11}] {text[:42]}{suffix}")
 
 
-async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn, judge_fn=None):
+async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn,
+                    judge_fn=None, capture_multiturn_fn=None):
     """跑一遍全部用例，返回填好的 ``EvalResult`` 列表（多采样时被调用 N 次）。
 
     单次的「跑分类器 + 端到端真跑采集(工具+回复) + 可选 judge」逻辑都收敛在这里，故
     N=1 与 N>1 走同一条路，口径完全一致。``capture_fn`` 返回 ``CaptureResult``（工具+回复）；
     ``judge_fn`` 非 None 时对回复做质量裁决（改造 4），缺省不评（回复质量记 N/A）。
+
+    多轮（change evals-multiturn-cases）：用例的输入经 ``load_cases`` 归一为 ``case["turns"]``
+    （单轮=单元素列表）。意图分类对**首轮**判定；采集按轮长分派——单轮走 ``capture_fn``
+    （路径不变），多轮走 ``capture_multiturn_fn``（按轮驱动、跨轮累计工具/槽位、末轮回复喂 judge）。
     """
     import time
 
     results = []
     for case in cases:
-        text = case.get("input", "")
+        turns = case["turns"]  # load_cases 已归一为非空 list[str]
+        first_turn = turns[0]  # 多轮意图对首轮（确立意图的开场白）判定
         expected = case["expected_intent"]
         start = time.perf_counter()  # perf_counter：高精度单调钟，专用于测耗时
         try:
-            actual = await classifier.classify_task(text)  # ← 真正调用 LLM 分类
+            actual = await classifier.classify_task(first_turn)  # ← 真正调用 LLM 分类（首轮）
         except Exception as exc:  # 网络/鉴权异常: 标注出来, 不中断整轮（一条挂了别拖垮全量）
             actual = f"<异常:{type(exc).__name__}>"
         latency = time.perf_counter() - start  # 仅计分类器单次调用（与既有口径一致，不含 loop）
@@ -125,20 +162,23 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
         actual_tools = None
         judge_passed = None
         try:
-            cap = await capture_fn(text, llm, full_registry, subagents)  # CaptureResult
+            if len(turns) > 1 and capture_multiturn_fn is not None:
+                cap = await capture_multiturn_fn(turns, llm, full_registry, subagents)
+            else:
+                cap = await capture_fn(first_turn, llm, full_registry, subagents)  # 单轮路径不变
             actual_tools = cap.tool_calls
-            # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决。
+            # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决（多轮用首轮作问题、末轮回复作答）。
             if judge_fn is not None:
-                verdict = await judge_fn(text, cap.reply, llm)
+                verdict = await judge_fn(first_turn, cap.reply, llm)
                 judge_passed = verdict.passed
         except Exception as exc:  # 真跑异常: 该条工具/judge 记 None（指标对该条标 N/A，不伪造）
-            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具/质量对该条记 N/A: {text[:30]}",
+            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具/质量对该条记 N/A: {first_turn[:30]}",
                   file=sys.stderr)
 
         # 把这条用例的「实际值」装进 EvalResult，交给 metrics 模块统一算分。
         results.append(
             _EvalResult(
-                input=text,
+                input=first_turn,
                 expected_intent=expected,
                 actual_intent=actual,
                 # actual_tools 采全为有序 [{name, args}]；指标只比名字集合（采全比松）。
@@ -210,7 +250,7 @@ async def run_baseline(
         format_gate_report,
         slots_from_tool_calls,
     )
-    from evals.agent_capture import run_and_capture
+    from evals.agent_capture import run_and_capture, run_and_capture_multiturn
     from evals.judge import judge_response
     from harness.subagents import build_default_subagent_registry
     from harness.tools.registry import build_default_registry
@@ -266,7 +306,8 @@ async def run_baseline(
 
     # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
     if samples <= 1:
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
+                                  judge_fn, run_and_capture_multiturn)
         rep = build_report(results)
         print(format_report(rep))
         _print_by_intent(results)
@@ -281,7 +322,8 @@ async def run_baseline(
     reports = []
     for i in range(samples):
         print(f"[采样 {i + 1}/{samples}] 跑整套用例…", file=sys.stderr)
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture, judge_fn)
+        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
+                                  judge_fn, run_and_capture_multiturn)
         reports.append(build_report(results))  # 每次跑的聚合指标快照
     # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
     aggregated = aggregate_runs(reports)

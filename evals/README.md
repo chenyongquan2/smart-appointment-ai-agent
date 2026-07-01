@@ -33,11 +33,22 @@
 
 ## 用例格式
 
+**单轮**（`input` 为单条话语）：
+
 ```json
 {"input": "我想预约明天下午的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"]}
 ```
 
-- `expected_tools` 是 **Phase 2 工具层的前瞻注解，当前不计分**（工具尚不存在）。工具调用准确率待 Phase 2 启用。
+**多轮**（`turns` 为有序话语列表；与 `input` 互斥，change `evals-multiturn-cases`）：
+
+```json
+{"turns": ["我想预约按摩", "明天下午2点，约李师傅，帮我订好"], "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天14:00", "project": "按摩", "technician": "李师傅"}}
+```
+
+- 一条用例 **恰好提供 `input` 或 `turns` 之一**（皆有/皆缺 → 运行器报行号退出 2）。单轮 `input` 等价单元素 `turns`。
+- 多轮的 `expected_tools` / `expected_slots` 口径为**整段对话累计**（跨所有轮次合并）；**意图对首轮判定**，故 `expected_intent` 跟随首轮（如「先咨询后预约」首轮是 `query` 即标 `query`）。
+- 多轮采集口径：运行器按轮驱动**同一** AgentLoop，轮间只累积 user/assistant 文本对作 `history`（对齐生产 `chat_handler` 窗口，不回灌轮内中间工具消息——已知简化），跑完从同一 exporter 沙盒**跨所有轮次**还原工具序列与槽位，judge 用**末轮**回复。多轮触发比单轮更不稳定，沿用「数据集冗余 + `--samples` + 容差」稳住（同改造 8 切片 1 的诚实边界）。
+- `expected_tools` 自改造 1 起**已计分**（端到端真跑采集 `actual_tools`）。
 
 ## 运行
 
