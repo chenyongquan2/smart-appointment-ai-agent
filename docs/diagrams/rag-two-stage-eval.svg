@@ -1,0 +1,64 @@
+<svg viewBox="0 0 860 340" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>RAG 评估分两段：检索段与生成段</title>
+<desc>用户提问经过检索找回文档，再经过生成产出回答。检索段用 Recall@k、Precision@k、MRR 评估找回的文档对不对；生成段用 RAG 三元组——上下文相关性、忠实度、答案相关性——评估回答是否被检索内容支撑、有没有幻觉、是否回应了问题。</desc>
+
+<defs>
+<marker id="arr3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0 0 L10 5 L0 10 z" fill="var(--color-text-secondary,#6b7280)"/>
+</marker>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .box-title { font-weight: 600; font-size: 14px; }
+  .note { font-size: 12px; fill: var(--color-text-secondary,#6b7280); }
+  .eval-title { font-weight: 600; font-size: 13px; }
+</style>
+</defs>
+
+<text x="430" y="26" text-anchor="middle" class="t h" font-size="17">RAG 评估：检索段 + 生成段</text>
+<text x="430" y="45" text-anchor="middle" class="m" font-size="13">本项目 SQLite+FAISS 的 RAG 两段都在，但评估主动暂缓（待外部服务迁移）</text>
+
+<!-- Pipeline row -->
+<rect x="30" y="150" width="120" height="56" rx="8" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+<text x="90" y="183" text-anchor="middle" class="t box-title">用户提问</text>
+
+<line x1="150" y1="178" x2="205" y2="178" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+<rect x="210" y="150" width="180" height="56" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="300" y="174" text-anchor="middle" class="t box-title">① 检索</text>
+<text x="300" y="192" text-anchor="middle" class="note">SQLite + FAISS 找回文档</text>
+
+<line x1="390" y1="178" x2="445" y2="178" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+<rect x="450" y="150" width="180" height="56" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<text x="540" y="174" text-anchor="middle" class="t box-title">② 生成</text>
+<text x="540" y="192" text-anchor="middle" class="note">用检索内容组织回答</text>
+
+<line x1="630" y1="178" x2="685" y2="178" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arr3)"/>
+
+<rect x="690" y="150" width="140" height="56" rx="8" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+<text x="760" y="183" text-anchor="middle" class="t box-title">最终回答</text>
+
+<!-- Eval callout for retrieval -->
+<line x1="300" y1="150" x2="300" y2="120" stroke="#2563eb" stroke-width="1.2" stroke-dasharray="3 2"/>
+<rect x="200" y="60" width="200" height="60" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1"/>
+<text x="300" y="78" text-anchor="middle" class="t eval-title">检索段评估</text>
+<text x="215" y="96" class="note">Recall@k · Precision@k</text>
+<text x="215" y="112" class="note">MRR（第一个相关文档排第几）</text>
+
+<!-- Eval callout for generation -->
+<line x1="540" y1="150" x2="540" y2="120" stroke="#16a34a" stroke-width="1.2" stroke-dasharray="3 2"/>
+<rect x="440" y="60" width="220" height="60" rx="6" fill="#f0fdf4" stroke="#16a34a" stroke-width="1"/>
+<text x="550" y="78" text-anchor="middle" class="t eval-title">生成段评估（RAG 三元组）</text>
+<text x="452" y="96" class="note">上下文相关性 · 忠实度（防幻觉）</text>
+<text x="452" y="112" class="note">答案相关性（答非所问？）</text>
+
+<!-- Failure mode annotations -->
+<text x="300" y="230" text-anchor="middle" class="note">防：检索跑偏</text>
+<text x="540" y="230" text-anchor="middle" class="note">防：瞎编 / 答非所问</text>
+
+<!-- Status footer -->
+<text x="430" y="270" text-anchor="middle" class="note">⏸️ 本项目两段评估均暂缓 —— 本地 RAG 后续将整体替换为外部服务，现在评本地实现无长期价值</text>
+
+</svg>

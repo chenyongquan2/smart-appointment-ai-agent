@@ -1,0 +1,55 @@
+<svg viewBox="0 0 820 260" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>LLM-as-judge 两种打分方式：Pointwise 与 Pairwise</title>
+<desc>Pointwise 逐条打分：单个回答交给裁判模型，输出一个分数或合格不合格。Pairwise 两两对比：两个回答一起交给裁判模型，输出哪个更好，通常比逐条打分更稳。本项目实现的是 pointwise 二元裁决，pairwise 尚未实现。</desc>
+
+<defs>
+<marker id="arr4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0 0 L10 5 L0 10 z" fill="var(--color-text-secondary,#6b7280)"/>
+</marker>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .box-title { font-weight: 600; font-size: 14px; }
+  .note { font-size: 12px; fill: var(--color-text-secondary,#6b7280); }
+</style>
+</defs>
+
+<text x="410" y="26" text-anchor="middle" class="t h" font-size="17">LLM-as-judge：两种打分方式</text>
+
+<!-- Pointwise panel -->
+<rect x="30" y="55" width="360" height="185" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<text x="210" y="80" text-anchor="middle" class="t box-title">Pointwise（逐条打分）✅ 本项目用这种</text>
+
+<rect x="55" y="100" width="130" height="46" rx="6" fill="#ffffff" stroke="#9ca3af"/>
+<text x="120" y="127" text-anchor="middle" class="note">单个回答</text>
+
+<line x1="185" y1="123" x2="230" y2="123" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+<rect x="235" y="100" width="130" height="46" rx="6" fill="#ffffff" stroke="#16a34a"/>
+<text x="300" y="120" text-anchor="middle" class="note">裁判模型</text>
+<text x="300" y="136" text-anchor="middle" class="note">打分</text>
+
+<text x="210" y="175" text-anchor="middle" class="t" font-size="13">→ 1–5 分 / 合格·不合格</text>
+<text x="210" y="200" text-anchor="middle" class="note">本项目：pointwise 二元裁决</text>
+<text x="210" y="216" text-anchor="middle" class="note">（passed / not passed，未校准、不进门禁）</text>
+
+<!-- Pairwise panel -->
+<rect x="430" y="55" width="360" height="185" rx="8" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="610" y="80" text-anchor="middle" class="t box-title">Pairwise（两两对比）— 本项目未实现</text>
+
+<rect x="450" y="94" width="120" height="38" rx="6" fill="#ffffff" stroke="#9ca3af"/>
+<text x="510" y="118" text-anchor="middle" class="note">回答 A</text>
+<rect x="450" y="140" width="120" height="38" rx="6" fill="#ffffff" stroke="#9ca3af"/>
+<text x="510" y="164" text-anchor="middle" class="note">回答 B</text>
+
+<line x1="570" y1="132" x2="615" y2="132" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+<rect x="620" y="112" width="130" height="46" rx="6" fill="#ffffff" stroke="#9ca3af"/>
+<text x="685" y="132" text-anchor="middle" class="note">裁判模型</text>
+<text x="685" y="148" text-anchor="middle" class="note">对比</text>
+
+<text x="610" y="200" text-anchor="middle" class="t" font-size="13">→ A 更好 / B 更好</text>
+<text x="610" y="220" text-anchor="middle" class="note">更稳，但要防位置偏差（见 §6.2）</text>
+
+</svg>

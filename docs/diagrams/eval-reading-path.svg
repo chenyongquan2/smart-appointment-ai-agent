@@ -1,0 +1,82 @@
+<svg viewBox="0 0 780 470" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>这份教材的阅读主线：七步问句</title>
+<desc>阅读路线分七步，每步是一个问句。第一步 §1：评估到底在回答什么问题。第二步 §2到3：评 agent 的哪一部分、什么时候评。第三步 §4到6：三件事，拿什么当标准答案、用什么指标、怎么判对错。第四步 §7：这些评估结果本身可信吗。第五步 §8到9：怎么让它发挥作用，接进 CI 当回归门禁。前五步是学方法的主线。第六步 §10到11 本项目现状速查与改造路线。第七步 §12到14 面试实战：问答、诚实话术、生产级蓝图。</desc>
+
+<defs>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .q { font-weight: 600; font-size: 14.5px; }
+  .num { font-weight: 700; font-size: 15px; fill: #ffffff; }
+  .badge-txt { font-weight: 600; font-size: 12px; }
+  .tag { font-size: 12px; font-weight: 600; }
+</style>
+</defs>
+
+<text x="40" y="30" class="t h" font-size="17">这份教材的阅读主线 —— 顺着七个问句往下走</text>
+
+<!-- vertical connector line -->
+<line x1="66" y1="60" x2="66" y2="418" stroke="#d1d5db" stroke-width="2"/>
+
+<!-- Step 1 -->
+<circle cx="66" cy="78" r="17" fill="#2563eb"/>
+<text x="66" y="84" text-anchor="middle" class="num">1</text>
+<text x="98" y="76" class="t q">评估到底在回答什么问题？</text>
+<text x="98" y="95" class="m" font-size="12.5">给整件事定一个"唯一要回答的问题"</text>
+<rect x="640" y="66" width="96" height="22" rx="11" fill="#eff6ff" stroke="#2563eb"/>
+<text x="688" y="81" text-anchor="middle" class="t badge-txt">§1 · 目的</text>
+
+<!-- Step 2 -->
+<circle cx="66" cy="140" r="17" fill="#2563eb"/>
+<text x="66" y="146" text-anchor="middle" class="num">2</text>
+<text x="98" y="138" class="t q">评 agent 的哪一部分？什么时候评？</text>
+<text x="98" y="157" class="m" font-size="12.5">两个问题：一个是"评哪层"，一个是"何时评"（离线/在线）</text>
+<rect x="628" y="128" width="108" height="22" rx="11" fill="#eff6ff" stroke="#2563eb"/>
+<text x="682" y="143" text-anchor="middle" class="t badge-txt">§2-3 · 定位</text>
+
+<!-- Step 3 -->
+<circle cx="66" cy="202" r="17" fill="#2563eb"/>
+<text x="66" y="208" text-anchor="middle" class="num">3</text>
+<text x="98" y="200" class="t q">落地三件事：答案 · 指标 · 判法</text>
+<text x="98" y="219" class="m" font-size="12.5">拿什么当标准答案 / 用什么指标量化 / 怎么判对错</text>
+<rect x="620" y="190" width="116" height="22" rx="11" fill="#eff6ff" stroke="#2563eb"/>
+<text x="678" y="205" text-anchor="middle" class="t badge-txt">§4-6 · 三件事</text>
+
+<!-- Step 4 -->
+<circle cx="66" cy="264" r="17" fill="#2563eb"/>
+<text x="66" y="270" text-anchor="middle" class="num">4</text>
+<text x="98" y="262" class="t q">这些评估结果本身可信吗？</text>
+<text x="98" y="281" class="m" font-size="12.5">多次采样看方差、给置信区间、judge 要校准</text>
+<rect x="640" y="252" width="96" height="22" rx="11" fill="#eff6ff" stroke="#2563eb"/>
+<text x="688" y="267" text-anchor="middle" class="t badge-txt">§7 · 可信</text>
+
+<!-- Step 5 -->
+<circle cx="66" cy="326" r="17" fill="#2563eb"/>
+<text x="66" y="332" text-anchor="middle" class="num">5</text>
+<text x="98" y="324" class="t q">怎么让它发挥作用？</text>
+<text x="98" y="343" class="m" font-size="12.5">接进开发流程当回归门禁；了解业界工具选型</text>
+<rect x="628" y="314" width="108" height="22" rx="11" fill="#eff6ff" stroke="#2563eb"/>
+<text x="682" y="329" text-anchor="middle" class="t badge-txt">§8-9 · 落地</text>
+
+<!-- divider note -->
+<text x="98" y="370" class="m" font-size="12" font-style="italic">↑ 前五步是"学方法"的主线，也就是下面那张全景图从上到下的五层</text>
+
+<!-- Step 6 (neutral) -->
+<circle cx="66" cy="388" r="17" fill="#9ca3af"/>
+<text x="66" y="394" text-anchor="middle" class="num">6</text>
+<text x="98" y="392" class="t q">本项目现状速查 + 改造路线</text>
+<rect x="620" y="376" width="116" height="22" rx="11" fill="#f3f4f6" stroke="#9ca3af"/>
+<text x="678" y="391" text-anchor="middle" class="t badge-txt">§10-11 · 现状</text>
+
+<!-- Step 7 (neutral) -->
+<circle cx="66" cy="408" r="9" fill="#9ca3af"/>
+<text x="98" y="413" class="t q">面试实战：问答 + 话术 + 生产级蓝图</text>
+<rect x="620" y="400" width="116" height="22" rx="11" fill="#f3f4f6" stroke="#9ca3af"/>
+<text x="678" y="415" text-anchor="middle" class="t badge-txt">§12-14 · 实战</text>
+
+<!-- guiding sentence footer -->
+<rect x="40" y="436" width="700" height="26" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1"/>
+<text x="52" y="453" class="t" font-size="12.5">💡 贯穿全篇：<tspan font-weight="700">面试官考的是判断力，不是你会不会用某个工具。</tspan></text>
+
+</svg>

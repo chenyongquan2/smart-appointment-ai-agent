@@ -1,0 +1,77 @@
+<svg viewBox="0 0 780 730" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>Agent 评估教材全景图：从一个目的到落地的五层</title>
+<desc>自顶向下五层。第0层目的：我的 agent 到底好不好，这次改动有没有变差，这是唯一要回答的问题。第1层定位：先想清楚评哪一层（组件级到轨迹级到系统级）和什么时候评（离线防回归到在线抓真问题）。第2层三件事：在每个评估场景里依次确定标准答案数据集、指标、以及怎么判对错的方法。第3层可信：让前面产出的指标本身可信，包括多次采样看方差、裁判模型校准、数据质量。第4层落地：把评估接进开发流程，包括CI回归门禁、线上坏样本回灌、以及工具选型。</desc>
+
+<defs>
+<marker id="arrOv" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0 0 L10 5 L0 10 z" fill="var(--color-text-secondary,#6b7280)"/>
+</marker>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .layer-tag { font-weight: 700; font-size: 13px; }
+  .layer-title { font-weight: 700; font-size: 16px; }
+  .note { font-size: 12.5px; }
+  .sec { font-size: 12px; fill: var(--color-text-secondary,#6b7280); }
+  .trans { font-size: 12px; fill: var(--color-text-secondary,#6b7280); }
+</style>
+</defs>
+
+<text x="390" y="28" text-anchor="middle" class="t h" font-size="18">Agent 评估：30 秒全景图</text>
+<text x="390" y="48" text-anchor="middle" class="m" font-size="13">自顶向下五层——这是整份教材的骨架，也是能默画给面试官的那张图</text>
+
+<!-- Layer 0: 目的 -->
+<rect x="90" y="70" width="600" height="70" rx="10" fill="#f3f4f6" stroke="#6b7280" stroke-width="1.6"/>
+<text x="112" y="95" class="t layer-tag">第0层 · 目的</text>
+<text x="112" y="118" class="t note" font-weight="600">我的 Agent 到底好不好？这次改动变差没？</text>
+<text x="660" y="118" text-anchor="end" class="sec">§1</text>
+<text x="390" y="133" text-anchor="middle" class="m note" font-style="italic">唯一要回答的问题</text>
+
+<line x1="390" y1="140" x2="390" y2="168" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arrOv)"/>
+<text x="405" y="158" class="trans">先定位"哪种好"</text>
+
+<!-- Layer 1: 定位 -->
+<rect x="60" y="172" width="660" height="100" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.6"/>
+<text x="82" y="197" class="t layer-tag" fill="#1d4ed8">第1层 · 定位</text>
+<text x="82" y="221" class="t note">先问：评哪一层？组件级 → 轨迹级 → 系统级</text>
+<text x="82" y="242" class="t note">再问：什么时候评？离线（防回归） ←→ 在线（抓真问题）</text>
+<text x="690" y="221" text-anchor="end" class="sec">§2</text>
+<text x="690" y="242" text-anchor="end" class="sec">§3</text>
+
+<line x1="390" y1="272" x2="390" y2="300" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arrOv)"/>
+<text x="405" y="290" class="trans">每个场景里依次定…</text>
+
+<!-- Layer 2: 三件事 -->
+<rect x="60" y="304" width="660" height="100" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.6"/>
+<text x="82" y="329" class="t layer-tag" fill="#15803d">第2层 · 三件事</text>
+<text x="82" y="353" class="t note">① 标准答案 / 数据集</text>
+<text x="82" y="374" class="t note">② 指标（怎么量化）</text>
+<text x="82" y="395" class="t note">③ 判法（客观比对 / LLM-judge）</text>
+<text x="690" y="353" text-anchor="end" class="sec">§4</text>
+<text x="690" y="374" text-anchor="end" class="sec">§5</text>
+<text x="690" y="395" text-anchor="end" class="sec">§6</text>
+
+<line x1="390" y1="404" x2="390" y2="432" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arrOv)"/>
+<text x="405" y="422" class="trans">还得保证评估本身可信</text>
+
+<!-- Layer 3: 可信 -->
+<rect x="60" y="436" width="660" height="90" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.6"/>
+<text x="82" y="461" class="t layer-tag" fill="#b45309">第3层 · 可信</text>
+<text x="82" y="485" class="t note">多次采样 + 方差 · judge 校准 · 数据质量（规模/分布/held-out）</text>
+<text x="690" y="485" text-anchor="end" class="sec">§7</text>
+
+<line x1="390" y1="526" x2="390" y2="554" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arrOv)"/>
+<text x="405" y="544" class="trans">最后让它发挥作用</text>
+
+<!-- Layer 4: 落地 -->
+<rect x="60" y="558" width="660" height="90" rx="10" fill="#fef2f2" stroke="#dc2626" stroke-width="1.6"/>
+<text x="82" y="583" class="t layer-tag" fill="#b91c1c">第4层 · 落地</text>
+<text x="82" y="607" class="t note">CI 门禁（基线 + 阈值） · 线上 bad case 回灌 · 工具选型</text>
+<text x="690" y="607" text-anchor="end" class="sec">§8 · §9</text>
+
+<!-- Memory line -->
+<rect x="60" y="672" width="660" height="46" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1"/>
+<text x="390" y="700" text-anchor="middle" class="t note" font-family="var(--font-mono,monospace)" font-size="12.5">一个目的 → 两个定位问题(评哪层·何时评) → 三件事(数据·指标·判法) → 一个底线(可信) → 一个出口(接进CI)</text>
+
+</svg>

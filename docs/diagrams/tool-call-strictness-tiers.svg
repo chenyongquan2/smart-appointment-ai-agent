@@ -1,0 +1,52 @@
+<svg viewBox="0 0 820 300" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>工具调用正确性的三档严格度：名字集合 → 参数级 → 序列级</title>
+<desc>从左到右严格度递增。名字集合只看调了哪些工具；参数级还要求参数值也对；序列级还要求调用顺序也对。本项目三档都有对应指标，但 CI 门禁只守名字级 F1。</desc>
+
+<defs>
+<marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+  <path d="M0 0 L10 5 L0 10 z" fill="var(--color-text-secondary,#6b7280)"/>
+</marker>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .box-title { font-weight: 600; font-size: 15px; }
+  .note { font-size: 12.5px; fill: var(--color-text-secondary,#6b7280); }
+</style>
+</defs>
+
+<text x="410" y="28" text-anchor="middle" class="t h" font-size="17">工具调用正确性：三档严格度</text>
+<text x="410" y="48" text-anchor="middle" class="m" font-size="13">从左到右越来越严——本项目三档都有对应指标，但门禁只守最左边一档</text>
+
+<!-- progression arrow -->
+<line x1="90" y1="270" x2="740" y2="270" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5" marker-end="url(#arr2)"/>
+<text x="415" y="292" text-anchor="middle" class="m" font-size="12">严格度递增 →</text>
+
+<!-- Stage 1: 名字集合 -->
+<rect x="60" y="80" width="210" height="150" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+<text x="165" y="108" text-anchor="middle" class="t box-title">名字集合</text>
+<text x="165" y="128" text-anchor="middle" class="note">最松</text>
+<text x="80" y="152" class="note">调了哪些工具？</text>
+<text x="80" y="170" class="note">不看顺序、不看参数</text>
+<text x="80" y="196" class="note" font-family="var(--font-mono,monospace)">P / R / F1</text>
+<text x="80" y="214" class="note">✅ 门禁只守这项</text>
+
+<!-- Stage 2: 参数级 -->
+<rect x="305" y="80" width="210" height="150" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+<text x="410" y="108" text-anchor="middle" class="t box-title">参数级</text>
+<text x="410" y="128" text-anchor="middle" class="note">中</text>
+<text x="325" y="152" class="note">工具 + 参数都对？</text>
+<text x="325" y="170" class="note" font-family="var(--font-mono,monospace)">time=14:00 对不对</text>
+<text x="325" y="196" class="note" font-family="var(--font-mono,monospace)">参数级 F1</text>
+<text x="325" y="214" class="note">✅ 有指标，不进门禁</text>
+
+<!-- Stage 3: 序列级 -->
+<rect x="550" y="80" width="210" height="150" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+<text x="655" y="108" text-anchor="middle" class="t box-title">序列级</text>
+<text x="655" y="128" text-anchor="middle" class="note">最严</text>
+<text x="570" y="152" class="note">调用顺序也对？</text>
+<text x="570" y="170" class="note">先查空闲再建预约</text>
+<text x="570" y="196" class="note" font-family="var(--font-mono,monospace)">序列正确率 / 完全匹配率</text>
+<text x="570" y="214" class="note">✅ 有指标，不进门禁</text>
+
+</svg>

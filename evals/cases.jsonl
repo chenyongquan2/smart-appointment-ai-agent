@@ -13,8 +13,12 @@
 // 多轮（change evals-multiturn-cases）: 用 "turns":[..]（有序用户话语列表）替代 "input"，二者互斥。
 //   多轮用例的 expected_tools/expected_slots 口径为【整段对话累计】（跨所有轮次合并）；意图对【首轮】判定，
 //   故 expected_intent 跟随首轮（如「先咨询后预约」首轮是 query 即标 query）。单轮 input 等价单元素 turns。
-// 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}, "expected_slots":{..}}
-//   或: {"turns":[..], "expected_intent":.., "expected_tools":[..], "expected_slots":{..}}
+// split（可选，change evals-dataset-scaleup-heldout）: "dev"（缺省）| "held-out"。
+//   dev = 日常调试/调优/门禁用；held-out = 过拟合体检的留出集，MUST NOT 参与任何调优或门禁
+//   （运行器默认只评 dev；--include-heldout 连同评但分集呈现、绝不混入 dev 基线；--heldout-only 只评 held-out）。
+//   缺省即 dev——本文件在本切片前的既有用例未标 split，均按缺省归 dev（不改一字即向后兼容）。
+// 格式: {"input":.., "expected_intent":.., "expected_tools":[..], "expected_tool_args":{..}, "expected_slots":{..}, "split":..}
+//   或: {"turns":[..], "expected_intent":.., "expected_tools":[..], "expected_slots":{..}, "split":..}
 
 // --- appointment(预约) ---
 {"input": "我想预约明天下午两点的按摩", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_tool_args": {"find_technician": {"project": "按摩"}, "create_appointment": {"project": "按摩"}}, "expected_slots": {"start_time": "明天14:00", "project": "按摩"}}
@@ -63,13 +67,34 @@
 {"input": "用户已选择8号技师的推拿1小时服务，请确认支付198元", "expected_intent": "pay", "expected_tools": []}
 {"input": "顾客已确认预约王师傅做精油按摩，金额288元，待支付", "expected_intent": "pay", "expected_tools": []}
 {"input": "该用户已选定6号技师足疗，请发起收款", "expected_intent": "pay", "expected_tools": []}
+{"input": "客人已确认张师傅的肩颈按摩，请生成付款链接，金额168元", "expected_intent": "pay", "expected_tools": []}
+{"input": "3号房的顾客已选好项目和技师，帮我下单收款128元", "expected_intent": "pay", "expected_tools": []}
 
 // --- statistics(统计) ---
 {"input": "我已完成3号房的服务", "expected_intent": "statistics", "expected_tools": []}
 {"input": "8号技师上报：当前推拿订单已结束", "expected_intent": "statistics", "expected_tools": []}
 {"input": "今天我这边的5个客人都做完了", "expected_intent": "statistics", "expected_tools": []}
+{"input": "上午的两个预约都已经服务完毕", "expected_intent": "statistics", "expected_tools": []}
+{"input": "5号技师报告：今天累计完成4单", "expected_intent": "statistics", "expected_tools": []}
 
 // --- other(其他) ---
 {"input": "今天天气怎么样", "expected_intent": "other", "expected_tools": []}
 {"input": "帮我写一首关于春天的诗", "expected_intent": "other", "expected_tools": []}
 {"input": "你是用什么大模型做的", "expected_intent": "other", "expected_tools": []}
+{"input": "给我讲个笑话吧", "expected_intent": "other", "expected_tools": []}
+{"input": "帮我算一下123乘456等于多少", "expected_intent": "other", "expected_tools": []}
+
+// --- held-out（留出集，change evals-dataset-scaleup-heldout）---
+// 用作过拟合体检：MUST NOT 参与任何 prompt/用例调优或门禁；仅在显式 --include-heldout /
+// --heldout-only 时被评估。以下 10 条为新写（非从上方 dev 用例迁移），技师名与 dev 不重复
+// （刘/黄/郑师傅），覆盖全部 5 类意图（超过 spec 要求的 ≥3 类）。
+{"input": "我要预约明天上午9点做40分钟艾灸，要个手法轻柔的女技师，就约刘师傅，帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天09:00", "duration": "40分钟", "project": "艾灸", "preference": "手法轻柔", "gender": "女", "technician": "刘师傅"}, "split": "held-out"}
+{"input": "请直接预约后天下午4点的拔罐，时长30分钟，要力气大的男技师黄师傅，帮我下单", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "后天16:00", "duration": "30分钟", "project": "拔罐", "preference": "力气大", "gender": "男", "technician": "黄师傅"}, "split": "held-out"}
+{"input": "我要预约今天晚上7点做90分钟精油按摩，就约郑师傅，直接帮我订好", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "今天19:00", "duration": "90分钟", "project": "精油按摩", "technician": "郑师傅"}, "split": "held-out"}
+{"input": "刮痧多少钱一次", "expected_intent": "query", "expected_tools": ["search_knowledge"], "split": "held-out"}
+{"input": "有没有擅长足疗的技师推荐一下", "expected_intent": "query", "expected_tools": ["search_knowledge", "find_technician"], "split": "held-out"}
+{"input": "客人已选好项目和技师，帮我发起支付158元", "expected_intent": "pay", "expected_tools": [], "split": "held-out"}
+{"input": "用户已确认预约黄师傅的艾灸服务，请确认支付138元", "expected_intent": "pay", "expected_tools": [], "split": "held-out"}
+{"input": "今天下午的3个预约都已经服务完毕", "expected_intent": "statistics", "expected_tools": [], "split": "held-out"}
+{"input": "刘师傅上报：本月已累计完成20单", "expected_intent": "statistics", "expected_tools": [], "split": "held-out"}
+{"input": "你能陪我聊聊天吗", "expected_intent": "other", "expected_tools": [], "split": "held-out"}

@@ -49,6 +49,23 @@
 - 多轮的 `expected_tools` / `expected_slots` 口径为**整段对话累计**（跨所有轮次合并）；**意图对首轮判定**，故 `expected_intent` 跟随首轮（如「先咨询后预约」首轮是 `query` 即标 `query`）。
 - 多轮采集口径：运行器按轮驱动**同一** AgentLoop，轮间只累积 user/assistant 文本对作 `history`（对齐生产 `chat_handler` 窗口，不回灌轮内中间工具消息——已知简化），跑完从同一 exporter 沙盒**跨所有轮次**还原工具序列与槽位，judge 用**末轮**回复。多轮触发比单轮更不稳定，沿用「数据集冗余 + `--samples` + 容差」稳住（同改造 8 切片 1 的诚实边界）。
 - `expected_tools` 自改造 1 起**已计分**（端到端真跑采集 `actual_tools`）。
+- `split`（可选，change `evals-dataset-scaleup-heldout`）：`"dev"`（缺省）| `"held-out"`——见下方「dev / held-out 切分」。缺省即 `dev`，既有用例不改一字即属 dev。
+
+## dev / held-out 切分（change evals-dataset-scaleup-heldout）
+
+用例集分两个子集，防「在同一批数据上调 prompt / 策展用例」的过拟合：
+
+- **dev**（缺省，未标 `split` 即归此）：日常调试、prompt 调优、门禁基线都基于它。
+- **held-out**（标 `"split": "held-out"`）：**过拟合体检的留出集**，MUST NOT 参与任何调优或门禁——只在显式请求时评估、单独呈现。
+
+```bash
+uv run python evals/run_evals.py                    # 默认只评 dev（与本切片前行为等价）
+uv run python evals/run_evals.py --include-heldout   # dev + held-out 都评，held-out 分集呈现
+uv run python evals/run_evals.py --heldout-only      # 只评 held-out（体检用）
+```
+
+- **基线/门禁恒基于 dev**：`--update-baseline` / `--gate` 只用 dev 结果；即便同时传 `--include-heldout`，held-out 也**物理上进不了** `baseline.json`（运行器用 `_split_results` 在 `build_report` 前就把两个子集拆开，held-out 只走"分集呈现"分支）。`--heldout-only` 不含 dev，故禁止与 `--update-baseline`/`--gate` 同用（退出码 2）。
+- **规模（本切片）**：dev **41 条**（每类 ≥5：appointment 20 / query 6 / pay 5 / statistics 5 / other 5），held-out **10 条**（覆盖全部 5 类，技师名与 dev 不重复）。仍是手写合成——统计意义提升但**不代表真实分布**，真实分布靠改造 7 在线回灌（后续）。held-out 才 10 条、CI 很宽，定位为"粗过拟合体检"而非结论，规模化留后续切片。
 
 ## 运行
 

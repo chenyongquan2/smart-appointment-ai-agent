@@ -1,0 +1,49 @@
+<svg viewBox="0 0 760 440" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>精确率 vs 召回率：同一个分子（重叠），不同的分母（哪个圈）</title>
+<desc>两个重叠的圈。左圈是模型圈成预约的 5 条，右圈是真的是预约的 6 条，重叠部分是判对的 4 条 TP。左圈里没重叠的 1 条是误判 FP，右圈里没重叠的 2 条是漏判 FN。精确率 = 重叠 4 除以左圈 5 = 80%，问的是我圈的准不准，分母是左圈。召回率 = 重叠 4 除以右圈 6 约等于 67%，问的是真的预约漏没漏，分母是右圈。分子都是重叠的 4 条，区别只在分母是哪个圈。</desc>
+
+<defs>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .region { font-size: 13px; font-weight: 600; }
+  .cap { font-size: 13px; font-weight: 700; }
+  .formula { font-family: var(--font-mono,monospace); font-size: 13px; }
+  .note { font-size: 12.5px; fill: var(--color-text-secondary,#6b7280); }
+</style>
+</defs>
+
+<text x="380" y="28" text-anchor="middle" class="t h" font-size="16">精确率 vs 召回率：分子都是「重叠」，只差「分母是哪个圈」</text>
+
+<!-- circle captions -->
+<text x="235" y="70" text-anchor="middle" class="cap" fill="#2563eb">模型圈成「预约」的 = 5 条</text>
+<text x="525" y="70" text-anchor="middle" class="cap" fill="#d97706">真的是「预约」的 = 6 条</text>
+
+<!-- two overlapping ellipses -->
+<ellipse cx="305" cy="215" rx="160" ry="105" fill="#2563eb" fill-opacity="0.16" stroke="#2563eb" stroke-width="2"/>
+<ellipse cx="455" cy="215" rx="160" ry="105" fill="#d97706" fill-opacity="0.16" stroke="#d97706" stroke-width="2"/>
+
+<!-- region labels -->
+<text x="225" y="205" text-anchor="middle" class="t region">误判 1 条</text>
+<text x="225" y="224" text-anchor="middle" class="m" font-size="12">(FP：圈了但不是)</text>
+
+<text x="380" y="200" text-anchor="middle" class="t region">判对 4 条</text>
+<text x="380" y="219" text-anchor="middle" class="t region">TP（重叠）</text>
+<text x="380" y="238" text-anchor="middle" class="m" font-size="12">← 两个指标的分子</text>
+
+<text x="535" y="205" text-anchor="middle" class="t region">漏判 2 条</text>
+<text x="535" y="224" text-anchor="middle" class="m" font-size="12">(FN：是但没圈)</text>
+
+<!-- formula boxes -->
+<rect x="60" y="345" width="320" height="76" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="76" y="370" class="t cap" fill="#2563eb">精确率（我圈的准不准）</text>
+<text x="76" y="393" class="formula t">= 重叠 4 / 左圈 5 = 80%</text>
+<text x="76" y="412" class="note">分母 = 左圈（模型圈成预约的）</text>
+
+<rect x="400" y="345" width="320" height="76" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+<text x="416" y="370" class="t cap" fill="#d97706">召回率（真的漏没漏）</text>
+<text x="416" y="393" class="formula t">= 重叠 4 / 右圈 6 ≈ 67%</text>
+<text x="416" y="412" class="note">分母 = 右圈（真的是预约的）</text>
+
+</svg>

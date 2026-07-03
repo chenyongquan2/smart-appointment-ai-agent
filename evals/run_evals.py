@@ -24,6 +24,12 @@
 意图准确率 run-to-run 95% t-CI 半宽达 ±19pp、工具 F1 ±7pp（n=3）。默认容差取 0.20 以覆盖
 最差半宽，故单次门禁跑不会被噪声误报——代价是只拦得住「大幅回归」。要更紧的门禁需更稳的
 模型或 `--gate --samples 3`（守均值、方差更小）。详见 evals/README.md。
+
+dev / held-out 切分（改造 8 切片 · change evals-dataset-scaleup-heldout）:
+    默认只评 dev 子集（未标 split 字段的既有用例也归 dev，向后兼容）。
+    --include-heldout  连同 held-out 一起评，分集呈现，MUST NOT 混入 dev 基线
+    --heldout-only      只评 held-out（过拟合体检）；不可与 --update-baseline/--gate 同用
+    基线/门禁恒基于 dev 子集，详见 evals/README.md。
 """
 from __future__ import annotations
 
@@ -56,6 +62,11 @@ BASELINE_FILE = Path(__file__).parent / "baseline.json"  # 回归门禁基线（
 # 加载用例时据此校验 expected_intent 合法——防手滑写错类名，问题尽早暴露。
 VALID_INTENTS = {"appointment", "query", "pay", "statistics", "other"}
 
+# 用例集 dev/held-out 切分（change evals-dataset-scaleup-heldout）：
+# dev = 日常调试/调优/门禁用；held-out = 过拟合体检的留出集，MUST NOT 参与调优与门禁。
+# 缺省(未标 split 字段)即 dev——既有用例不改一字即属 dev，向后兼容。
+VALID_SPLITS = {"dev", "held-out"}
+
 
 def load_cases(path: Path) -> list[dict]:
     """读取 jsonl 用例; 跳过空行与 // 注释行; 校验 expected_intent 合法。"""
@@ -84,8 +95,44 @@ def load_cases(path: Path) -> list[dict]:
         # 归一：给每条用例补一个 case["turns"]=list[str]（单轮 input → 单元素列表），
         # 让下游 _run_once 统一按 turns 处理，单轮等价单元素 turns。
         case["turns"] = _normalize_turns(case, lineno)
+        # 集归属（dev/held-out）：缺省填 dev，非法值报行号——与 expected_intent 的白名单
+        # 校验同一范式（坏数据不静默）。归一后下游总能读到 case["split"]。
+        split = case.get("split", "dev")
+        if split not in VALID_SPLITS:
+            print(
+                f"[ERROR] 第 {lineno} 行 split={split!r} 非法; 必须是 {sorted(VALID_SPLITS)} 之一",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        case["split"] = split
         cases.append(case)
     return cases
+
+
+def _filter_by_split(
+    cases: list[dict], *, include_heldout: bool = False, heldout_only: bool = False
+) -> list[dict]:
+    """按 dev/held-out 开关过滤用例（纯函数）。
+
+    默认(两开关都 False)只留 dev——与本变更前的默认行为等价。``heldout_only`` 只留
+    held-out；``include_heldout`` 留 dev+held-out 全部。二者由调用方保证互斥。
+    """
+    if heldout_only:
+        return [c for c in cases if c["split"] == "held-out"]
+    if include_heldout:
+        return list(cases)
+    return [c for c in cases if c["split"] == "dev"]
+
+
+def _split_results(cases: list[dict], results: list) -> tuple[list, list]:
+    """按用例集归属把同序的 ``results`` 拆成 ``(dev, held-out)``（纯函数）。
+
+    ``results`` 与 ``cases`` 须同序同长（``_run_once`` 保证）。held-out 的结果绝不混入
+    dev 侧——门禁/基线只读 dev 侧返回值，物理上就拿不到 held-out 数据。
+    """
+    dev = [r for c, r in zip(cases, results) if c["split"] == "dev"]
+    heldout = [r for c, r in zip(cases, results) if c["split"] == "held-out"]
+    return dev, heldout
 
 
 def _normalize_turns(case: dict, lineno: int) -> list[str]:
@@ -304,35 +351,76 @@ async def run_baseline(
     # 端到端延迟是唯一的延迟型指标（与 metrics 内部口径一致）。
     _LATENCY = "端到端延迟"
 
+    # held-out 是留出集：MUST NOT 参与调优/门禁。若本次评估集合不含 dev（--heldout-only）
+    # 却又要求写基线/守门禁，属矛盾请求——main() 已提前拦截，这里防御性兜底（如被直接调用）。
+    n_dev = sum(1 for c in cases if c["split"] == "dev")
+    if (update_baseline or gate) and n_dev == 0:
+        print(
+            "[ERROR] 当前评估集合不含 dev 子集（--heldout-only 与 --update-baseline/--gate 不可同用）。",
+            file=sys.stderr,
+        )
+        return 2
+
+    def _print_heldout_section(heldout_results: list, label: str) -> None:
+        """held-out 子集单独一节：明确标注不参与门禁/基线（分集呈现，§2.3）。"""
+        if not heldout_results:
+            return
+        print(f"\n{'─' * 60}")
+        print(f"[held-out 子集 | 不参与门禁/基线] {label}")
+
     # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
     if samples <= 1:
         results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
                                   judge_fn, run_and_capture_multiturn)
-        rep = build_report(results)
-        print(format_report(rep))
-        _print_by_intent(results)
+        dev_results, heldout_results = _split_results(cases, results)
+
+        rep = build_report(dev_results)
+        if dev_results:
+            print(format_report(rep))
+            _print_by_intent(dev_results)
+        if heldout_results:
+            heldout_rep = build_report(heldout_results)
+            _print_heldout_section(heldout_results, f"用例数: {len(heldout_results)}")
+            print(format_report(heldout_rep))
+            _print_by_intent(heldout_results)
+
+        if not dev_results:  # 纯 --heldout-only 且未要求基线/门禁：无 dev 侧收尾，直接返回
+            return 0
         current_view = {
             m.name: (m.value, m.name == _LATENCY)
             for m in rep["metrics"] if not m.na and m.value is not None
         }
-        baseline_dict = report_to_baseline(rep, total_cases=len(cases), samples=1)
+        baseline_dict = report_to_baseline(rep, total_cases=len(dev_results), samples=1)
         return _finish(baseline_dict, current_view)
 
     # ── 多采样（改造 3）：整套重跑 N 次 → 聚合 mean ± t-CI ────────────────────
-    reports = []
+    dev_reports = []
+    heldout_reports = []
+    n_heldout = len(cases) - n_dev
     for i in range(samples):
         print(f"[采样 {i + 1}/{samples}] 跑整套用例…", file=sys.stderr)
         results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
                                   judge_fn, run_and_capture_multiturn)
-        reports.append(build_report(results))  # 每次跑的聚合指标快照
+        dev_results, heldout_results = _split_results(cases, results)
+        dev_reports.append(build_report(dev_results))  # 每次跑的聚合指标快照（dev 侧）
+        if heldout_results:
+            heldout_reports.append(build_report(heldout_results))
     # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
-    aggregated = aggregate_runs(reports)
-    print(format_multisample_report(aggregated, samples, len(cases)))
+    aggregated = aggregate_runs(dev_reports) if n_dev else []
+    if n_dev:
+        print(format_multisample_report(aggregated, samples, n_dev))
+    if heldout_reports:
+        heldout_aggregated = aggregate_runs(heldout_reports)
+        _print_heldout_section(heldout_reports, f"用例数: {n_heldout}")
+        print(format_multisample_report(heldout_aggregated, samples, n_heldout))
+
+    if not n_dev:  # 纯 --heldout-only 且未要求基线/门禁
+        return 0
     current_view = {
         a.name: (a.mean, a.is_latency)
         for a in aggregated if not a.na and a.mean is not None
     }
-    baseline_dict = aggregated_to_baseline(aggregated, total_cases=len(cases), samples=samples)
+    baseline_dict = aggregated_to_baseline(aggregated, total_cases=n_dev, samples=samples)
     return _finish(baseline_dict, current_view)  # 0/1/3 据门禁；无门禁则 0
 
 
@@ -364,12 +452,36 @@ def main() -> int:
         "--tolerance", type=float, default=0.20,
         help="门禁容差(改造 6)；比率即百分点(0.20=20pp)，经实测半宽校准吸收 LLM 抖动；默认 0.20",
     )
+    parser.add_argument(
+        "--include-heldout", action="store_true",
+        help="连同 held-out 子集一起评估(change evals-dataset-scaleup-heldout)；"
+             "结果分集呈现，MUST NOT 混入 dev 基线；与 --heldout-only 互斥",
+    )
+    parser.add_argument(
+        "--heldout-only", action="store_true",
+        help="只评估 held-out 子集；held-out 是过拟合体检的留出集，不参与调优/门禁，"
+             "故不可与 --update-baseline/--gate 同用；与 --include-heldout 互斥",
+    )
     args = parser.parse_args()
 
     # --gate 与 --update-baseline 互斥：一次跑要么定基线要么守基线，语义不混。
     if args.gate and args.update_baseline:
         print("[ERROR] --gate 与 --update-baseline 互斥，不能同时指定。", file=sys.stderr)
         return 2  # 2 = 用例/配置错误
+
+    if args.include_heldout and args.heldout_only:
+        print("[ERROR] --include-heldout 与 --heldout-only 互斥，不能同时指定。", file=sys.stderr)
+        return 2
+
+    # held-out 是留出集，MUST NOT 参与调优/门禁；--heldout-only 排除了 dev，
+    # 与「基线/门禁恒基于 dev」矛盾，故禁止同用（而非静默地对空 dev 集合定基线）。
+    if args.heldout_only and (args.gate or args.update_baseline):
+        print(
+            "[ERROR] --heldout-only 不含 dev 子集，不能与 --gate/--update-baseline 同用"
+            "（基线/门禁恒基于 dev）。",
+            file=sys.stderr,
+        )
+        return 2
 
     # --gate 早检基线存在：缺基线就别白跑一整轮（比对在跑完后才发生）。
     if args.gate and not args.baseline.exists():
@@ -382,9 +494,14 @@ def main() -> int:
         return 1  # 1 = 环境/文件缺失
 
     cases = load_cases(CASES_FILE)
+    cases = _filter_by_split(
+        cases, include_heldout=args.include_heldout, heldout_only=args.heldout_only
+    )
     if args.limit is not None:
-        cases = cases[: args.limit]  # 冒烟模式：只截前 N 条快速验证流程通不通
-    print(f"已加载 {len(cases)} 条评估用例 ({CASES_FILE.name})")
+        cases = cases[: args.limit]  # 冒烟模式：只截前 N 条快速验证流程通不通(在切分过滤之后)
+    n_dev = sum(1 for c in cases if c["split"] == "dev")
+    n_heldout = sum(1 for c in cases if c["split"] == "held-out")
+    print(f"已加载 {len(cases)} 条评估用例 ({CASES_FILE.name})；dev={n_dev} held-out={n_heldout}")
 
     # ★ 优雅降级：没配 key 就「不报错崩溃」，而是退而只打印用例清单 + 怎么配的提示。
     #   这样没 key 的人也能看到评估集长啥样，且 return 2 让 CI 能区分「真跑过」与「跳过了」。

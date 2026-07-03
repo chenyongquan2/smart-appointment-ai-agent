@@ -1,0 +1,64 @@
+<svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>Precision、Recall、F1 的关系（以意图=预约为例）</title>
+<desc>用混淆矩阵解释。以判断意图是不是预约为例：真正例 TP 是真的预约且模型判为预约；假正例 FP 是不是预约但模型误判为预约；假负例 FN 是真的预约但模型漏判。精确率 Precision = TP 除以模型判为预约的总数（TP+FP），衡量抓得准不准。召回率 Recall = TP 除以真正是预约的总数（TP+FN），衡量抓得全不全。两者拉扯：越保守 Precision 高 Recall 低，越激进反之。F1 是两者的调和平均，逼着两头都不能差。</desc>
+
+<defs>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .cell-lbl { font-weight: 600; font-size: 13px; }
+  .cell-sub { font-size: 11px; }
+  .axis { font-size: 12px; font-weight: 600; fill: var(--color-text-secondary,#6b7280); }
+  .formula { font-family: var(--font-mono,monospace); font-size: 12.5px; }
+  .note { font-size: 12px; fill: var(--color-text-secondary,#6b7280); }
+</style>
+</defs>
+
+<text x="410" y="26" text-anchor="middle" class="t h" font-size="17">Precision / Recall / F1（以"意图 = 预约"为例）</text>
+
+<!-- Confusion matrix 2x2 -->
+<!-- axis labels -->
+<text x="250" y="62" text-anchor="middle" class="axis">真实：是预约</text>
+<text x="410" y="62" text-anchor="middle" class="axis">真实：不是预约</text>
+<text x="120" y="105" text-anchor="middle" class="axis" transform="rotate(-90 120 130)">模型判：预约</text>
+<text x="120" y="230" text-anchor="middle" class="axis" transform="rotate(-90 120 255)">模型判：非预约</text>
+
+<!-- TP -->
+<rect x="170" y="75" width="160" height="80" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<text x="250" y="108" text-anchor="middle" class="t cell-lbl">TP 真正例</text>
+<text x="250" y="128" text-anchor="middle" class="m cell-sub">真预约 → 判预约 ✓</text>
+
+<!-- FP -->
+<rect x="335" y="75" width="160" height="80" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="1.5"/>
+<text x="415" y="108" text-anchor="middle" class="t cell-lbl">FP 假正例</text>
+<text x="415" y="128" text-anchor="middle" class="m cell-sub">非预约 → 误判预约 ✗</text>
+
+<!-- FN -->
+<rect x="170" y="160" width="160" height="80" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.5"/>
+<text x="250" y="193" text-anchor="middle" class="t cell-lbl">FN 假负例</text>
+<text x="250" y="213" text-anchor="middle" class="m cell-sub">真预约 → 漏判 ✗</text>
+
+<!-- TN -->
+<rect x="335" y="160" width="160" height="80" rx="6" fill="#f3f4f6" stroke="#9ca3af" stroke-width="1.5"/>
+<text x="415" y="193" text-anchor="middle" class="t cell-lbl">TN 真负例</text>
+<text x="415" y="213" text-anchor="middle" class="m cell-sub">非预约 → 判非预约 ✓</text>
+
+<!-- Precision bracket (top row) -->
+<text x="565" y="98" class="t cell-lbl" fill="#2563eb">Precision（抓得准）</text>
+<text x="565" y="120" class="formula t">= TP / (TP + FP)</text>
+<text x="565" y="138" class="note">判为预约的里，真对的占比</text>
+
+<!-- Recall bracket (left col) -->
+<text x="565" y="180" class="t cell-lbl" fill="#d97706">Recall（抓得全）</text>
+<text x="565" y="202" class="formula t">= TP / (TP + FN)</text>
+<text x="565" y="220" class="note">真预约的里，抓出来的占比</text>
+
+<!-- Trade-off + F1 band -->
+<rect x="60" y="270" width="700" height="110" rx="8" fill="#f9fafb" stroke="#d1d5db" stroke-width="1"/>
+<text x="80" y="295" class="t h" font-size="14">拉扯关系 与 为什么要 F1</text>
+<text x="80" y="318" class="note">• 越保守（宁缺毋滥）→ Precision↑ Recall↓　• 越激进（全判预约）→ Recall↑ Precision↓，甚至 Recall=100% 也没用</text>
+<text x="80" y="340" class="formula t">F1 = 2 × P × R / (P + R)　（调和平均）</text>
+<text x="80" y="362" class="note">调和平均对短板敏感：P=100%、R=1% 时算术平均 50.5%（看着还行），F1 只有约 2% → 逼着两头都不能差</text>
+
+</svg>

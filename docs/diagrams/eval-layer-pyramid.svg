@@ -1,0 +1,52 @@
+<svg viewBox="0 0 780 420" xmlns="http://www.w3.org/2000/svg" font-family="var(--font-sans, system-ui, sans-serif)" role="img">
+<title>Agent 评估三层金字塔：组件级、轨迹级、系统级</title>
+<desc>金字塔三层。底层最宽是组件级，评单个分类器或检索器准不准，最容易测也最先做，本项目已真评。中层是端到端轨迹级，评整段对话走对没、工具调用序列对不对、多轮状态对不对，是 agent 评估的核心也最难，本项目工具调用已真评、多轮部分。顶层是系统级业务级，评约成了没、满意度、转化率，是最终关心的，本项目尚缺。越往上越难测、越接近业务价值。</desc>
+
+<defs>
+<style>
+  .t { fill: var(--color-text-primary,#1f2937); }
+  .m { fill: var(--color-text-secondary,#6b7280); }
+  .h { font-weight: 700; }
+  .tier-title { font-weight: 700; font-size: 16px; fill: #ffffff; }
+  .tier-q { font-size: 12.5px; fill: #ffffff; }
+  .side { font-size: 12.5px; fill: var(--color-text-secondary,#6b7280); }
+  .status { font-size: 12.5px; font-weight: 600; }
+</style>
+</defs>
+
+<text x="390" y="28" text-anchor="middle" class="t h" font-size="17">Agent 评估三层金字塔</text>
+<text x="390" y="48" text-anchor="middle" class="m" font-size="13">越往上越难测、越接近业务价值 —— 颜色 = 本项目现状</text>
+
+<!-- Top tier: 系统级 (red / 缺失) -->
+<polygon points="390,72 300,142 480,142" fill="#dc2626" opacity="0.9"/>
+<text x="390" y="108" text-anchor="middle" class="tier-title" font-size="14">系统级 / 业务级</text>
+<text x="390" y="128" text-anchor="middle" class="tier-q">约成了没？满意度？转化率？</text>
+
+<!-- Middle tier: 轨迹级 (amber / 部分) -->
+<polygon points="298,148 482,148 552,238 228,238" fill="#d97706" opacity="0.92"/>
+<text x="390" y="185" text-anchor="middle" class="tier-title">端到端 / 轨迹级</text>
+<text x="390" y="207" text-anchor="middle" class="tier-q">整段对话走对了吗？工具序列 / 多轮状态对吗？</text>
+<text x="390" y="226" text-anchor="middle" class="tier-q">← agent 评估的核心，也最难</text>
+
+<!-- Bottom tier: 组件级 (green / 已具备) -->
+<polygon points="226,244 554,244 624,334 156,334" fill="#16a34a" opacity="0.92"/>
+<text x="390" y="281" text-anchor="middle" class="tier-title">组件级</text>
+<text x="390" y="303" text-anchor="middle" class="tier-q">单个 prompt / 分类器 / 检索器，单看准不准？</text>
+<text x="390" y="322" text-anchor="middle" class="tier-q">← 最容易测、最先做</text>
+
+<!-- Right-side status labels -->
+<text x="640" y="112" class="status" fill="#b91c1c">❌ 本项目尚缺</text>
+<text x="640" y="195" class="status" fill="#b45309">⚠️ 工具调用已真评</text>
+<text x="640" y="212" class="status" fill="#b45309">　 多轮部分</text>
+<text x="640" y="293" class="status" fill="#15803d">✅ 已真评</text>
+
+<!-- Left arrow: 难度 / 价值 递增 -->
+<line x1="120" y1="334" x2="120" y2="90" stroke="var(--color-text-secondary,#6b7280)" stroke-width="1.5"/>
+<polygon points="120,84 116,94 124,94" fill="var(--color-text-secondary,#6b7280)"/>
+<text x="104" y="215" class="side" transform="rotate(-90 104 215)" text-anchor="middle">难度 · 业务价值 递增</text>
+
+<!-- Footer -->
+<text x="390" y="378" text-anchor="middle" class="m" font-size="12.5">一句话：组件级测得好 ≠ agent 整体好；真正反映 agent 能力的是轨迹级；最终要落到系统级业务指标</text>
+<text x="390" y="400" text-anchor="middle" class="m" font-size="11.5">完整证据见 §12 现状速查表</text>
+
+</svg>
