@@ -6,7 +6,7 @@
 """
 
 from harness.observability.span import Span, SpanEvent
-from evals.trace_collect import collect_tool_calls
+from evals.trace_collect import collect_tool_calls, collect_tool_outcomes
 
 
 def _span(trace_id, span_id, start, *tool_calls, parent_id=None):
@@ -75,3 +75,63 @@ def test_collect_ignores_non_tool_call_events():
 
 def test_collect_empty():
     assert collect_tool_calls([]) == []
+
+
+# ── collect_tool_outcomes：工具执行成败（change evals-task-success-rate）──────
+
+def _obs_span(trace_id, span_id, start, *observations, parent_id=None):
+    """造一个带若干 observation 事件的 span。observations 为 (name, result) 元组。"""
+    events = [
+        SpanEvent(kind="observation", payload={"name": n, "result": r})
+        for n, r in observations
+    ]
+    return Span(
+        trace_id=trace_id, span_id=span_id, parent_id=parent_id, name="step",
+        start=start, end=start + 1, events=events,
+    )
+
+
+def test_outcomes_success_and_failure():
+    # 成功 observation → ok=True；「工具执行失败…」→ ok=False。
+    span = _obs_span(
+        "t", "s1", 1.0,
+        ("find_technician", "找到技师李师傅"),
+        ("create_appointment", "工具执行失败（DBError）：连接超时"),
+    )
+    result = collect_tool_outcomes([span])
+    assert result == [
+        {"name": "find_technician", "ok": True},
+        {"name": "create_appointment", "ok": False},
+    ]
+
+
+def test_outcomes_order_across_spans_by_start():
+    # 跨 span 按 start 排序（子 Agent 各自 span）；故意打乱传入顺序。
+    s_late = _obs_span("tB", "s3", 3.0, ("create_appointment", "预约已创建"))
+    s_early = _obs_span("tB", "s2", 2.0, ("find_technician", "ok"))
+    result = collect_tool_outcomes([s_late, s_early])
+    assert [o["name"] for o in result] == ["find_technician", "create_appointment"]
+    assert all(o["ok"] for o in result)
+
+
+def test_outcomes_excludes_delegate_by_default():
+    span = _obs_span("t", "s1", 1.0, ("delegate", "已派给 appointment"), ("search_knowledge", "命中3条"))
+    result = collect_tool_outcomes([span])
+    assert result == [{"name": "search_knowledge", "ok": True}]
+
+
+def test_outcomes_ignores_non_observation_events():
+    span = Span(
+        trace_id="t", span_id="s1", parent_id=None, name="step", start=1.0, end=2.0,
+        events=[
+            SpanEvent(kind="tool_call", payload={"name": "create_appointment", "args": {}}),
+            SpanEvent(kind="thought", payload={"text": "下单"}),
+            SpanEvent(kind="observation", payload={"name": "create_appointment", "result": "已创建"}),
+        ],
+    )
+    # 只采 observation：终态工具成功一次。
+    assert collect_tool_outcomes([span]) == [{"name": "create_appointment", "ok": True}]
+
+
+def test_outcomes_empty():
+    assert collect_tool_outcomes([]) == []

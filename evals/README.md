@@ -50,6 +50,16 @@
 - 多轮采集口径：运行器按轮驱动**同一** AgentLoop，轮间只累积 user/assistant 文本对作 `history`（对齐生产 `chat_handler` 窗口，不回灌轮内中间工具消息——已知简化），跑完从同一 exporter 沙盒**跨所有轮次**还原工具序列与槽位，judge 用**末轮**回复。多轮触发比单轮更不稳定，沿用「数据集冗余 + `--samples` + 容差」稳住（同改造 8 切片 1 的诚实边界）。
 - `expected_tools` 自改造 1 起**已计分**（端到端真跑采集 `actual_tools`）。
 - `split`（可选，change `evals-dataset-scaleup-heldout`）：`"dev"`（缺省）| `"held-out"`——见下方「dev / held-out 切分」。缺省即 `dev`，既有用例不改一字即属 dev。
+- `expected_outcome`（可选，change `evals-task-success-rate`）：业务**终态工具名**（appointment→`create_appointment`、query→`search_knowledge`）——见下方「任务成功率」。无工具终态的意图（pay/statistics/other）不标。
+
+## 任务成功率（系统级/业务级，change evals-task-success-rate）
+
+补齐评估分层最上面的一层——不只问「意图/工具调对没」，而是问**任务办成了没**。
+
+- **口径**：用例标 `expected_outcome`（终态工具名）；一条用例「成功」= 该终态工具在端到端真跑中被调用**且执行未失败**（失败 = 其 observation 以「工具执行失败」开头，复用改造 7 口径）。仅标注了且捕获到工具执行的用例计入，宏平均、缺数据 N/A。
+- **采集**：`evals/trace_collect.py:collect_tool_outcomes` 直接采 span 的 `observation` 事件（payload 自带 `name`+`result`），跨轮、跨子 Agent。
+- **v1 不纳入门禁**：任务成功依赖工具触发、是强非确定项，先只打印观察；不在 `GATED_METRICS`，`--gate` 不因它退出非零。
+- ⚠️ **诚实边界**：这是**离线任务完成度代理**，不是真实转化率/满意度/人工介入率（那些需真实用户流量，属生产级）。实测 dev 集任务成功率约 20%（24 条期望建单/查询、仅 5 条真正成功完成终态）——这正是它暴露的、意图/工具指标看不到的「办没办成」缺口。
 
 ## dev / held-out 切分（change evals-dataset-scaleup-heldout）
 

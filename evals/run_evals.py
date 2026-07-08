@@ -207,6 +207,7 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
         # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集工具序列 + 最终回复。
         # 与分类器并存——意图准确率不依赖真跑。单条失败不拖垮全量。
         actual_tools = None
+        actual_tool_outcomes = None
         judge_passed = None
         try:
             if len(turns) > 1 and capture_multiturn_fn is not None:
@@ -214,6 +215,7 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
             else:
                 cap = await capture_fn(first_turn, llm, full_registry, subagents)  # 单轮路径不变
             actual_tools = cap.tool_calls
+            actual_tool_outcomes = cap.tool_outcomes  # 工具执行成败（任务成功率用）
             # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决（多轮用首轮作问题、末轮回复作答）。
             if judge_fn is not None:
                 verdict = await judge_fn(first_turn, cap.reply, llm)
@@ -237,6 +239,9 @@ async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn
                 # 从真跑采集到的工具调用 args 还原扁平槽位（跨工具合并/哨兵跳过/last-write-wins）。
                 # 真跑失败时 actual_tools 为 None → 还原也为 None → 该用例槽位指标标 N/A，不伪造。
                 actual_slots=_slots_from_tool_calls(actual_tools),
+                # 任务成功率（change evals-task-success-rate）：期望业务终态 + 实际工具执行成败。
+                expected_outcome=case.get("expected_outcome"),
+                actual_tool_outcomes=actual_tool_outcomes,
                 latency_s=latency,
                 judge_passed=judge_passed,  # 回复质量裁决（改造 4）；未开 --judge 时 None→N/A
             )

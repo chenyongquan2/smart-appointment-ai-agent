@@ -21,7 +21,7 @@ from typing import Any
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from evals.trace_collect import collect_tool_calls
+from evals.trace_collect import collect_tool_calls, collect_tool_outcomes
 from harness.observability.exporter import InMemoryExporter
 from harness.observability.tracer import Tracer
 from harness.runtime import AgentLoop
@@ -36,10 +36,13 @@ _REPLY_PREFIX = "[REPLY]"
 
 @dataclass
 class CaptureResult:
-    """单条用例端到端真跑的采集结果：工具序列 + agent 最终回复文本。"""
+    """单条用例端到端真跑的采集结果：工具序列 + 工具执行成败 + agent 最终回复文本。"""
 
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     reply: str = ""  # agent 最终回复（剥离 [REPLY] 前缀）；judge（改造 4）的输入
+    # 工具执行成败序列（change evals-task-success-rate）：[{name, ok}]，与 tool_calls 同源
+    # （同一 exporter 沙盒的 observation 事件）、跨所有轮次；供「任务成功率」判终态是否办成。
+    tool_outcomes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _build_capture_loop(
@@ -113,7 +116,7 @@ async def run_and_capture_multiturn(
         llm / full_registry / subagents: 同 ``run_and_capture``。
 
     Returns:
-        ``CaptureResult``：**跨所有轮次**按时序还原的有序工具序列 + **末轮**最终回复。
+        ``CaptureResult``：**跨所有轮次**按时序还原的有序工具序列 + 工具执行成败 + **末轮**最终回复。
     """
     # ① 单个 exporter 沙盒跨所有轮次：所有轮、所有子 Agent 的 span 进同一沙盒，
     #    collect_tool_calls 据 (span.start, 事件序) 自然跨轮还原全局有序序列。
@@ -131,8 +134,13 @@ async def run_and_capture_multiturn(
         history.append(HumanMessage(content=turn))
         history.append(AIMessage(content=reply))  # 末轮回复即喂 judge 的 reply
 
-    # ③ 跨所有轮次的全部 span 还原有序工具序列（不按单一 trace_id 过滤——子 Agent 自开 root）。
-    return CaptureResult(tool_calls=collect_tool_calls(exporter.spans), reply=reply)
+    # ③ 跨所有轮次的全部 span 还原有序工具序列 + 工具执行成败（同一沙盒、同排序口径）。
+    spans = exporter.spans
+    return CaptureResult(
+        tool_calls=collect_tool_calls(spans),
+        reply=reply,
+        tool_outcomes=collect_tool_outcomes(spans),
+    )
 
 
 async def capture_tool_calls(

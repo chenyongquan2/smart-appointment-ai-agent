@@ -20,8 +20,9 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from harness.observability.span import Span
+from harness.observability.trace_signals import TOOL_FAILURE_PREFIX
 
-__all__ = ["collect_tool_calls", "DEFAULT_EXCLUDE"]
+__all__ = ["collect_tool_calls", "collect_tool_outcomes", "DEFAULT_EXCLUDE"]
 
 # 默认剔除的「编排型工具」名：delegate 只表达「派给谁」，不是被评估的领域工具。
 DEFAULT_EXCLUDE = frozenset({"delegate"})
@@ -52,4 +53,38 @@ def collect_tool_calls(
                 continue
             # args 缺省成空 dict：采全（保留参数），但下游指标当前只用 name。
             out.append({"name": name, "args": event.payload.get("args") or {}})
+    return out
+
+
+def collect_tool_outcomes(
+    spans: Iterable[Span],
+    exclude: Iterable[str] = DEFAULT_EXCLUDE,
+) -> list[dict[str, Any]]:
+    """从一组 span 还原有序的工具**执行成败**序列（供任务成功率，change evals-task-success-rate）。
+
+    判「办成了没」需知道终态工具是否被调用**且执行成功**。工具执行成败落在 span 的
+    ``observation`` 事件里——``AgentLoop._dispatch`` 每次工具调用后都 ``add_observation(name, result)``
+    （异常被吞成以「工具执行失败」开头的 result 回灌）。故本函数**直接采集 observation 事件**
+    （其 payload 自带 ``name``，无需与 tool_call 按位置配对，更 robust）：
+
+    Args:
+        spans: 一次运行导出的全部 span（含子 Agent 各自的 span）。
+        exclude: 不计入的工具名集合（默认剔除编排工具 ``delegate``）。
+
+    Returns:
+        有序的 ``[{"name": str, "ok": bool}, ...]``——按 ``(span.start, 事件顺序)`` 排列；
+        ``ok = result 非「工具执行失败」开头``（工具执行未失败即成功）。
+    """
+    excluded = set(exclude)
+    out: list[dict[str, Any]] = []
+    # 与 collect_tool_calls 同一排序口径：跨 span 按开始时刻、span 内按事件序 → 全局有序。
+    for span in sorted(spans, key=lambda s: s.start):
+        for event in span.events:
+            if event.kind != "observation":
+                continue
+            name = event.payload.get("name", "")
+            if name in excluded:
+                continue
+            result = str(event.payload.get("result", ""))
+            out.append({"name": name, "ok": not result.startswith(TOOL_FAILURE_PREFIX)})
     return out

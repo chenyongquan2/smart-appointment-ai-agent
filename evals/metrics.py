@@ -28,6 +28,7 @@ __all__ = [
     "response_quality",
     "judge_human_agreement",
     "slots_from_tool_calls",
+    "task_success_rate",
     # 回归门禁（改造 6）
     "GATED_METRICS",
     "BASELINE_SCHEMA_VERSION",
@@ -60,6 +61,11 @@ class EvalResult:
     expected_tool_args: Optional[dict[str, dict[str, Any]]] = None
     expected_slots: Optional[dict[str, Any]] = None
     actual_slots: Optional[dict[str, Any]] = None
+    # 任务成功率（change evals-task-success-rate）：期望达成的业务终态工具名 + 实际工具执行成败。
+    # expected_outcome=None → 该用例不计入任务成功率（无工具终态，如 pay/statistics/other）。
+    # actual_tool_outcomes：[{name, ok}]（来自 collect_tool_outcomes）；None=未真跑 loop → N/A。
+    expected_outcome: Optional[str] = None
+    actual_tool_outcomes: Optional[list[dict[str, Any]]] = None
     latency_s: Optional[float] = None          # 这条用例耗时（秒）；None=没计时
     # LLM-as-judge 对最终回复的二元裁决（改造 4）：None=本次未开 --judge（回复质量记 N/A）。
     judge_passed: Optional[bool] = None
@@ -378,6 +384,44 @@ def slot_completeness(results: list[EvalResult]) -> Metric:
     )
 
 
+def task_success_rate(results: list[EvalResult]) -> Metric:
+    """任务成功率（系统级/业务级，change evals-task-success-rate）：agent 是否达成业务终态。
+
+    区别于「意图/工具调对没」，本指标问「任务**办成了没**」。一条用例「成功」当且仅当其
+    ``expected_outcome`` 指定的终态工具在 ``actual_tool_outcomes`` 中出现**且执行未失败**
+    （``ok is True``；同名多次任一成功即算成功——贴合「办成了」语义）。
+
+    仅统计标了 ``expected_outcome`` 且本次捕获到 ``actual_tool_outcomes`` 的用例（宏平均、
+    每条等权）；否则该用例不计入。全部不计入 → N/A（不伪造分母）。无工具终态的意图
+    （pay/statistics/other）不标 ``expected_outcome``，故恒不计入。
+
+    ⚠️ **口径**：这是**离线任务完成度的业务信号代理**，非真实转化率/满意度/人工介入率
+    （那些需真实用户流量，属生产级）。v1 不纳入门禁（见 GATED_METRICS）。
+    """
+    eligible = [
+        r for r in results if r.expected_outcome and r.actual_tool_outcomes is not None
+    ]
+    if not eligible:
+        return Metric(
+            "任务成功率",
+            na=True,
+            note="无用例标注 expected_outcome（或本次未真跑捕获工具执行）",
+        )
+    success = 0
+    for r in eligible:
+        outcomes = r.actual_tool_outcomes or []
+        # 成功：终态工具出现过且其中至少一次 ok=True。
+        if any(o.get("name") == r.expected_outcome and o.get("ok") for o in outcomes):
+            success += 1
+    return Metric(
+        "任务成功率",
+        value=success / len(eligible),
+        numerator=success,
+        denominator=len(eligible),
+        note="离线完成度代理，非真实业务 KPI",
+    )
+
+
 def latency_summary(results: list[EvalResult]) -> Metric:
     """端到端延迟：对有计时的用例汇总 avg / p50 / max（秒）。"""
     # 先排序：p50（中位数）和 max 都靠「有序样本」取——sorted 后 [-1] 即最大值。
@@ -408,6 +452,7 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
         tool_call_exact_match(results),
         response_quality(results),  # 回复质量（LLM-judge，改造 4）；未开 --judge 时 N/A
         slot_completeness(results),
+        task_success_rate(results),  # 任务成功率（系统级/业务级，change evals-task-success-rate）
         latency_summary(results),
     ]
     # 单独拎出「分类判错」的用例，便于报告详列哪条错、错成了啥（成功的不展开 → 成功静默）。

@@ -224,3 +224,30 @@ async def test_run_once_dispatches_multiturn_vs_single():
     assert results[0].input == "单轮问句"
     assert results[1].input == "首轮开场"           # 多轮 EvalResult.input 取首轮
     assert [c["name"] for c in results[1].actual_tools] == ["tool_b"]
+
+
+@pytest.mark.asyncio
+async def test_run_once_fills_task_success_fields():
+    """_run_once 把 CaptureResult.tool_outcomes 填进 actual_tool_outcomes、
+    并从用例读 expected_outcome（change evals-task-success-rate）。"""
+    import evals.run_evals as re
+    from evals.metrics import EvalResult, slots_from_tool_calls
+
+    re._EvalResult = EvalResult
+    re._slots_from_tool_calls = slots_from_tool_calls
+
+    async def fake_single(text, llm, full, subs):
+        return CaptureResult(
+            tool_calls=[{"name": "create_appointment", "args": {}}],
+            reply="已为您预约",
+            tool_outcomes=[{"name": "create_appointment", "ok": True}],
+        )
+
+    cases = [{"turns": ["帮我预约"], "expected_intent": "appointment",
+              "expected_outcome": "create_appointment"}]
+    results = await re._run_once(
+        cases, _StubClassifier(), llm=None, full_registry=None, subagents=None,
+        capture_fn=fake_single, judge_fn=None, capture_multiturn_fn=None,
+    )
+    assert results[0].expected_outcome == "create_appointment"
+    assert results[0].actual_tool_outcomes == [{"name": "create_appointment", "ok": True}]
