@@ -31,6 +31,8 @@
 1. **结构化输出 > 字符串解析**：意图/槽位一律用 Pydantic schema + function calling，禁止 `strip().lower()` + 白名单这类脆弱解析。
 2. **一个概念一个文件**：尤其工具——`harness/tools/` 下一个工具一个文件（name/description/args schema/handler）。
 3. **工具是薄封装**：tool 内部调用既有 `services/`，**不重写业务逻辑**。
+   - 工具超时声明在工具自身（`Tool.timeout`；`None`=取全局缺省 60s，`NO_TIMEOUT`=豁免）。
+   - ⚠ 超时**只能中断有 await 点的 handler**。内部跑同步阻塞调用（同步 SQLite / FAISS / 子进程）的工具，声明了 `timeout` 也掐不断——需要真超时就自行 `asyncio.to_thread` 下沉线程池。
 4. **显式优于隐式**：消灭"只可意会"的隐藏约定。
 5. **会话隔离**：按 `session_id` 隔离状态，禁止全局单例串号。
 6. **TAO 循环**：agent 运行时用 Thought→Action→Observation + native tool calling，而非 if/else 路由。
