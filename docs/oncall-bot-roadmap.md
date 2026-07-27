@@ -41,30 +41,44 @@ config/              新增飞书凭据、并发与超时参数
 
 ## 第 1 期：飞书 Channel + 任务执行层
 
-**状态**：proposal 已生成，待人审 →
-`openspec/changes/feishu-channel-integration/`（proposal / design / specs×2 / tasks）
+**状态**：proposal 已生成并经设计评审收敛，待人审 →
+`openspec/changes/feishu-channel-integration/`（proposal / design / specs×4 / tasks）
 
 **范围**：只做管道，不加新功能。做完的效果是「现有预约 Agent 原封不动出现在飞书群里，能多轮对话、话题隔离」。
 
-- 新增 `executor/`：任务式接口（`submit → TaskHandle`）、同话题串行 / 跨话题并行（上限默认 10）、墙钟总超时 600s、四种终态（成功/失败/超时/guardrail 耗尽）
-- 新增 `channels/lark/`：lark-oapi 长连接订阅 `im.message.receive_v1`、event_id 去重、`thread_id → session_id` 映射（落 DB）、秒回 ack、结果投递 + 失败重试（**绝不静默**）
-- 改造 Web 接线走 executor 同步特例，带环境变量开关可回滚
-- harness 与预约工具不动；`uv run pytest` + evals 门禁必须全绿
+- 新增 `executor/`：两种执行模式（`submit + 回调` 异步 / `execute_inline` 同步透传）、同话题串行 / 跨话题并行（上限默认 10）、每会话排队深度上限、墙钟总超时 600s、五种终态
+- 新增 `channels/lark/`：lark-oapi 长连接订阅 `im.message.receive_v1`、event_id 去重、会话键解析（`thread_id → root_id → message_id`）落 DB、双层 ack、结果投递 + 失败重试（**绝不静默**）
+- 改造 Web 接线走 executor 同步内联，带环境变量开关可回滚
+- 预约工具不动；`harness` 仅补工具超时（`Tool.timeout` + `_dispatch`）；`uv run pytest` + evals 门禁必须全绿
 
-**apply 前需先修正的两处**（上下文中已确认，尚未落到文件）：
-- 删除 `specs/task-executor/spec.md` 中「LLM 请求级 hang 看门狗」需求——该能力已存在于 `guarded_invoke`，写成新需求会误导实现
-- 改为新增「工具调用超时」需求：`harness/runtime/agent_loop.py:244` 的 `_dispatch` 目前只 catch 异常、**无超时**；接 oncall 网络工具（VictoriaLogs / git）后是真实挂死风险。超时后把「工具超时」当错误结果回灌（**不重试**，工具有副作用）
-- 同步更新 `design.md` D3 的表述
+**设计评审的九处修正：✅ 已落到文件**（2026-07-27）
+
+超时归属：
+- 删除「LLM 请求级 hang 看门狗」需求——该能力已存在于 `guardrails/retry.py:guarded_invoke`（30s / 3 次 / 指数退避），写成新需求会误导实现
+- 改为「工具调用超时」，且**超时值声明在 `Tool` 上而非运行时全局常量**：主 registry 只注册了 `delegate` 一个工具，而它的 handler 内部跑的是整个子 AgentLoop（8 步 × 每步 30s×3 重试），全局 60s 会误杀正常任务。`delegate` 显式豁免
+- 明写超时的适用边界：`asyncio.wait_for` 中断不了同步阻塞调用，同步工具须自行下沉线程池——否则第 3 期移植 `repokit.py` 的 git 子进程时会误以为有保护
+- `design.md` D3 改写为「超时分三层」对照表（墙钟 600s / 工具 60s / LLM 30s）
+
+执行模型：
+- executor 改为**两种模式**：Web 走 `execute_inline`（请求协程内跑、generator 直接透传），IM 走 `submit`。理由是把 Web 塞进 worker 队列会凭空引入背压 / 断连语义 / 异常跨协程重抛三个问题，而本期硬要求恰是 Web 行为不变。取消 `TaskHandle` 概念
+- 非成功终态**必须补写兜底 assistant 回合**：现有编排先写 user 回合再跑 loop，中途 cancel 会留下永远配不上回复的孤立 user 回合，破坏「历史成对」这个短期记忆与摘要压缩的隐含前提。`CancelledError` 补写后必须重抛
+- 新增每会话排队深度上限（默认 5）：同话题串行下用户连发会排队并投递多条回复，刷屏且无界堆积
+
+验证与接入：
+- **`evals/` 证明不了 Web 改道无回归**——`evals/agent_capture.py` 直接构造 `AgentLoop`，不经 `chat_handler`/`web`/executor。原 tasks 里「改道前后跑 evals 做 A/B 比对」是假阳性安慰（两次跑的是同一条不受影响的路径）。改为新增 HTTP 端到端回归测试（TestClient + fake LLM）
+- **不能假设消息带 `thread_id`**——它只在话题模式群下发，普通群 @bot 只有 `chat_id`/`message_id`/`root_id`。会话键改为优先级链，且**实施上强制「先打真实事件载荷、后建表」**
+- 群聊要把发送者 open_id 当 `user_id` 传进去，否则 34 人的长期偏好会混成一个 `default_user`
+- 长连接跑 FastAPI 同进程 + **硬约束单 worker**（多 worker 会起多份长连接重复消费，进程内去重表拦不住）
 
 **前置条件（用户操作）**：飞书开放平台创建应用，取得 app_id / app_secret，开通 im 消息收发权限。executor 部分不依赖此项，可先开工。
 
-**实施顺序**：executor → Web 接线切换（现有 pytest + evals 证明无回归）→ 飞书 gateway/delivery（fake client 单测）→ consumer 接真租户端到端验证。
+**实施顺序**：executor + `Tool.timeout` → Web 接线切换（**新增的 HTTP e2e 测试**证明无回归，evals 只证明 AgentLoop 没坏）→ 真租户打一条事件载荷确认字段 → 飞书 gateway/delivery（fake client 单测）→ consumer 接真租户端到端验证。
 
 ---
 
 ## 第 1.5 期：退役旧意图分类器（独立小 change，可与第 1 期并行）
 
-**状态**：proposal 已生成，待人审 → `openspec/changes/retire-legacy-intent-classifier/`
+**状态**：✅ 已归档（commit `1906499`，2026-07-27）→ `openspec/changes/archive/2026-07-27-retire-legacy-intent-classifier/`
 
 旧分类器已退出主服务链路但仍被 evals 门禁守护（守假目标）。一揽子：删组件/端点/测试 → 意图准确率指标退役（工具 name 级 F1 已覆盖同一信号，不做反推替代）→ `GATED_METRICS` 3→2 项 → 延迟指标改真端到端口径（原实测为分类器调用耗时）→ 重定基线。`expected_intent` 标签保留为数据集元数据。
 
