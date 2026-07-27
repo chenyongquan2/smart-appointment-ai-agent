@@ -15,7 +15,7 @@
 
 - [x] 2.1 `web/routes.py`/`api/chat_handler.py` 改走 `execute_inline`（generator 直接透传，不经跨协程队列），加 `EXECUTOR_ENABLED` 环境变量开关（默认 true）保留旧直调路径可回滚
 - [x] 2.2 **新增 Web 层端到端回归测试**（这是改道无回归的唯一有效证据）：`starlette.TestClient` 打 `/chat/stream`，LLM 注入 fake（复用 `tests/test_chat_handler_e2e.py` 的模块级单例 monkeypatch 手法，离线确定性），断言 ① token 序列与改造前一致 ② `X-Session-Id` 响应头 ③ 多轮上下文接续 ④ 并发不同 session 不串号。`httpx` 显式加入 dev 依赖组
-- [ ] 2.3 跑 `uv run pytest` 全绿 + `evals/` 门禁通过（退出码 0）。**注意 evals 的有效范围**：`evals/agent_capture.py` 直接构造 `AgentLoop`，不经 `chat_handler`/`web`/executor，故它证明的是「1.5 的工具超时改动没伤到 AgentLoop」，**不能**作为 Web 改道无回归的依据（详见 design「验证覆盖边界」）
+- [x] 2.3 跑 `uv run pytest` 全绿 + `evals/` 门禁通过（退出码 0）。**注意 evals 的有效范围**：`evals/agent_capture.py` 直接构造 `AgentLoop`，不经 `chat_handler`/`web`/executor，故它证明的是「1.5 的工具超时改动没伤到 AgentLoop」，**不能**作为 Web 改道无回归的依据（详见 design「验证覆盖边界」）
 
 ## 3. 飞书接入层（channels/lark/）
 
