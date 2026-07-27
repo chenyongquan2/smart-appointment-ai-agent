@@ -14,15 +14,18 @@
 ``[THOUGHT]`` / ``[REPLY]`` / ``[ERROR]`` 前缀语义，前端无需改动既有解析。
 """
 
+import asyncio
 import logging
 import os
 import uuid
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from config.model_provider import create_chat_model
 from db.db_router import DatabaseRouter
+from executor import Task, TaskExecutor
+from executor.local import TIMEOUT_REPLY
 from harness.memory.long_term import LongTermMemory
 from harness.memory.short_term import ShortTermMemory
 from harness.memory.summary import LLMSummaryMemory
@@ -30,6 +33,7 @@ from harness.observability.file_exporter import FileSpanExporter
 from harness.observability.sampling_exporter import SamplingSpanExporter
 from harness.observability.tracer import Tracer
 from harness.runtime import AgentLoop
+from harness.runtime.agent_loop import RunOutcome
 from harness.runtime.session import SessionStore
 from harness.runtime.system_prompt import build_system_prompt
 from harness.subagents import build_default_subagent_registry, build_delegate_tool
@@ -97,6 +101,10 @@ logger = logging.getLogger(__name__)
 # 本模块据此从一串 token 里择出真正的回复文本（其余如 [THOUGHT] 是过程，不回写历史）。
 _REPLY_PREFIX = "[REPLY]"
 
+# 本轮被中断（墙钟超时 / 客户端断连）时补写进历史的兜底回合默认文案。
+# 调用方（executor）会传入与实际投递给用户的一致的文案覆盖它。
+_DEFAULT_INTERRUPTED_REPLY = "（上一轮处理被中断，未能完成回复。）"
+
 
 def _turns_to_messages(turns: List[Any]) -> List[BaseMessage]:
     """把回合（dict 含 role/content）转成 LangChain 消息列表；未知 role 跳过。
@@ -119,6 +127,9 @@ async def ProcessUserInput_stream(
     state=None,
     context=None,
     session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    on_outcome: Optional[Callable[[RunOutcome], None]] = None,
+    interrupted_reply: str = _DEFAULT_INTERRUPTED_REPLY,
 ):
     """处理一轮用户输入，按会话隔离地驱动 harness 并流式产出回复。
 
@@ -128,6 +139,12 @@ async def ProcessUserInput_stream(
             管理，这两个参数保留但不再使用）。
         session_id: 会话标识；缺省时本函数生成一个新的（调用方可通过
             ``resolve_session_id`` 预先确定以便回传给前端）。
+        user_id: 提交者标识，用于长期偏好按人隔离。群聊场景 MUST 传（否则全群成员的
+            偏好会混作同一个 ``default_user``）；``None`` 时沿用默认用户，Web 行为不变。
+        on_outcome: 透传给 ``AgentLoop.run`` 的带外结束方式回调，供调用方区分「答完了」
+            与「被护栏拦停」（两者的回复文本无法分辨）。
+        interrupted_reply: 本轮被中断时补写进历史的兜底回合文案；由调用方传入与实际
+            投递给用户的一致的文案。
 
     Yields:
         带 ``[THOUGHT]`` / ``[REPLY]`` 前缀的文本片段。
@@ -139,7 +156,9 @@ async def ProcessUserInput_stream(
     # ① 会话隔离：定位「这条消息属于哪个会话」。缺 session_id 就新开一个会话。
     #    get_or_create 据此取/建对应会话——不同 session_id 的历史互不串扰。
     sid = session_id or str(uuid.uuid4())
-    session = _session_store.get_or_create(sid)
+    # user_id 决定「读谁的长期偏好」。群聊里同一会话由多人共享——历史该共享，偏好不该，
+    # 故由 Channel 层把发送者身份传下来；Web 不传，沿用默认用户（行为不变）。
+    session = _session_store.get_or_create(sid, user_id=user_id)
 
     # ② 记忆注入（在「写入本轮输入之前」先取历史，避免把当前这句也当成历史回放）：
     #    - 长期：跨会话的用户偏好，作为「系统提示补充」（system_suffix）。
@@ -168,18 +187,30 @@ async def ProcessUserInput_stream(
     # ④ 驱动 TAO 循环。user_input 单独作参数传入（已在 history_msgs 里排除，勿重复注入）。
     #    run(...) 是异步生成器：会逐个 yield 出 token（[THOUGHT].../[REPLY]...）。
     reply_text = ""
-    async for token in _agent_loop.run(
-        user_input,
-        session_id=sid,
-        history=history_msgs,          # 短期记忆
-        system_suffix=preference_hint, # 长期偏好，拼到系统提示末尾
-    ):
-        # ⑤ 一边把每个 token 透传给前端（保留流式体验），一边「截留」最终回复：
-        #    只有 [REPLY] 前缀那条是要回写历史的真正回复；切掉前缀后存进 reply_text。
-        #    （若 loop 多次发 [REPLY]，这里以最后一条为准。）
-        if token.startswith(_REPLY_PREFIX):
-            reply_text = token[len(_REPLY_PREFIX):]
-        yield token
+    try:
+        async for token in _agent_loop.run(
+            user_input,
+            session_id=sid,
+            history=history_msgs,          # 短期记忆
+            system_suffix=preference_hint, # 长期偏好，拼到系统提示末尾
+            on_outcome=on_outcome,         # 带外结束方式（供 executor 判定终态）
+        ):
+            # ⑤ 一边把每个 token 透传给前端（保留流式体验），一边「截留」最终回复：
+            #    只有 [REPLY] 前缀那条是要回写历史的真正回复；切掉前缀后存进 reply_text。
+            #    （若 loop 多次发 [REPLY]，这里以最后一条为准。）
+            if token.startswith(_REPLY_PREFIX):
+                reply_text = token[len(_REPLY_PREFIX):]
+            yield token
+    except (asyncio.CancelledError, GeneratorExit):
+        # ★ 中断路径（墙钟超时把 CancelledError 抛进来，或客户端断连触发 GeneratorExit）。
+        #   ③ 已经把 user 回合写进库了，若就这么走人，历史里会留下一条永远配不上回复的
+        #   孤立 user 回合——而「历史成对」是 ShortTermMemory 与摘要压缩的隐含前提，破了
+        #   它下一轮模型会看到一句没人回的话，用户重问后还会出现连排的重复 user 消息。
+        #   故先补一条兜底 assistant 回合。这里只做同步 DB 写、不 await（GeneratorExit
+        #   期间不允许挂起）。
+        _session_store.append_turn(sid, "assistant", reply_text or interrupted_reply)
+        # 必须重抛：吞掉取消信号会让 executor 把被中断的任务误判为正常完成。
+        raise
 
     # ⑥ 回写「助手回复」入会话，至此本轮一问一答都已落库，下一轮才能续上多轮上下文。
     #    （兜底回复——如 loop 跑满步数的那句——同样记入，保证历史不断档。）
@@ -199,3 +230,52 @@ def resolve_session_id(session_id: Optional[str]) -> str:
     使后续请求能带回同一会话。
     """
     return session_id or str(uuid.uuid4())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 任务执行层接线（change: feishu-channel-integration）
+# 依赖方向：channels/ → executor/ → 本模块 → harness/。executor 不反向依赖任何
+# Channel 或编排实现——runner 是注入进去的，故换 IM 平台时这一层零改动。
+# ════════════════════════════════════════════════════════════════════════════
+def _runner(task: Task, on_outcome: Callable[[RunOutcome], None]):
+    """把一个 Task 翻译成本模块的编排调用。executor 只认这个协议。"""
+    return ProcessUserInput_stream(
+        task.user_input,
+        session_id=task.session_id,
+        user_id=task.user_id,
+        on_outcome=on_outcome,
+        # 中断时补写进历史的兜底回合，与 delivery 实际投递给用户的文案取同一份常量。
+        interrupted_reply=TIMEOUT_REPLY,
+    )
+
+
+executor = TaskExecutor(
+    _runner,
+    max_concurrency=int(os.getenv("EXECUTOR_MAX_CONCURRENCY", "10")),
+    max_queue_per_session=int(os.getenv("EXECUTOR_MAX_QUEUE_PER_SESSION", "5")),
+    wall_clock_timeout=float(os.getenv("EXECUTOR_WALL_CLOCK_TIMEOUT", "600")),
+)
+
+# 应急回退开关：默认走新路径（默认关的话新路径永远没人跑，等于没上线）。
+_EXECUTOR_ENABLED = os.getenv("EXECUTOR_ENABLED", "true").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+
+
+def chat_stream(
+    user_input: str,
+    session_id: str,
+    user_id: Optional[str] = None,
+):
+    """Web 入口：经 executor 的**同步内联模式**执行，逐 token 透传。
+
+    内联而非入队，是为了让「Web 对外行为不变」在构造上成立——透传的还是同一个 async
+    generator，没有跨协程队列，因而不存在背压、断连歧义与异常重抛（见 executor 模块
+    docstring）。它仍与飞书路径共享同一套并发记账（同会话串行、全局并发上限）。
+    """
+    if not _EXECUTOR_ENABLED:
+        # 应急回退：绕过 executor 直调编排层（改造前的老路径）。
+        return ProcessUserInput_stream(user_input, session_id=session_id, user_id=user_id)
+    return executor.execute_inline(
+        Task(session_id=session_id, user_input=user_input, user_id=user_id, channel="web")
+    )

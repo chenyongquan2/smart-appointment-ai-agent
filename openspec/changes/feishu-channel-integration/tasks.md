@@ -2,19 +2,19 @@
 
 ## 1. 任务执行层（executor/）
 
-- [ ] 1.1 定义任务模型与接口：`Task`（session_id, user_id, input, channel 元数据）、`submit(task, on_complete) → task_id`（异步）与 `execute_inline(task)`（同步透传 generator）两种模式、结构化终态 `TaskResult{status, reply_text, error}`（成功/失败/超时/guardrail 耗尽/忙碌拒绝）。不引入 `TaskHandle`
-- [ ] 1.2 实现进程内 asyncio executor：每 session 一把锁（同话题串行）+ 每 session 排队深度上限（默认 5，超出以「忙碌」终态回调、不入队）、全局 `Semaphore` 并发上限（默认 10，可配）、墙钟超时 `asyncio.wait_for`（默认 600s，可配）。两种模式共享同一 Semaphore 与同一 per-session 锁
-- [ ] 1.3 接入 harness：worker 按任务拉起 AgentLoop（复用 `api/chat_handler` 现有装配逻辑），从 token 流择出 `[REPLY]` 填入 `TaskResult.reply_text`（协议解析归 executor，Channel 不碰），`GuardrailExhausted` 映射为失败终态
-- [ ] 1.4 非成功终态补写兜底 assistant 回合：`ProcessUserInput_stream` 捕 `asyncio.CancelledError` → 写入与投递文案一致的 assistant 回合 → **重新抛出**（不得吞掉，否则 executor 误判成功）；失败/guardrail 耗尽终态同样补写。确认 `_summary.compact_if_needed` 被跳过一轮时可容忍
-- [ ] 1.5 `Tool` 增加可选 `timeout` 字段（默认 `None` → 取全局缺省 60s，可配），`agent_loop._dispatch` 按 `tool.timeout` 施加超时；超时**不重试**、当错误结果回灌（复用现有「工具执行失败」回灌口径）；**`delegate` 显式豁免**（其 handler 内部是整个子 AgentLoop，全局 60s 会误杀）；LLM 侧不动（`guarded_invoke` 已有）
-- [ ] 1.6 在工具编写约定（`openspec/project.md` 或工具基类 docstring）写明超时边界：`asyncio.wait_for` 只能中断有 await 点的工具，同步阻塞工具（同步 SQLite/FAISS/子进程）需自行下沉线程池，否则声明了 timeout 也无效
-- [ ] 1.7 `user_id` 透传：`ProcessUserInput_stream` 增加可选 `user_id` 参数，传给 `SessionStore.get_or_create(sid, user_id=...)`（该参数已支持、只是无人传）；缺省仍为 `default_user`，Web 行为不变
-- [ ] 1.8 executor 单测（注入 fake 慢任务/抛错任务）：同话题串行、跨话题并行、并发上限排队、排队深度上限拒绝、墙钟超时终态、五种终态回调各一条；工具超时回灌为错误结果且不被重试；`delegate` 不被默认超时截断；取消时兜底回合被写入且 `CancelledError` 继续传播
+- [x] 1.1 定义任务模型与接口：`Task`（session_id, user_id, input, channel 元数据）、`submit(task, on_complete) → task_id`（异步）与 `execute_inline(task)`（同步透传 generator）两种模式、结构化终态 `TaskResult{status, reply_text, error}`（成功/失败/超时/guardrail 耗尽/忙碌拒绝）。不引入 `TaskHandle`
+- [x] 1.2 实现进程内 asyncio executor：每 session 一把锁（同话题串行）+ 每 session 排队深度上限（默认 5，超出以「忙碌」终态回调、不入队）、全局 `Semaphore` 并发上限（默认 10，可配）、墙钟超时 `asyncio.wait_for`（默认 600s，可配）。两种模式共享同一 Semaphore 与同一 per-session 锁
+- [x] 1.3 接入 harness：worker 按任务拉起 AgentLoop（复用 `api/chat_handler` 现有装配逻辑），从 token 流择出 `[REPLY]` 填入 `TaskResult.reply_text`（协议解析归 executor，Channel 不碰），`GuardrailExhausted` 映射为失败终态
+- [x] 1.4 非成功终态补写兜底 assistant 回合：`ProcessUserInput_stream` 捕 `asyncio.CancelledError` → 写入与投递文案一致的 assistant 回合 → **重新抛出**（不得吞掉，否则 executor 误判成功）；失败/guardrail 耗尽终态同样补写。确认 `_summary.compact_if_needed` 被跳过一轮时可容忍
+- [x] 1.5 `Tool` 增加可选 `timeout` 字段（默认 `None` → 取全局缺省 60s，可配），`agent_loop._dispatch` 按 `tool.timeout` 施加超时；超时**不重试**、当错误结果回灌（复用现有「工具执行失败」回灌口径）；**`delegate` 显式豁免**（其 handler 内部是整个子 AgentLoop，全局 60s 会误杀）；LLM 侧不动（`guarded_invoke` 已有）
+- [x] 1.6 在工具编写约定（`openspec/project.md` 或工具基类 docstring）写明超时边界：`asyncio.wait_for` 只能中断有 await 点的工具，同步阻塞工具（同步 SQLite/FAISS/子进程）需自行下沉线程池，否则声明了 timeout 也无效
+- [x] 1.7 `user_id` 透传：`ProcessUserInput_stream` 增加可选 `user_id` 参数，传给 `SessionStore.get_or_create(sid, user_id=...)`（该参数已支持、只是无人传）；缺省仍为 `default_user`，Web 行为不变
+- [x] 1.8 executor 单测（注入 fake 慢任务/抛错任务）：同话题串行、跨话题并行、并发上限排队、排队深度上限拒绝、墙钟超时终态、五种终态回调各一条；工具超时回灌为错误结果且不被重试；`delegate` 不被默认超时截断；取消时兜底回合被写入且 `CancelledError` 继续传播
 
 ## 2. Web 接线切换（对外行为不变）
 
-- [ ] 2.1 `web/routes.py`/`api/chat_handler.py` 改走 `execute_inline`（generator 直接透传，不经跨协程队列），加 `EXECUTOR_ENABLED` 环境变量开关（默认 true）保留旧直调路径可回滚
-- [ ] 2.2 **新增 Web 层端到端回归测试**（这是改道无回归的唯一有效证据）：`starlette.TestClient` 打 `/chat/stream`，LLM 注入 fake（复用 `tests/test_chat_handler_e2e.py` 的模块级单例 monkeypatch 手法，离线确定性），断言 ① token 序列与改造前一致 ② `X-Session-Id` 响应头 ③ 多轮上下文接续 ④ 并发不同 session 不串号。`httpx` 显式加入 dev 依赖组
+- [x] 2.1 `web/routes.py`/`api/chat_handler.py` 改走 `execute_inline`（generator 直接透传，不经跨协程队列），加 `EXECUTOR_ENABLED` 环境变量开关（默认 true）保留旧直调路径可回滚
+- [x] 2.2 **新增 Web 层端到端回归测试**（这是改道无回归的唯一有效证据）：`starlette.TestClient` 打 `/chat/stream`，LLM 注入 fake（复用 `tests/test_chat_handler_e2e.py` 的模块级单例 monkeypatch 手法，离线确定性），断言 ① token 序列与改造前一致 ② `X-Session-Id` 响应头 ③ 多轮上下文接续 ④ 并发不同 session 不串号。`httpx` 显式加入 dev 依赖组
 - [ ] 2.3 跑 `uv run pytest` 全绿 + `evals/` 门禁通过（退出码 0）。**注意 evals 的有效范围**：`evals/agent_capture.py` 直接构造 `AgentLoop`，不经 `chat_handler`/`web`/executor，故它证明的是「1.5 的工具超时改动没伤到 AgentLoop」，**不能**作为 Web 改道无回归的依据（详见 design「验证覆盖边界」）
 
 ## 3. 飞书接入层（channels/lark/）
