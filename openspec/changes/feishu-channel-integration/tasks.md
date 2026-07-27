@@ -19,7 +19,7 @@
 
 ## 3. 飞书接入层（channels/lark/）
 
-- [ ] 3.1 引入 `lark-oapi` 依赖（uv add），`.env` 增加 app_id/app_secret/domain/`FEISHU_ENABLED`/`FEISHU_SESSION_SCOPE`/并发与超时配置项，`.env.example` 补说明（含所需 im 权限 scope 清单）
+- [x] 3.1 引入 `lark-oapi` 依赖（uv add），`.env` 增加 app_id/app_secret/domain/`FEISHU_ENABLED`/`FEISHU_SESSION_SCOPE`/并发与超时配置项，`.env.example` 补说明（含所需 im 权限 scope 清单）
 - [ ] 3.2 **先验证再建表**：拿到凭据后在测试群发一条真实 @bot 消息，把事件载荷 JSON 打出来，确认 `thread_id` / `root_id` / `message_id` / `chat_id` / 发送者 open_id 的实际下发情况。此步 MUST 先于 3.3 完成——表一旦写入数据，会话键定义变更就要迁移
 - [ ] 3.3 DB 新增 `channel_session` 映射表（`channel / scope / external_id / session_id / created_at`，`(channel, external_id)` 唯一索引）与 Repository；会话键按 `thread_id → root_id → message_id` 优先级链解析（依 3.2 实测校正），session_id 命名 `feishu:{解析后的键}`
 - [ ] 3.4 实现 gateway：事件解析（仅处理 @bot 文本消息）、event_id 内存 TTL 去重（默认 5 分钟 + 容量上限 LRU；**理由是防重复下单，不是性能优化**）、会话键解析、取发送者 open_id 作 user_id、提交任务 → 发用户可见 ack（reply 而非表情，顺带建立回复链）→ 事件回调立即返回（不 await 任务）
