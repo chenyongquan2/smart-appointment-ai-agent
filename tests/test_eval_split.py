@@ -134,16 +134,16 @@ def test_heldout_results_cannot_leak_into_baseline():
     """
     cases = _cases("dev", "dev", "held-out", "held-out")
     results = [
-        EvalResult(input="d1", expected_intent="appointment", actual_intent="appointment"),
-        EvalResult(input="d2", expected_intent="query", actual_intent="query"),
-        # held-out 两条全判错——若泄漏进基线会把意图准确率拉到 50%。
-        EvalResult(input="h1", expected_intent="pay", actual_intent="other"),
-        EvalResult(input="h2", expected_intent="statistics", actual_intent="other"),
+        EvalResult(input="d1", expected_tools=["a"], actual_tools=[{"name": "a", "args": {}}]),
+        EvalResult(input="d2", expected_tools=["b"], actual_tools=[{"name": "b", "args": {}}]),
+        # held-out 两条全判错——若泄漏进基线会把工具 F1 拉到 50%。
+        EvalResult(input="h1", expected_tools=["c"], actual_tools=[{"name": "x", "args": {}}]),
+        EvalResult(input="h2", expected_tools=["d"], actual_tools=[{"name": "y", "args": {}}]),
     ]
     dev_results, heldout_results = _split_results(cases, results)
     assert len(dev_results) == 2 and len(heldout_results) == 2
 
     baseline = report_to_baseline(build_report(dev_results), total_cases=len(dev_results), samples=1)
-    # dev 两条全判对 → 意图准确率 100%，不受 held-out 两条判错影响。
-    assert baseline["metrics"]["意图分类准确率"]["value"] == 1.0
+    # dev 两条全命中 → 工具 F1 100%，不受 held-out 两条判错影响。
+    assert baseline["metrics"]["工具调用-F1"]["value"] == 1.0
     assert baseline["meta"]["total_cases"] == 2  # 基线的 total_cases 只计 dev

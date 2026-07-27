@@ -185,14 +185,9 @@ async def test_single_element_turns_equivalent_to_single_turn():
 
 
 # ── 分派层：_run_once 按轮长选采集路径 ────────────────────────────────────────
-class _StubClassifier:
-    async def classify_task(self, text: str) -> str:
-        return "appointment"
-
-
 @pytest.mark.asyncio
 async def test_run_once_dispatches_multiturn_vs_single():
-    """_run_once：多轮用例调多轮采集、单轮用例调单轮采集；意图对首轮判定。"""
+    """_run_once：多轮用例调多轮采集、单轮用例调单轮采集。"""
     import evals.run_evals as re
     from evals.metrics import EvalResult, slots_from_tool_calls
 
@@ -215,7 +210,7 @@ async def test_run_once_dispatches_multiturn_vs_single():
         {"turns": ["首轮开场", "次轮补全"], "expected_intent": "appointment"},
     ]
     results = await re._run_once(
-        cases, _StubClassifier(), llm=None, full_registry=None, subagents=None,
+        cases, llm=None, full_registry=None, subagents=None,
         capture_fn=fake_single, judge_fn=None, capture_multiturn_fn=fake_multi,
     )
 
@@ -246,7 +241,7 @@ async def test_run_once_fills_task_success_fields():
     cases = [{"turns": ["帮我预约"], "expected_intent": "appointment",
               "expected_outcome": "create_appointment"}]
     results = await re._run_once(
-        cases, _StubClassifier(), llm=None, full_registry=None, subagents=None,
+        cases, llm=None, full_registry=None, subagents=None,
         capture_fn=fake_single, judge_fn=None, capture_multiturn_fn=None,
     )
     assert results[0].expected_outcome == "create_appointment"

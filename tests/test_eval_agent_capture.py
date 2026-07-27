@@ -107,13 +107,13 @@ async def test_tool_call_correctness_flips_from_na_to_real_after_capture():
     )
 
     # 未真跑（actual_tools=None）→ 指标 N/A，不伪造分母。
-    na = tool_call_exact_match([EvalResult("回显 x", "query", expected_tools=["echo"])])
+    na = tool_call_exact_match([EvalResult("回显 x", expected_tools=["echo"])])
     assert na.na and na.value is None
 
     # 真跑采集后填入 actual_tools → 指标翻成真实数字（echo 命中 → 1/1）。
     actual_tools = await capture_tool_calls("回显 x", llm, full, subagents)
     real = tool_call_exact_match([
-        EvalResult("回显 x", "query", expected_tools=["echo"], actual_tools=actual_tools)
+        EvalResult("回显 x", expected_tools=["echo"], actual_tools=actual_tools)
     ])
     assert not real.na
     assert (real.numerator, real.denominator) == (1, 1)

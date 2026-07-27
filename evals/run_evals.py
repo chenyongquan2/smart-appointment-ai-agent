@@ -1,12 +1,15 @@
 """评估集运行器（Phase 0）。
 
 用法:
-    uv run python evals/run_evals.py            # 跑全部用例, 输出意图准确率基线
+    uv run python evals/run_evals.py            # 跑全部用例, 输出多指标报告
     uv run python evals/run_evals.py --limit 5  # 只跑前 5 条(冒烟)
 
-接入真实意图分类器(经 config.model_provider)，对每条用例跑 classify_task，
-与 expected_intent 比对，输出意图分类准确率基线 + 按类目分项 + 错误清单。
-成功静默、只详列错误。缺 API key 时优雅降级(提示 + 非零退出，不崩)。
+对每条用例端到端真跑生产路径的 AgentLoop（主→delegate→子 Agent），采集工具序列/
+槽位/最终回复并汇总多指标报告。成功静默、只详列错误。缺 API key 时优雅降级
+(提示 + 非零退出，不崩)。
+
+（change retire-legacy-intent-classifier）旧意图分类器已退役：意图理解由工具选择体现、
+被工具级指标覆盖；expected_intent 仅作数据集标签（加载校验/构成约束）保留。
 
 退出码契约（CI/闸门 2 据此判定）:
     0 = 正常跑完（哪怕个别用例判错，"跑完"即成功）
@@ -17,13 +20,15 @@
 回归门禁（改造 6）:
     --update-baseline  把本次跑分落盘为基线（默认 evals/baseline.json）
     --gate             跑完比对基线，被守指标回归则以退出码 3 结束
-    --tolerance        容差（默认 0.20）吸收 LLM 抖动；门禁只守正确性子集
-                       （意图准确率 / 工具调用-F1 / 槽位完整率），不守延迟与回复质量
+    --tolerance        容差（默认 0.30）吸收 LLM 抖动；门禁只守正确性子集
+                       （工具调用-F1 / 槽位完整率），不守延迟与回复质量
 
-容差 0.20 的依据（改造 6 生成基线时实测）：当前模型(deepseek-v4-flash)结构化输出不稳，
-意图准确率 run-to-run 95% t-CI 半宽达 ±19pp、工具 F1 ±7pp（n=3）。默认容差取 0.20 以覆盖
-最差半宽，故单次门禁跑不会被噪声误报——代价是只拦得住「大幅回归」。要更紧的门禁需更稳的
-模型或 `--gate --samples 3`（守均值、方差更小）。详见 evals/README.md。
+容差 0.30 的依据（change retire-legacy-intent-classifier 重定基线时实测）：当前模型
+(deepseek-v4-flash)工具触发 run-to-run 抖动实测 t-CI 半宽——工具 F1 ±5.7pp、
+**槽位抽取完整率 ±28.7pp**（n=3，干净跑）。槽位半宽超出原 0.20，故按实测上调至 0.30 覆盖
+最差半宽（spec 要求容差覆盖观测半宽、不得是无凭据魔数）。代价：门禁更松，只拦得住
+「大幅回归」。治本方向是补预约锚点压低槽位方差（数据集冗余，另立 change），届时可回调。
+详见 evals/README.md。
 
 dev / held-out 切分（改造 8 切片 · change evals-dataset-scaleup-heldout）:
     默认只评 dev 子集（未标 split 字段的既有用例也归 dev，向后兼容）。
@@ -58,9 +63,14 @@ load_dotenv()  # 读 .env 里的 API key / MODEL_PROVIDER 等到环境变量
 CASES_FILE = Path(__file__).parent / "cases.jsonl"  # 用例文件与本脚本同目录
 BASELINE_FILE = Path(__file__).parent / "baseline.json"  # 回归门禁基线（改造 6），与本脚本同目录
 
-# 真实分类器的 5 类口径（来源: agents/task_classification/task_classifier.py）
-# 加载用例时据此校验 expected_intent 合法——防手滑写错类名，问题尽早暴露。
+# 数据集意图标签口径（5 类）——纯数据集元数据（构成约束/按类分析/切分规则），
+# 不对应任何分类器组件。加载用例时据此校验 expected_intent 合法——防手滑写错类名。
 VALID_INTENTS = {"appointment", "query", "pay", "statistics", "other"}
+
+# 用例并发度默认值（change evals-concurrent-runner D2）：保守取 5——每条用例内部还会派生
+# 子 Agent，实际在途请求是并发数的数倍；网关限流阈值未知（重定基线时实测到过 503 与连接错误）。
+# 5 已能把 41 条的单次跑从约 18 分钟压到几分钟，收益大头已拿到；实测稳定后可再调高。
+DEFAULT_CONCURRENCY = 5
 
 # 用例集 dev/held-out 切分（change evals-dataset-scaleup-heldout）：
 # dev = 日常调试/调优/门禁用；held-out = 过拟合体检的留出集，MUST NOT 参与调优与门禁。
@@ -178,89 +188,110 @@ def print_cases(cases: list[dict]) -> None:
         print(f"  [{intent:11}] {text[:42]}{suffix}")
 
 
-async def _run_once(cases, classifier, llm, full_registry, subagents, capture_fn,
+async def _run_case(case, llm, full_registry, subagents, capture_fn,
                     judge_fn=None, capture_multiturn_fn=None):
-    """跑一遍全部用例，返回填好的 ``EvalResult`` 列表（多采样时被调用 N 次）。
+    """跑**单条**用例并返回填好的 ``EvalResult``（并发化后的最小执行单元）。
 
-    单次的「跑分类器 + 端到端真跑采集(工具+回复) + 可选 judge」逻辑都收敛在这里，故
-    N=1 与 N>1 走同一条路，口径完全一致。``capture_fn`` 返回 ``CaptureResult``（工具+回复）；
-    ``judge_fn`` 非 None 时对回复做质量裁决（改造 4），缺省不评（回复质量记 N/A）。
+    ``capture_fn`` 返回 ``CaptureResult``（工具+回复）；``judge_fn`` 非 None 时对回复做质量
+    裁决（改造 4），缺省不评（回复质量记 N/A）。
 
     多轮（change evals-multiturn-cases）：用例的输入经 ``load_cases`` 归一为 ``case["turns"]``
-    （单轮=单元素列表）。意图分类对**首轮**判定；采集按轮长分派——单轮走 ``capture_fn``
-    （路径不变），多轮走 ``capture_multiturn_fn``（按轮驱动、跨轮累计工具/槽位、末轮回复喂 judge）。
+    （单轮=单元素列表）。采集按轮长分派——单轮走 ``capture_fn``（路径不变），
+    多轮走 ``capture_multiturn_fn``（按轮驱动、跨轮累计工具/槽位、末轮回复喂 judge）。
+
+    延迟口径（change retire-legacy-intent-classifier）：计端到端真跑全程耗时
+    （多轮为跨轮累计），不再是旧分类器单次调用耗时。并发跑时该耗时含资源竞争
+    （change evals-concurrent-runner D4：如实标注、不做补偿估算）。
+
+    【失败隔离】本函数**内部吞掉**真跑异常（记 N/A），故并发时 ``gather`` 收不到异常、
+    不会取消其它在途用例——这是"单条失败不拖垮全量"在并发下的落点。
     """
     import time
 
-    results = []
-    for case in cases:
-        turns = case["turns"]  # load_cases 已归一为非空 list[str]
-        first_turn = turns[0]  # 多轮意图对首轮（确立意图的开场白）判定
-        expected = case["expected_intent"]
-        start = time.perf_counter()  # perf_counter：高精度单调钟，专用于测耗时
-        try:
-            actual = await classifier.classify_task(first_turn)  # ← 真正调用 LLM 分类（首轮）
-        except Exception as exc:  # 网络/鉴权异常: 标注出来, 不中断整轮（一条挂了别拖垮全量）
-            actual = f"<异常:{type(exc).__name__}>"
-        latency = time.perf_counter() - start  # 仅计分类器单次调用（与既有口径一致，不含 loop）
+    turns = case["turns"]  # load_cases 已归一为非空 list[str]
+    first_turn = turns[0]
 
-        # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集工具序列 + 最终回复。
-        # 与分类器并存——意图准确率不依赖真跑。单条失败不拖垮全量。
-        actual_tools = None
-        actual_tool_outcomes = None
-        judge_passed = None
-        try:
-            if len(turns) > 1 and capture_multiturn_fn is not None:
-                cap = await capture_multiturn_fn(turns, llm, full_registry, subagents)
-            else:
-                cap = await capture_fn(first_turn, llm, full_registry, subagents)  # 单轮路径不变
-            actual_tools = cap.tool_calls
-            actual_tool_outcomes = cap.tool_outcomes  # 工具执行成败（任务成功率用）
-            # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决（多轮用首轮作问题、末轮回复作答）。
-            if judge_fn is not None:
-                verdict = await judge_fn(first_turn, cap.reply, llm)
-                judge_passed = verdict.passed
-        except Exception as exc:  # 真跑异常: 该条工具/judge 记 None（指标对该条标 N/A，不伪造）
-            print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具/质量对该条记 N/A: {first_turn[:30]}",
-                  file=sys.stderr)
+    # 端到端真跑：构造带 tracer 的主 loop（主→delegate→子 Agent），采集工具序列 + 最终回复。
+    # 每条用例一个独立 exporter 沙盒（见 agent_capture 的 _build_capture_loop），故并发安全。
+    actual_tools = None
+    actual_tool_outcomes = None
+    judge_passed = None
+    start = time.perf_counter()  # perf_counter：高精度单调钟，专用于测耗时
+    try:
+        if len(turns) > 1 and capture_multiturn_fn is not None:
+            cap = await capture_multiturn_fn(turns, llm, full_registry, subagents)
+        else:
+            cap = await capture_fn(first_turn, llm, full_registry, subagents)  # 单轮路径不变
+        latency = time.perf_counter() - start  # 端到端真跑耗时（judge 是评测开销，不计入）
+        actual_tools = cap.tool_calls
+        actual_tool_outcomes = cap.tool_outcomes  # 工具执行成败（任务成功率用）
+        # 回复质量 judge（改造 4）：仅在开启时对采集到的最终回复裁决（多轮用首轮作问题、末轮回复作答）。
+        if judge_fn is not None:
+            verdict = await judge_fn(first_turn, cap.reply, llm)
+            judge_passed = verdict.passed
+    except Exception as exc:  # 真跑异常: 该条工具/judge 记 None（指标对该条标 N/A，不伪造）
+        latency = None  # 真跑失败没有可信的端到端耗时，标 N/A 而非记半截时间
+        print(f"[WARN] 用例端到端真跑失败({type(exc).__name__})，工具/质量对该条记 N/A: {first_turn[:30]}",
+              file=sys.stderr)
 
-        # 把这条用例的「实际值」装进 EvalResult，交给 metrics 模块统一算分。
-        results.append(
-            _EvalResult(
-                input=first_turn,
-                expected_intent=expected,
-                actual_intent=actual,
-                # actual_tools 采全为有序 [{name, args}]；指标只比名字集合（采全比松）。
-                # 真跑失败/无工具时为 None/[]，报告据此对该条标 N/A 而非伪造分母。
-                expected_tools=case.get("expected_tools"),
-                actual_tools=actual_tools,
-                expected_tool_args=case.get("expected_tool_args"),  # 参数级比对标注（可选）
-                expected_slots=case.get("expected_slots"),
-                # 从真跑采集到的工具调用 args 还原扁平槽位（跨工具合并/哨兵跳过/last-write-wins）。
-                # 真跑失败时 actual_tools 为 None → 还原也为 None → 该用例槽位指标标 N/A，不伪造。
-                actual_slots=_slots_from_tool_calls(actual_tools),
-                # 任务成功率（change evals-task-success-rate）：期望业务终态 + 实际工具执行成败。
-                expected_outcome=case.get("expected_outcome"),
-                actual_tool_outcomes=actual_tool_outcomes,
-                latency_s=latency,
-                judge_passed=judge_passed,  # 回复质量裁决（改造 4）；未开 --judge 时 None→N/A
-            )
-        )
-    return results
+    # 把这条用例的「实际值」装进 EvalResult，交给 metrics 模块统一算分。
+    return _EvalResult(
+        input=first_turn,
+        # actual_tools 采全为有序 [{name, args}]；指标只比名字集合（采全比松）。
+        # 真跑失败/无工具时为 None/[]，报告据此对该条标 N/A 而非伪造分母。
+        expected_tools=case.get("expected_tools"),
+        actual_tools=actual_tools,
+        expected_tool_args=case.get("expected_tool_args"),  # 参数级比对标注（可选）
+        expected_slots=case.get("expected_slots"),
+        # 从真跑采集到的工具调用 args 还原扁平槽位（跨工具合并/哨兵跳过/last-write-wins）。
+        # 真跑失败时 actual_tools 为 None → 还原也为 None → 该用例槽位指标标 N/A，不伪造。
+        actual_slots=_slots_from_tool_calls(actual_tools),
+        # 任务成功率（change evals-task-success-rate）：期望业务终态 + 实际工具执行成败。
+        expected_outcome=case.get("expected_outcome"),
+        actual_tool_outcomes=actual_tool_outcomes,
+        latency_s=latency,
+        judge_passed=judge_passed,  # 回复质量裁决（改造 4）；未开 --judge 时 None→N/A
+    )
 
 
-def _print_by_intent(results) -> None:
-    """按意图类目分项打印 correct/total（保留 Phase 0 的分类目视图，仅单次跑用）。"""
-    by_intent: dict[str, list[int]] = {}
-    for r in results:
-        stat = by_intent.setdefault(r.expected_intent, [0, 0])
-        stat[1] += 1
-        if r.actual_intent == r.expected_intent:
-            stat[0] += 1
-    print("\n按类目（意图）:")
-    for intent in sorted(by_intent):
-        c, t = by_intent[intent]
-        print(f"  {intent:11} {c}/{t}")
+async def _run_once(cases, llm, full_registry, subagents, capture_fn,
+                    judge_fn=None, capture_multiturn_fn=None, concurrency: int = DEFAULT_CONCURRENCY):
+    """跑一遍全部用例，返回填好的 ``EvalResult`` 列表（多采样时被调用 N 次）。
+
+    单条逻辑在 ``_run_case``；本函数只负责**调度**，故 N=1 与 N>1、串行与并发
+    都走同一条单条路径，口径完全一致。
+
+    并发（change evals-concurrent-runner）：用例之间无共享可变状态（每条一个独立
+    ``Tracer`` + ``InMemoryExporter`` 沙盒、``AgentLoop`` 无状态），串行只是历史实现方式。
+    这里用 ``asyncio.gather`` + ``Semaphore`` 受限并发：
+
+    - **保序**：``gather`` 按传入顺序返回结果——下游 ``_split_results(cases, results)`` 靠
+      zip 同序同长拆 dev/held-out，顺序错乱会把结果张冠李戴，故这是硬约束。
+    - **限流**：信号量把在途用例数压到 ``concurrency``；每条用例内部还会派生子 Agent，
+      实际在途请求是并发数的数倍，故默认值取保守的 5（见 design D2）。
+    - **失败隔离**：异常在 ``_run_case`` 内部就被吞成 N/A，不冒泡到 ``gather``，
+      故一条失败不会取消其它在途用例（不用 ``return_exceptions``——那会让异常静默变成
+      结果里的异常对象，反而更难查）。
+    - ``concurrency <= 1`` 走**串行路径**：不是"信号量=1 的并发"，而是真正的逐条 await，
+      作为排障与对照的基准路径，行为与并发化之前等价。
+    """
+    if concurrency <= 1:  # 串行基准路径（--concurrency 1）：与并发化之前逐条等价
+        results = []
+        for case in cases:
+            results.append(await _run_case(case, llm, full_registry, subagents, capture_fn,
+                                           judge_fn, capture_multiturn_fn))
+        return results
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _guarded(case):
+        # async with sem：拿到许可才开跑，出作用域自动释放 → 在途数恒 ≤ concurrency。
+        async with sem:
+            return await _run_case(case, llm, full_registry, subagents, capture_fn,
+                                   judge_fn, capture_multiturn_fn)
+
+    # gather 保序返回（与传入的协程顺序一致，非完成先后），满足上面的「保序」硬约束。
+    return list(await asyncio.gather(*(_guarded(c) for c in cases)))
 
 
 # 模块级占位：真正的 EvalResult 在 run_baseline 内按需 import 后赋给它（避免无 key 路径触碰重依赖）。
@@ -276,9 +307,10 @@ async def run_baseline(
     gate: bool = False,
     update_baseline: bool = False,
     baseline_path: Path | None = None,
-    tolerance: float = 0.05,
+    tolerance: float = 0.30,  # 与 CLI --tolerance 默认值一致（实测半宽校准，见模块 docstring）
+    concurrency: int = DEFAULT_CONCURRENCY,  # 用例并发度；1=串行基准路径
 ) -> int:
-    """跑真实分类器 + 端到端真跑, 输出多指标报告。返回进程退出码。
+    """端到端真跑全部用例, 输出多指标报告。返回进程退出码。
 
     ``samples<=1``：单次跑，输出多指标报告 + 判错清单 + 按类目视图（与既有一致）。
     ``samples>1``（改造 3）：整套用例独立重跑 N 次，对每个聚合指标输出 ``mean ± 95% t-CI``。
@@ -289,7 +321,6 @@ async def run_baseline(
     # 这些 import 放在函数内（而非文件顶部）：只有「确认要真跑」时才加载重依赖，
     # 也让无 key 的纯清单路径（main 里的 print_cases）不必触碰 provider/分类器。
     from config.model_provider import create_chat_model
-    from agents.task_classification.task_classifier import TaskClassifier
     from evals.metrics import (
         EvalResult,
         build_report,
@@ -313,13 +344,19 @@ async def run_baseline(
 
     try:
         llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）；judge 同用
-        classifier = TaskClassifier(llm)
         # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
         full_registry = build_default_registry()
         subagents = build_default_subagent_registry()
     except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
-        print(f"[ERROR] 创建分类器/工具失败: {exc}", file=sys.stderr)
+        print(f"[ERROR] 创建模型/工具失败: {exc}", file=sys.stderr)
         return 2
+
+    # 并发口径如实标注（change evals-concurrent-runner D4）：并发下每条延迟含资源竞争，
+    # 不做任何「扣除竞争」的补偿估算（无法诚实计算）。延迟不在门禁集，故不影响回归判定。
+    if concurrency > 1:
+        print(f"[提示] 用例并发度 ={concurrency}；端到端延迟含并发资源竞争，"
+              f"**不可**与串行（--concurrency 1）跑出的历史数字直接比较。"
+              f"比率型指标不应受并发影响（若有系统性偏移属实现缺陷）。", file=sys.stderr)
 
     judge_fn = judge_response if judge else None  # 改造 4：开启时对回复做质量裁决
     if judge:
@@ -375,19 +412,17 @@ async def run_baseline(
 
     # ── 单次跑（默认，向后兼容）：报告不含 CI 列 ──────────────────────────────
     if samples <= 1:
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
-                                  judge_fn, run_and_capture_multiturn)
+        results = await _run_once(cases, llm, full_registry, subagents, run_and_capture,
+                                  judge_fn, run_and_capture_multiturn, concurrency=concurrency)
         dev_results, heldout_results = _split_results(cases, results)
 
         rep = build_report(dev_results)
         if dev_results:
             print(format_report(rep))
-            _print_by_intent(dev_results)
         if heldout_results:
             heldout_rep = build_report(heldout_results)
             _print_heldout_section(heldout_results, f"用例数: {len(heldout_results)}")
             print(format_report(heldout_rep))
-            _print_by_intent(heldout_results)
 
         if not dev_results:  # 纯 --heldout-only 且未要求基线/门禁：无 dev 侧收尾，直接返回
             return 0
@@ -404,8 +439,8 @@ async def run_baseline(
     n_heldout = len(cases) - n_dev
     for i in range(samples):
         print(f"[采样 {i + 1}/{samples}] 跑整套用例…", file=sys.stderr)
-        results = await _run_once(cases, classifier, llm, full_registry, subagents, run_and_capture,
-                                  judge_fn, run_and_capture_multiturn)
+        results = await _run_once(cases, llm, full_registry, subagents, run_and_capture,
+                                  judge_fn, run_and_capture_multiturn, concurrency=concurrency)
         dev_results, heldout_results = _split_results(cases, results)
         dev_reports.append(build_report(dev_results))  # 每次跑的聚合指标快照（dev 侧）
         if heldout_results:
@@ -454,8 +489,14 @@ def main() -> int:
         help=f"基线文件路径(改造 6)；默认 {BASELINE_FILE.name}(与本脚本同目录)",
     )
     parser.add_argument(
-        "--tolerance", type=float, default=0.20,
-        help="门禁容差(改造 6)；比率即百分点(0.20=20pp)，经实测半宽校准吸收 LLM 抖动；默认 0.20",
+        "--tolerance", type=float, default=0.30,
+        help="门禁容差(改造 6)；比率即百分点(0.30=30pp)，经实测半宽校准吸收 LLM 抖动；默认 0.30",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=DEFAULT_CONCURRENCY,
+        help=f"用例并发度(change evals-concurrent-runner)；默认 {DEFAULT_CONCURRENCY}。"
+             "1=串行基准路径(与并发化前等价，排障/对照用)。并发下延迟含资源竞争，"
+             "不可与串行历史数字直接比；比率型指标不应受影响",
     )
     parser.add_argument(
         "--include-heldout", action="store_true",
@@ -473,6 +514,10 @@ def main() -> int:
     if args.gate and args.update_baseline:
         print("[ERROR] --gate 与 --update-baseline 互斥，不能同时指定。", file=sys.stderr)
         return 2  # 2 = 用例/配置错误
+
+    if args.concurrency < 1:  # 0/负数无意义；不静默纠正为 1，坏参数要报出来
+        print(f"[ERROR] --concurrency 必须 ≥ 1（收到 {args.concurrency}）。", file=sys.stderr)
+        return 2
 
     if args.include_heldout and args.heldout_only:
         print("[ERROR] --include-heldout 与 --heldout-only 互斥，不能同时指定。", file=sys.stderr)
@@ -513,7 +558,7 @@ def main() -> int:
     if not _has_api_key():
         print(
             "\n[提示] 未检测到 API key(MODEL_PROVIDER 对应的 *_API_KEY 未配置)。\n"
-            "       无法产出准确率基线; 以下仅为用例清单。\n"
+            "       无法产出多指标报告; 以下仅为用例清单。\n"
             "       在 .env 配好后重跑: uv run python evals/run_evals.py",
             file=sys.stderr,
         )
@@ -525,6 +570,7 @@ def main() -> int:
         cases, samples=args.samples, judge=args.judge,
         gate=args.gate, update_baseline=args.update_baseline,
         baseline_path=args.baseline, tolerance=args.tolerance,
+        concurrency=args.concurrency,
     ))
 
 

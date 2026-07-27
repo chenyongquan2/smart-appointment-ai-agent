@@ -5,7 +5,7 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 ## Requirements
 ### Requirement: 评估用例集对齐真实意图口径
 
-评估集 `evals/cases.jsonl` SHALL 以 `输入 → 期望意图` 为用例,且 `expected_intent` MUST 取自真实分类器的 5 类口径之一:`appointment`、`query`、`pay`、`statistics`、`other`。用例集 SHALL 覆盖全部 5 类,并包含边界场景(多槽位、缺槽位追问、改约、与服务无关的输入)。
+评估集 `evals/cases.jsonl` SHALL 以 `输入 → 期望意图` 为用例,且 `expected_intent` MUST 取自数据集意图标签口径的 5 类之一:`appointment`、`query`、`pay`、`statistics`、`other`。该标签为**数据集构成元数据**（用于覆盖约束、按类分项分析与 dev/held-out 切分规则），SHALL NOT 被理解为对某个分类器组件的依赖。用例集 SHALL 覆盖全部 5 类,并包含边界场景(多槽位、缺槽位追问、改约、与服务无关的输入)。
 
 用例集 SHALL 划分为 **dev** 与 **held-out** 两个子集(集归属规则见「用例集 dev / held-out 切分」需求)。**dev 子集**的总量 SHALL 不少于 40 条,且每一类意图在 dev 子集中 SHALL 不少于 5 条(使按类目分项指标具备最低统计意义);**held-out 子集**总量 SHALL 不少于 10 条并至少覆盖 3 类意图。全集(dev + held-out)总量 SHALL 不少于 18 条(向后兼容既有下限)。
 
@@ -51,23 +51,9 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 - **WHEN** 一条用例同时提供了 `input` 与 `turns`(或两者皆缺)
 - **THEN** 运行器 SHALL 报错并指出行号,MUST NOT 静默猜测
 
-### Requirement: 意图分类准确率基线
-
-运行器 `evals/run_evals.py` SHALL 经 `config/model_provider` 实例化真实 `TaskClassifier`,对每条用例执行 `classify_task`,将结果与 `expected_intent` 比对,并 SHALL 输出总准确率、按类目分项准确率,以及逐条错误清单(输入 / 期望 / 实际)。通过的用例 SHALL NOT 逐条打印(成功静默)。
-
-#### Scenario: 产出基线
-
-- **WHEN** 在 API key 可用时运行 `uv run python evals/run_evals.py`
-- **THEN** 输出形如"意图准确率 X/N (P%)"的总览,并仅详列判错的用例
-
-#### Scenario: 缺少 API key 时优雅降级
-
-- **WHEN** 运行时检测不到可用模型/API key
-- **THEN** 运行器打印清晰提示并以非零退出码结束,不抛出未捕获异常崩溃
-
 ### Requirement: 工具调用为前瞻注解
 
-用例 MAY 携带 `expected_tools`（有序工具名列表）。自本能力起，评估运行器 SHALL 在用例提供 `expected_tools` 且本次捕获到 `actual_tools` 时，按**分档**计算工具调用质量并纳入多指标报告；当用例不含 `expected_tools` 或本次未捕获 `actual_tools` 时，相应档对该用例记为 N/A 而非计入对错。意图准确率的判定 SHALL NOT 受 `expected_tools` 影响。
+用例 MAY 携带 `expected_tools`（有序工具名列表）。自本能力起，评估运行器 SHALL 在用例提供 `expected_tools` 且本次捕获到 `actual_tools` 时，按**分档**计算工具调用质量并纳入多指标报告；当用例不含 `expected_tools` 或本次未捕获 `actual_tools` 时，相应档对该用例记为 N/A 而非计入对错。
 
 分档 SHALL 至少包含：
 
@@ -77,11 +63,6 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 - **完全匹配率（对照）**：保留「实际工具名集合 == 期望集合」的全有或全无判定作最严对照。
 
 每一档 MUST 在无可评估样本时显式标 N/A 并注明原因，MUST NOT 伪造分母或静默跳过。
-
-#### Scenario: expected_tools 不影响意图准确率
-
-- **WHEN** 计算意图分类准确率
-- **THEN** `expected_tools` 与 `expected_tool_args` 被忽略，不参与意图对错判定
 
 #### Scenario: 部分命中给部分分
 
@@ -110,12 +91,26 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 
 ### Requirement: 多指标评估报告
 
-评估运行器 `evals/run_evals.py` SHALL 在意图准确率之外，产出多指标报告，至少包含：工具调用正确率、槽位抽取完整率、端到端延迟（每条用例计时并汇总）。对缺少对应期望字段的用例，相应指标 MUST 显式记为 N/A 并在报告中注明，MUST NOT 静默跳过或伪造分母。报告 SHALL 沿用既有约定：通过用例不逐条打印（成功静默），仅详列判错/异常用例。
+评估运行器 `evals/run_evals.py` SHALL 产出多指标报告，至少包含：工具调用正确率、槽位抽取完整率、端到端延迟。端到端延迟 SHALL 以**端到端真跑**（驱动 `AgentLoop` 至最终回复）的每条用例耗时计时并汇总，MUST NOT 以任何单一组件的调用耗时冒充端到端口径。
+
+并发执行时，每条用例的耗时含资源竞争，报告 SHALL 注明该延迟为并发口径、不可与串行跑的历史数字直接比较；实现 MUST NOT 对竞争耗时做任何"扣除/补偿"式的估算修正（无法诚实计算）。延迟不在门禁集内，故该口径变化 SHALL NOT 影响回归判定。
+
+对缺少对应期望字段的用例，相应指标 MUST 显式记为 N/A 并在报告中注明，MUST NOT 静默跳过或伪造分母。报告 SHALL 沿用既有约定：通过用例不逐条打印（成功静默），仅详列判错/异常用例。
 
 #### Scenario: 产出多指标总览
 
 - **WHEN** 在 API key 可用时运行 `uv run python evals/run_evals.py`
-- **THEN** 报告输出意图准确率、工具调用正确率、槽位抽取完整率与端到端延迟的总览，并仅详列判错用例
+- **THEN** 报告输出工具调用正确率、槽位抽取完整率与端到端延迟的总览，并仅详列判错用例
+
+#### Scenario: 延迟为端到端真跑口径
+
+- **WHEN** 报告输出端到端延迟
+- **THEN** 其计时覆盖该用例端到端真跑全程（多轮用例为跨轮累计），报告注明口径
+
+#### Scenario: 并发跑的延迟标注竞争口径
+
+- **WHEN** 以并发度大于 1 运行并输出延迟指标
+- **THEN** 报告注明该延迟含并发资源竞争、不可与串行历史数字直接比较
 
 #### Scenario: 缺期望字段的指标显式标 N/A
 
@@ -129,13 +124,13 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 
 ### Requirement: 评估运行器真跑端到端 AgentLoop 并采集真实工具调用
 
-评估运行器 `evals/run_evals.py` SHALL 在意图分类之外，对每条用例真跑生产路径的 `AgentLoop`（主 Agent → `delegate` → 子 Agent），并从 trace 采集该次运行实际触发的工具调用，填入 `EvalResult.actual_tools`，使工具调用正确率从恒 N/A 翻成真实数字。
+评估运行器 `evals/run_evals.py` SHALL 对每条用例真跑生产路径的 `AgentLoop`（主 Agent → `delegate` → 子 Agent），并从 trace 采集该次运行实际触发的工具调用，填入 `EvalResult.actual_tools`，使工具调用正确率从恒 N/A 翻成真实数字。
 
 运行器 SHALL 自行构造一个带真 `Tracer` 与 `InMemoryExporter` 的主 loop（经 `build_default_registry()` + `build_default_subagent_registry()` + `build_delegate_tool()`），MUST NOT 复用生产路径中默认走 `NoopTracer` 的全局 `AgentLoop` 单例。
 
 工具调用采集 SHALL 以「每条用例一个独立 exporter 沙盒」为边界：收集该 exporter 内所有 span（含子 Agent 各自的 root span）的 `tool_call` 事件，按 `(span.start, 事件顺序)` 还原为有序序列。采集 MUST NOT 仅按单一 `trace_id` 过滤（子 Agent 自开 root 会漏采）。
 
-`EvalResult.actual_tools` SHALL 采全为有序的 `{name, args}` 序列（name 与 args 一并保留）；但本次工具调用正确率指标 SHALL 仍只做工具名集合（`set`）比较，参数级与序列级比对不在本次范围。
+`EvalResult.actual_tools` SHALL 采全为有序的 `{name, args}` 序列（name 与 args 一并保留）。
 
 真跑路径 SHALL 仅在 API key 可用时启用；无 key 时 MUST 沿用既有优雅降级（提示 + 非零退出，不崩）。
 
@@ -152,7 +147,7 @@ TBD - created by archiving change phase-0-evals-baseline. Update Purpose after a
 #### Scenario: 采全比松
 
 - **WHEN** 采集某次运行的实际工具调用
-- **THEN** `actual_tools` 保留每次调用的 `name` 与 `args` 且有序，但工具调用正确率仅按工具名集合比对（不查参数、不校验顺序）
+- **THEN** `actual_tools` 保留每次调用的 `name` 与 `args` 且有序，各分档按其口径比对（name 集合 / 参数级 / 序列级）
 
 #### Scenario: 无 key 时不真跑
 
@@ -236,11 +231,11 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 
 **基线写入**：运行器 SHALL 经 `--update-baseline` 把本次跑分落盘为基线文件（默认 `evals/baseline.json`，可经 `--baseline <path>` 覆盖）。基线 SHALL 记录**全部非 N/A** 指标的值与「是否延迟型」标志（完整快照，供历史与参照），以及元信息（用例数、采样次数、schema 版本）；N/A 指标 MUST NOT 写入基线（不伪造可比项）。基线为人类可读 JSON、可进 git。
 
-**门禁守的指标子集**：门禁 SHALL 只对一个**显式常量**集合 `GATED_METRICS` 判回归，本能力定为 `{意图分类准确率, 工具调用-F1, 槽位抽取完整率}`（均为比率型）。工具调用其余子指标（召回/精确/参数级 F1/序列/完全匹配）、`端到端延迟`、`回复质量通过率` SHALL **不**纳入门禁——延迟环境相关易抖、回复质量来自未校准 judge 不可当真值——它们仍照常打印但 MUST NOT 触发非零退出。
+**门禁守的指标子集**：门禁 SHALL 只对一个**显式常量**集合 `GATED_METRICS` 判回归，本能力定为 `{工具调用-F1, 槽位抽取完整率}`（均为比率型）。工具调用其余子指标（召回/精确/参数级 F1/序列/完全匹配）、`端到端延迟`、`回复质量通过率` SHALL **不**纳入门禁——延迟环境相关易抖、回复质量来自未校准 judge 不可当真值——它们仍照常打印但 MUST NOT 触发非零退出。
 
-**门禁比对**：运行器 SHALL 经 `--gate` 开启门禁——跑完后对 `GATED_METRICS` 逐项与基线比对，比率型回归判定为 `当前 < 基线 − 容差`。容差经 `--tolerance T` 配置，用于吸收 LLM 的 run-to-run 非确定性抖动；其默认值 SHALL 经基线生成时实测的 95% t-CI 半宽校准以覆盖观测抖动（本能力定为 `0.20`，依据见 README），MUST NOT 是无凭据的魔数。任一被守指标判回归时，运行器 SHALL 以**退出码 `3`** 结束；无回归则维持既有 `0`。退出码 `3` MUST 区别于既有的 `1`（文件缺失/缺基线）与 `2`（用例非法/无 key 降级）。比对纯函数 MAY 兼容延迟型方向（`当前 > 基线 + 容差`）以备将来，但本能力的门禁集不含延迟指标。
+**门禁比对**：运行器 SHALL 经 `--gate` 开启门禁——跑完后对 `GATED_METRICS` 逐项与基线比对，比率型回归判定为 `当前 < 基线 − 容差`。容差经 `--tolerance T` 配置，用于吸收 LLM 的 run-to-run 非确定性抖动；其默认值 SHALL 经基线生成时实测的 95% t-CI 半宽校准以覆盖**全部**被守指标的观测半宽，MUST NOT 是无凭据的魔数。重定基线时 SHALL 复核；实测半宽超出当前容差时 SHALL 按实测上调并记录依据，MUST NOT 沉默沿用旧值。本能力重定实测（41 条 dev × 3，干净跑）：工具 F1 ±5.7pp、槽位抽取完整率 ±28.7pp，故默认容差自 `0.20` 上调为 **`0.30`**（依据与代价见 README）。任一被守指标判回归时，运行器 SHALL 以**退出码 `3`** 结束；无回归则维持既有 `0`。退出码 `3` MUST 区别于既有的 `1`（文件缺失/缺基线）与 `2`（用例非法/无 key 降级）。比对纯函数 MAY 兼容延迟型方向（`当前 > 基线 + 容差`）以备将来，但本能力的门禁集不含延迟指标。
 
-**诚实的比对语义**：被守指标在基线有、但当前为 N/A（或当前有、基线无）时 SHALL 标为「无法比对（skipped）」，MUST NOT 据此判失败或判通过。`槽位抽取完整率` 在 `actual_slots` 接线、且有用例标注 `expected_slots` 后 SHALL 产出真值并参与门禁——其前置（采集还原规则、用例标注口径）由本能力另列的两条需求约束；当某次跑因全部相关用例真跑失败而该指标为 N/A 时，仍按上述 skipped 语义处理。报告 SHALL 如实标注门禁**当前实守**的指标数（接线后为 3 项：意图分类准确率、工具调用-F1、槽位抽取完整率），MUST NOT 把恒跳过或实际未守的指标呈现为「已守住」，也 MUST NOT 把已接线指标继续标注为「结构性恒 N/A」。非门禁集中、基线有记录的指标 SHALL 仅作信息提示，不参与 pass/fail。
+**诚实的比对语义**：被守指标在基线有、但当前为 N/A（或当前有、基线无）时 SHALL 标为「无法比对（skipped）」，MUST NOT 据此判失败或判通过。`槽位抽取完整率` 在 `actual_slots` 接线、且有用例标注 `expected_slots` 后 SHALL 产出真值并参与门禁——其前置（采集还原规则、用例标注口径）由本能力另列的两条需求约束；当某次跑因全部相关用例真跑失败而该指标为 N/A 时，仍按上述 skipped 语义处理。报告 SHALL 如实标注门禁**当前实守**的指标数（本能力为 2 项：工具调用-F1、槽位抽取完整率），MUST NOT 把恒跳过或实际未守的指标呈现为「已守住」。非门禁集中、基线有记录的指标 SHALL 仅作信息提示，不参与 pass/fail。
 
 **纯函数与解耦**：基线序列化（报告/聚合 ↔ 基线 dict）与门禁裁决 SHALL 实现为纯函数（吃当前报告 + 基线 dict + 容差 → 逐指标裁决与整体 pass/fail，不触网、不读写文件），与运行器的 IO（读写 JSON、设置退出码）解耦，可离线确定性单测。
 
@@ -268,10 +263,10 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 - **WHEN** 以 `--gate` 运行，某被守指标当前值较基线下降但幅度不超过容差
 - **THEN** 运行器不判该指标回归，且（在无其它回归时）以退出码 `0` 结束
 
-#### Scenario: 槽位抽取完整率接线后参与门禁
+#### Scenario: 槽位抽取完整率参与门禁
 
 - **WHEN** `actual_slots` 已接线、用例已标 `expected_slots`，以 `--gate` 运行且槽位完整率较基线回归超过容差
-- **THEN** 运行器将 `槽位抽取完整率` 判为回归并以退出码 `3` 结束，报告显示门禁实守 3 项
+- **THEN** 运行器将 `槽位抽取完整率` 判为回归并以退出码 `3` 结束，报告显示门禁实守 2 项
 
 #### Scenario: 基线有当前 N/A 的被守指标标为无法比对
 
@@ -361,23 +356,23 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 
 ### Requirement: 预约类用例策展以稳定触发工具链使槽位完整率非 N/A
 
-为使门禁稳定实守 3 项（意图分类准确率、工具调用-F1、槽位抽取完整率），评估用例 `evals/cases.jsonl` 中**带 `expected_slots` 的预约（appointment）类用例** SHALL 以**信息齐全的祈使式单轮输入**为主——即在单轮内同时给出足以触发工具链的关键信息（至少含时间与项目，并视用例补全 duration / technician / gender / preference 等），且表达明确的办理/下单意图，使保守的预约子 Agent（[harness/subagents/appointment.py](../../../harness/subagents/appointment.py) 系统提示「信息不足则追问、不臆测下单」）倾向**直接调用工具办理**而非反问澄清，从而让 `actual_slots` 稳定从工具调用 args 还原出真值。
+为使门禁稳定实守 2 项（工具调用-F1、槽位抽取完整率），评估用例 `evals/cases.jsonl` 中**带 `expected_slots` 的预约（appointment）类用例** SHALL 以**信息齐全的祈使式单轮输入**为主——即在单轮内同时给出足以触发工具链的关键信息（至少含时间与项目，并视用例补全 duration / technician / gender / preference 等），且表达明确的办理/下单意图，使保守的预约子 Agent（[harness/subagents/appointment.py](../../../harness/subagents/appointment.py) 系统提示「信息不足则追问、不臆测下单」）倾向**直接调用工具办理**而非反问澄清，从而让 `actual_slots` 稳定从工具调用 args 还原出真值。
 
 带 `expected_slots` 的此类用例 SHALL 在数量上足够（多条独立用例），使「某次跑中所有相关用例都未触发任何工具」这一导致 `槽位抽取完整率` 整体 N/A 的情形发生概率足够低；在常规门禁跑（含 `--samples N`）下，`槽位抽取完整率` SHALL 稳定产出真值并被门禁实守。
 
 本需求 SHALL NOT 改变 `槽位抽取完整率` 的「存在性口径」（只看期望槽位键是否被抽出、不比精确值），SHALL NOT 改变子 Agent 行为、系统提示或任何 `services/` / `harness/runtime` 业务逻辑——唯一杠杆是用例（数据集）本身。
 
-诚实边界 SHALL 保留：本需求降低而非消除回落概率；当某次跑因 LLM 非确定性致全部相关用例罕见地均未触发工具时，`槽位抽取完整率` 仍按既有 skipped 语义处理、报告如实给出当次实守项数，MUST NOT 把「稳定守 3 项」表述为「绝对永不回落」。
+诚实边界 SHALL 保留：本需求降低而非消除回落概率；当某次跑因 LLM 非确定性致全部相关用例罕见地均未触发工具时，`槽位抽取完整率` 仍按既有 skipped 语义处理、报告如实给出当次实守项数，MUST NOT 把「稳定守 2 项」表述为「绝对永不回落」。
 
 #### Scenario: 信息齐全的祈使式预约用例具有可观触发概率
 
 - **WHEN** 在 API key 可用时对一条信息齐全的祈使式预约用例（精确时间 + 项目 + 点名具体技师等）多次真跑 `AgentLoop`
 - **THEN** 该用例在相当比例的跑次中触发领域工具（如 `find_technician` / `check_availability`），`actual_slots` 从工具调用 args 还原出非 None 的槽位 dict 并计入 `槽位抽取完整率`；单条触发为 LLM 非确定行为、不要求恒触发，故策展靠**足量此类用例的冗余**而非任何单条的确定性
 
-#### Scenario: 常规门禁跑稳定实守 3 项
+#### Scenario: 常规门禁跑稳定实守 2 项
 
 - **WHEN** 以 `uv run python evals/run_evals.py --gate --samples 3` 运行
-- **THEN** `槽位抽取完整率` 产出真值（非 N/A），门禁报告如实标注当次实守 3 项（意图分类准确率、工具调用-F1、槽位抽取完整率）
+- **THEN** `槽位抽取完整率` 产出真值（非 N/A），门禁报告如实标注当次实守 2 项（工具调用-F1、槽位抽取完整率）
 
 #### Scenario: 存在性口径与子 Agent 行为不变
 
@@ -387,7 +382,7 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 #### Scenario: 罕见全未触发时诚实回落
 
 - **WHEN** 某次跑因 LLM 非确定性致全部带 `expected_slots` 的预约用例均未触发任何工具
-- **THEN** `槽位抽取完整率` 按既有 skipped 语义标「无法比对」，报告如实给出当次实守项数（回落为 2），不据此判失败也不夸大为「已守 3 项」
+- **THEN** `槽位抽取完整率` 按既有 skipped 语义标「无法比对」，报告如实给出当次实守项数（回落为 1），不据此判失败也不夸大为「已守 2 项」
 
 ### Requirement: 多轮对话用例的端到端轨迹评估
 
@@ -398,7 +393,6 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 - **历史累积**:对 `turns` 中第 i 轮,运行器 SHALL 调用 `loop.run(turn_i, history=history)`,其中 `history` 为前 i-1 轮的「用户话语 + agent 最终回复」消息序列;每轮跑完后 SHALL 把本轮用户话语与 agent 最终回复追加进 `history`。该口径 SHALL 与生产 `chat_handler` 的「最近 N 轮窗口仅含 user/assistant 对」一致——轮间不回灌中间工具消息。
 - **跨轮采集**:运行器 SHALL 在**同一个 exporter 沙盒**内跑完所有轮次,再从该沙盒的全部 span(含各轮、各子 Agent 的 root span)还原**跨所有轮次**的有序工具序列,填入 `EvalResult.actual_tools`;`actual_slots` 据此跨轮还原(沿用既有「跨工具合并 / last-write-wins / 哨兵剔除」规则)。采集 MUST NOT 仅取末轮或仅按单一 `trace_id` 过滤。
 - **最终回复**:多轮用例喂 LLM-judge 的回复 SHALL 取**末轮**的 agent 最终回复(剥离 `[REPLY]` 前缀)。
-- **意图判定**:多轮用例的意图分类 SHALL 对 **首轮**话语跑 `classify_task`,与 `expected_intent` 比对;意图准确率口径不因多轮而改变,且 MUST NOT 因引入多轮而重构单轮分类器。
 
 多轮采集 SHALL 实现为可注入 LLM 的形式(可用脚本化 fake LLM 离线确定性单测),与单轮采集函数共享既有的沙盒构造与工具序列还原逻辑,MUST NOT 复制一份独立的工具采集实现。单轮用例的既有评估行为 SHALL 完全不变(向后兼容)。
 
@@ -412,15 +406,10 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 - **WHEN** 多轮用例的工具调用分散在不同轮次(如首轮 `find_technician`、末轮 `create_appointment`)
 - **THEN** `actual_tools` SHALL 包含跨所有轮次按时序还原的有序工具序列,`actual_slots` SHALL 跨轮合并;MUST NOT 只反映单一轮次
 
-#### Scenario: 多轮意图对首轮判定
-
-- **WHEN** 多轮用例的首轮为开场预约请求、后续轮为补全信息
-- **THEN** 意图分类对首轮话语跑 `classify_task` 并与 `expected_intent` 比对
-
 #### Scenario: 单轮行为向后兼容
 
 - **WHEN** 运行器评估一条既有单轮 `input` 用例
-- **THEN** 其分类、工具/槽位采集、judge 与延迟口径 SHALL 与本变更前完全一致
+- **THEN** 其工具/槽位采集、judge 与延迟口径 SHALL 与本变更后的单轮约定完全一致
 
 #### Scenario: 多轮采集可离线确定性单测
 
@@ -433,7 +422,7 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 
 运行器 `evals/run_evals.py` SHALL 满足:
 
-- **默认只评 dev**:不带 held-out 开关时,运行器 SHALL 只加载并评估 dev 子集;意图准确率、工具/槽位指标、`--update-baseline`、`--gate` 的口径 SHALL 全部基于 dev 子集,与本变更前的默认行为等价(held-out 用例被排除,不影响任何既有数字与门禁)。
+- **默认只评 dev**:不带 held-out 开关时,运行器 SHALL 只加载并评估 dev 子集;工具/槽位等各项指标、`--update-baseline`、`--gate` 的口径 SHALL 全部基于 dev 子集,与本变更前的默认行为等价(held-out 用例被排除,不影响任何既有数字与门禁)。
 - **按需评 held-out**:提供显式开关(如 `--include-heldout` 或 `--heldout-only`)时,运行器 SHALL 评估 held-out 子集并**单独分集呈现**其指标,MUST NOT 把 held-out 结果混入 dev 基线或触发门禁的非零退出。
 - **分集透明**:报告 SHALL 标明各指标是在 dev 还是 held-out 子集上计算、以及各子集用例数,MUST NOT 让读者误以为 held-out 参与了门禁。
 
@@ -503,3 +492,34 @@ judge 默认关闭，经 `--judge` 显式开启（judge 为每条用例的额外
 - **WHEN** 运行 `--gate`
 - **THEN** 任务成功率照常打印，但 MUST NOT 参与回归判定、MUST NOT 触发非零退出（不在 `GATED_METRICS` 内）
 
+### Requirement: 用例并发执行
+评估运行器 SHALL 支持以受限并发跑用例：并发度经 `--concurrency N` 配置（默认 5），实现 SHALL 用 `asyncio` 协程 + 信号量限流，MUST NOT 无上限并发。
+
+`--concurrency 1` SHALL 与并发化之前的逐条串行**行为等价**（用作排障与对照的基准路径）。
+
+结果顺序 MUST 与输入用例顺序一致（下游 dev/held-out 拆分依赖同序同长），MUST NOT 按完成先后返回。
+
+失败隔离 SHALL 保持既有语义：单条用例真跑异常记 N/A，MUST NOT 取消或影响其它并发中的用例。
+
+#### Scenario: 并发结果保持输入顺序
+- **WHEN** 以 `--concurrency 5` 跑一组用例，且各用例完成先后与输入顺序不同
+- **THEN** 返回的结果列表与输入用例列表同序同长
+
+#### Scenario: 并发上限生效
+- **WHEN** 以 `--concurrency N` 运行且待跑用例数大于 N
+- **THEN** 任一时刻在途用例数不超过 N，其余排队
+
+#### Scenario: 单条失败不影响其它并发用例
+- **WHEN** 并发跑中某条用例真跑抛异常
+- **THEN** 该条工具/槽位/质量记 N/A，其余用例照常跑完并产出结果
+
+#### Scenario: concurrency=1 等价串行
+- **WHEN** 以 `--concurrency 1` 运行
+- **THEN** 执行为逐条串行，行为与并发化之前完全一致
+
+### Requirement: 并发不得改变比率型指标
+并发执行 SHALL NOT 对比率型指标（工具调用各档、槽位抽取完整率、任务成功率）产生系统性偏移。落地后 SHALL 做一次「`--concurrency 1` vs 并发」的对照跑；若比率型指标偏移超出既有实测 t-CI 半宽，MUST 判为实现缺陷（DB 事务交错、限流致失败增多等）并修复，MUST NOT 直接接受为新常态并据此重定基线。
+
+#### Scenario: 并发与串行的比率型指标一致
+- **WHEN** 同一用例集分别以 `--concurrency 1` 与默认并发各跑一次
+- **THEN** 比率型指标的差异不超过既有实测半宽；超出则判实现缺陷

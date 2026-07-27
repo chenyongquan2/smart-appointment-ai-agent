@@ -1,14 +1,16 @@
 """评估多指标计算（Phase 6 评估闭环）。
 
 纯函数 + 数据类，**不触网、不依赖真实 provider**，故可离线确定性单测。
-``evals/run_evals.py`` 负责跑真实分类器把每条用例填成 :class:`EvalResult`，再交由
+``evals/run_evals.py`` 负责端到端真跑把每条用例填成 :class:`EvalResult`，再交由
 本模块汇总为多指标报告。
 
 指标（design.md D4：缺数据的指标显式标 N/A，不伪造分母、不静默跳过）：
-- 意图分类准确率
 - 工具调用正确率（仅当用例含 ``expected_tools`` 且本次实际捕获到 ``actual_tools``）
 - 槽位抽取完整率（仅当用例含 ``expected_slots`` 且捕获到 ``actual_slots``）
-- 端到端延迟（对有计时的用例汇总 avg / p50 / max）
+- 端到端延迟（对有计时的用例汇总 avg / p50 / max；口径=端到端真跑全程耗时）
+
+（change retire-legacy-intent-classifier）意图分类准确率已退役：旧分类器退出主服务
+链路后该指标度量的是不服务用户的组件；意图理解由工具选择体现，被工具级指标覆盖。
 """
 
 from __future__ import annotations
@@ -45,11 +47,9 @@ __all__ = [
 class EvalResult:
     """单条用例的评估结果。未评估的维度留 ``None``，由报告据此标 N/A。"""
 
-    # expected_* = 用例里写死的「标准答案」；actual_* = 本次跑分类器/loop 得到的「实际值」。
+    # expected_* = 用例里写死的「标准答案」；actual_* = 本次端到端真跑得到的「实际值」。
     # 各指标就是把这两边对比算占比。留 None 的维度表示「本次没测它」→ 报告会标 N/A 而非算 0。
     input: str
-    expected_intent: str
-    actual_intent: Optional[str] = None       # 实际分类结果；None=未分类
     expected_tools: Optional[list[str]] = None  # 期望工具名（顺序无关）；标准答案侧仍只记名字
     # actual_tools「采全」：有序的 {"name", "args"} 列表（name 与 args 一并保留、保序）。
     # None=本次没端到端跑 loop，拿不到实际工具。
@@ -84,18 +84,6 @@ class Metric:
     na: bool = False               # True=没有可评估样本，显式标 N/A（见 note 里的原因）
     note: str = ""
     extra: dict[str, Any] = field(default_factory=dict)  # 指标专属附加数据（如延迟的 p50/max）
-
-
-def intent_accuracy(results: list[EvalResult]) -> Metric:
-    """意图分类准确率：actual_intent == expected_intent 的占比。"""
-    # 「分母只含可评估样本」的范式（四个指标都遵循它）：先筛出真正测过这维度的用例，
-    # 没有就标 N/A——绝不把「没测的」也算进分母伪造出一个虚低/虚高的准确率。
-    eligible = [r for r in results if r.actual_intent is not None]
-    if not eligible:
-        return Metric("意图分类准确率", na=True, note="无已分类用例")
-    correct = sum(1 for r in eligible if r.actual_intent == r.expected_intent)
-    total = len(eligible)
-    return Metric("意图分类准确率", value=correct / total, numerator=correct, denominator=total)
 
 
 def _tool_eligible(results: list[EvalResult]) -> list[EvalResult]:
@@ -445,7 +433,6 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
     # 工具调用分档（改造 2）：召回/精确/F1（颗粒度）→ 参数级F1、序列正确率（严格度）
     # → 完全匹配率（全有或全无对照），与宽松召回并列，一眼看出差距。
     metrics = [
-        intent_accuracy(results),
         *tool_call_recall_precision_f1(results),
         tool_call_param_f1(results),
         tool_call_sequence_correctness(results),
@@ -455,13 +442,7 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
         task_success_rate(results),  # 任务成功率（系统级/业务级，change evals-task-success-rate）
         latency_summary(results),
     ]
-    # 单独拎出「分类判错」的用例，便于报告详列哪条错、错成了啥（成功的不展开 → 成功静默）。
-    errors = [
-        r
-        for r in results
-        if r.actual_intent is not None and r.actual_intent != r.expected_intent
-    ]
-    return {"metrics": metrics, "errors": errors, "total": len(results)}
+    return {"metrics": metrics, "total": len(results)}
 
 
 def _fmt_metric(m: Metric) -> str:
@@ -490,18 +471,10 @@ def _fmt_metric(m: Metric) -> str:
 
 
 def format_report(report: dict[str, Any]) -> str:
-    """渲染为文本：多指标总览 + 仅详列判错用例（成功静默）。"""
+    """渲染为文本：多指标总览（成功静默，异常/N-A 原因已随各指标行给出）。"""
     lines = [f"\n评估多指标报告（共 {report['total']} 条用例）:"]
     for m in report["metrics"]:
         lines.append(_fmt_metric(m))
-    errors = report["errors"]
-    if errors:
-        lines.append(f"\n意图判错 {len(errors)} 条:")
-        for r in errors:
-            lines.append(f"  - 输入: {r.input}")
-            lines.append(f"    期望: {r.expected_intent}  实际: {r.actual_intent}")
-    else:
-        lines.append("\n意图全部判对。")
     return "\n".join(lines)
 
 
@@ -642,10 +615,9 @@ def format_multisample_report(
 # - 容差吸收 LLM 的 run-to-run 抖动：比率回归 ⟺ 当前 < 基线 − 容差。
 # ════════════════════════════════════════════════════════════════════════════
 
-# 门禁只守的指标子集（显式常量）。槽位当前结构性恒 N/A（actual_slots 未接线、
-# 无用例标 expected_slots），列入是前瞻——接上即自动生效；今天恒被标 skipped。
+# 门禁只守的指标子集（显式常量）。意图分类准确率已随旧分类器退役
+# （change retire-legacy-intent-classifier）：意图理解由工具选择体现，被工具级指标覆盖。
 GATED_METRICS: tuple[str, ...] = (
-    "意图分类准确率",
     "工具调用-F1",
     "槽位抽取完整率",
 )

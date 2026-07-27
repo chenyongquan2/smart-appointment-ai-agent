@@ -17,7 +17,7 @@ from evals.metrics import (
 def _r(expected_outcome, outcomes):
     """构造一条标了 expected_outcome、带 actual_tool_outcomes 的用例。"""
     return EvalResult(
-        "in", "appointment", actual_intent="appointment",
+        "in",
         expected_outcome=expected_outcome, actual_tool_outcomes=outcomes,
     )
 
@@ -59,7 +59,7 @@ def test_success_when_any_same_named_outcome_ok():
 
 def test_na_when_no_case_annotated():
     """无用例标 expected_outcome → 显式 N/A，不伪造分母。"""
-    r = EvalResult("in", "pay", actual_intent="pay", actual_tool_outcomes=[{"name": "x", "ok": True}])
+    r = EvalResult("in", actual_tool_outcomes=[{"name": "x", "ok": True}])
     m = task_success_rate([r])
     assert m.na is True
     assert m.value is None
@@ -67,7 +67,7 @@ def test_na_when_no_case_annotated():
 
 def test_na_when_not_captured():
     """标了 expected_outcome 但未真跑捕获(actual_tool_outcomes=None) → 不计入。"""
-    r = EvalResult("in", "appointment", expected_outcome="create_appointment", actual_tool_outcomes=None)
+    r = EvalResult("in", expected_outcome="create_appointment", actual_tool_outcomes=None)
     assert task_success_rate([r]).na is True
 
 
@@ -77,7 +77,7 @@ def test_macro_average_mixed():
         _r("create_appointment", [{"name": "create_appointment", "ok": True}]),
         _r("search_knowledge", [{"name": "search_knowledge", "ok": True}]),
         _r("create_appointment", [{"name": "find_technician", "ok": True}]),  # 未达终态
-        EvalResult("in", "other", actual_intent="other", actual_tool_outcomes=[]),  # 未标注
+        EvalResult("in", actual_tool_outcomes=[]),  # 未标注
     ]
     m = task_success_rate(rs)
     assert m.numerator == 2 and m.denominator == 3

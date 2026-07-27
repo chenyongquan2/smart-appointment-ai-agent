@@ -134,7 +134,6 @@ def fake_llm_env(monkeypatch):
         return FakeChatModel()
 
     for mod in (
-        "agents.task_classification_agent",
         "agents.consultant_agent",
         "agents.appointment_agent",
         "agents.user_behavior_agent",

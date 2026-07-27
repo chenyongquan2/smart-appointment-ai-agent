@@ -66,3 +66,7 @@ Thumbs.db
 .claude/scheduled_tasks.lock
 
 xiaohongshu/*
+
+# 个人求职材料（不入库）
+简历.md
+面试准备-Agent项目叙事.md

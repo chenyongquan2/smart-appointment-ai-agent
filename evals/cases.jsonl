@@ -1,5 +1,5 @@
 // 评估用例集 — Phase 0 回归基线
-// expected_intent 口径来自真实分类器 agents/task_classification/task_classifier.py:
+// expected_intent 为数据集意图标签（纯元数据：构成约束/按类分析/切分规则，不对应分类器组件）:
 //   appointment(预约) / query(查询) / pay(支付) / statistics(统计) / other(其他)
 // expected_tools 为期望工具名（其顺序同时驱动集合/部分给分/序列三种判法）。
 // expected_tool_args（可选，改造 2）: {工具名: {稳定键: 值}}——只标可确定性校验的稳定键
