@@ -24,8 +24,8 @@
 - [x] 3.3 DB 新增 `channel_session` 映射表（`channel / scope / external_id / session_id / created_at`，`(channel, external_id)` 唯一索引）与 Repository；会话键按 **`root_id → message_id`** 解析（依 3.2 实测；`thread_id` 不参与取键，只记日志），作用域 `reply`（默认）/ `chat`，session_id 命名 `feishu:{解析后的键}`
 - [x] 3.4 实现 gateway：事件解析（仅处理 @bot 文本消息；**@判定比对 `mentions[].id.open_id` 与机器人自身 open_id**——不可用 `mentioned_type=="bot"`（群内有其它机器人会误判）或 `name` 匹配（改名即失效），机器人 open_id 启动时取一次）、event_id 内存 TTL 去重（默认 5 分钟 + 容量上限 LRU；**理由是防重复下单，不是性能优化**）、会话键解析、取 `sender.sender_id.open_id` 作 user_id（`sender_id.user_id` 实测不下发，不可依赖）、提交任务 → 发用户可见 ack（**必须用 reply**——`reply` 作用域依赖回复链，ack 挂进链里才能让用户回复 ack 时仍收敛到同一 session）→ 事件回调立即返回（不 await 任务）
 - [x] 3.5 实现 delivery：终态回调统一出口，成功/失败/超时/guardrail 耗尽/忙碌拒绝五种终态文案投递回原会话，投递失败重试 2 次 + 结构化错误日志（绝不静默）；超时文案含副作用提示（「若已产生预约请勿重复操作」），且系统不自动重试
-- [ ] 3.6 实现 consumer：lark-oapi 长连接订阅 `im.message.receive_v1`，在 FastAPI lifespan 启动、受 `FEISHU_ENABLED` 控制（默认 false）。**MUST 用 `await client._connect()` + 另起 `_ping_loop()` task，不可调 SDK 的 `start()`**——后者内部是 `loop.run_until_complete`，在已有运行中事件循环的 lifespan 里会抛 "loop is already running"（见 design D10）。连接状态结构化日志，启动时权限自检并明确报错
-- [ ] 3.7 channel 单测（fake 飞书 client）：@判定（含群内其它机器人被 @ 时忽略）、event 去重幂等、去重表 TTL/容量不无界、**会话键解析（首条取 `message_id`、回复取 `root_id`、带 `thread_id` 时仍取 `root_id`、`chat` 作用域取 `chat_id`）**、同会话共享/跨会话隔离、user_id 随任务传递、协议 ack 不阻塞、用户 ack 以 reply 发出、五种终态均有投递、投递失败重试
+- [x] 3.6 实现 consumer：lark-oapi 长连接订阅 `im.message.receive_v1`，在 FastAPI lifespan 启动、受 `FEISHU_ENABLED` 控制（默认 false）。**MUST 用 `await client._connect()` + 另起 `_ping_loop()` task，不可调 SDK 的 `start()`**——后者内部是 `loop.run_until_complete`，在已有运行中事件循环的 lifespan 里会抛 "loop is already running"（见 design D10）。连接状态结构化日志，启动时权限自检并明确报错
+- [x] 3.7 channel 单测（fake 飞书 client）：@判定（含群内其它机器人被 @ 时忽略）、event 去重幂等、去重表 TTL/容量不无界、**会话键解析（首条取 `message_id`、回复取 `root_id`、带 `thread_id` 时仍取 `root_id`、`chat` 作用域取 `chat_id`）**、同会话共享/跨会话隔离、user_id 随任务传递、协议 ack 不阻塞、用户 ack 以 reply 发出、五种终态均有投递、投递失败重试
 
 ## 4. 端到端验证与收尾
 

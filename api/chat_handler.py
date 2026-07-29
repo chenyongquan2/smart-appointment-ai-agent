@@ -262,6 +262,11 @@ _EXECUTOR_ENABLED = os.getenv("EXECUTOR_ENABLED", "true").strip().lower() not in
 }
 
 
+# 供组合根（``app.py``）给 Channel 接线用。Channel MUST NOT 自建 ``DatabaseRouter``——
+# 否则会多出一套连接与一份独立的内存会话缓存，两边各自记一半状态。
+channel_sessions = _db.channel_sessions
+
+
 def chat_stream(
     user_input: str,
     session_id: str,
