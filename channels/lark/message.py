@@ -20,6 +20,8 @@ class IncomingMessage:
         message_id: 本条消息 id。
         chat_id: 群 id。
         chat_type: ``group`` / ``p2p``。
+        message_type: 消息类型（``text`` / ``post`` / ``image`` …）。非 ``text`` 的消息本期
+            不处理，但仍要**回一句提示**而不是静默——用户 @ 了机器人却毫无反应等同于坏了。
         text: 已剥离 @ 占位符的正文。
         sender_open_id: 发送者 open_id → 作 ``user_id``，使长期偏好按人隔离。
         root_id: 回复链根消息 id；**首条消息没有这个字段**。
@@ -34,6 +36,7 @@ class IncomingMessage:
     chat_id: str
     chat_type: str
     text: str
+    message_type: str = "text"
     sender_open_id: Optional[str] = None
     root_id: Optional[str] = None
     parent_id: Optional[str] = None
