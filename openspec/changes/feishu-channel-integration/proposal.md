@@ -8,7 +8,8 @@
 
 - 新增 `channels/lark/` 飞书接入层（飞书/Lark API 同构，先以飞书租户 `open.feishu.cn` 落地，域名可配置）：
   - 长连接事件订阅 `im.message.receive_v1`，事件解析与**去重**（按 event_id 幂等；理由是危险工具无幂等键、重复消费等于重复下单）
-  - 会话键 → session_id 映射（`thread_id → root_id → message_id` 优先级链，因普通群消息并不下发 `thread_id`；复用现有按 session 隔离的记忆体系，命名空间 `feishu:{解析后的键}`）
+  - 会话键 → session_id 映射（**`root_id → message_id`**，`thread_id` 不参与取键——实测它只出现在续话消息上、首条没有，排首位会让首条与其回复落到不同会话；复用现有按 session 隔离的记忆体系，命名空间 `feishu:{解析后的键}`）
+  - 回复**发进话题**（`reply_in_thread`）+ 结果用交互式卡片渲染 markdown：一问一答连同后续追问收进同一话题，主聊天流只留折叠入口；否则每条机器人消息头上顶一遍原文、且 `**加粗**` 原样显示星号
   - **双层 ack**：事件回调立即返回（协议层）+ 对触发消息 reply 一条"处理中"（用户可见），均不阻塞收件
   - 发送者 open_id 作为 `user_id` 随任务传递，使群内成员的长期偏好按人隔离（历史仍按会话共享）
   - 结果投递回原会话，投递失败兜底（**绝不静默**：任何终态都必须给用户一条回复）
@@ -33,6 +34,7 @@
 ### Modified Capabilities
 
 - `tool-layer`: 「工具定义结构」新增可选 `timeout` 声明（默认 `None` → 取全局缺省；`delegate` 显式豁免），并写明「超时只能中断有 await 点的 handler，同步阻塞工具须自行下沉线程池」这一适用边界。
+- `structured-logging`: 「统一结构化 JSON 日志」新增——`extra={...}` 业务字段必须一并输出、核心字段不被同名键覆盖、不可序列化值降级为字符串而非抛异常。此前 formatter 把 `extra` 全部丢弃，全应用的结构化字段等于白写（本变更实测中因此拿不到会话键诊断信息）。
 - `agent-loop`: 「工具失败不崩循环」扩展为覆盖超时——每次工具分发按该工具的 `timeout` 施加上限，超时按同一错误回灌路径喂回且 MUST NOT 重试；同时明确 LLM 侧超时/重试仍归 `guardrails`，不在工具层重复实现。
 
 （`session-memory` 不变：`LongTermMemory` 契约未改，本次只是调用方开始传 `user_id`——该参数 `SessionStore.get_or_create` 早已支持。Web 端对外行为不变。）

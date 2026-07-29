@@ -28,7 +28,9 @@ _EMPTY_FALLBACK = "处理完成了，但没有生成可展示的回复。麻烦�
 class MessageSender(Protocol):
     """delivery 对投递能力的最小依赖（真实实现见 ``client.LarkClient``）。"""
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
+    async def reply(
+        self, message_id: str, text: str, *, in_thread: bool = True, rich: bool = False,
+    ) -> bool:
         ...
 
 
@@ -111,7 +113,8 @@ class LarkDelivery:
         刻意相反——那边不能重试是因为可能重复产生业务副作用。
         """
         for attempt in range(self._max_retries + 1):
-            if await self._sender.reply_text(message_id, text):
+            # rich=True：Agent 回复常含 markdown，纯文本会原样显示星号。
+            if await self._sender.reply(message_id, text, rich=True):
                 return True
             if attempt < self._max_retries:
                 logger.warning(

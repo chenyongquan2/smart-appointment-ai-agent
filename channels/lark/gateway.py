@@ -45,7 +45,9 @@ EMPTY_REPLY = "你 @ 了我但没说事儿——想问什么？"
 class MessageSender(Protocol):
     """gateway 对投递能力的最小依赖（真实实现见 ``client.py``，测试注入 fake）。"""
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
+    async def reply(
+        self, message_id: str, text: str, *, in_thread: bool = True, rich: bool = False,
+    ) -> bool:
         ...
 
 
@@ -119,10 +121,10 @@ class LarkGateway:
 
         # ③ 非文本 / 空正文：仍要回一句——用户 @ 了机器人却毫无反应，观感等同于坏了。
         if message.message_type != "text":
-            self._spawn(self._sender.reply_text(message.message_id, UNSUPPORTED_REPLY))
+            self._spawn(self._sender.reply(message.message_id, UNSUPPORTED_REPLY))
             return
         if not message.text:
-            self._spawn(self._sender.reply_text(message.message_id, EMPTY_REPLY))
+            self._spawn(self._sender.reply(message.message_id, EMPTY_REPLY))
             return
 
         # ④ 会话键 → 绑定。bind 幂等且已存在不覆盖，故同一条回复链恒定落到同一会话。
@@ -132,7 +134,7 @@ class LarkGateway:
         )
 
         # ⑤ 用户可见 ack：异步发，绝不在此等它返回（会卡住收包循环与协议 ack）。
-        ack_task = self._spawn(self._sender.reply_text(message.message_id, ACK_REPLY))
+        ack_task = self._spawn(self._sender.reply(message.message_id, ACK_REPLY))
 
         # ⑥ 提交任务。ack_task 放进 metadata：delivery 在投结果前 await 它，
         #    使「ack 先于结果」成为确定性保证而不是靠"ack 比 Agent 快"的侥幸。
@@ -151,10 +153,15 @@ class LarkGateway:
             ),
             self._on_complete,
         )
+        # 日志里带齐**所有**会话键候选字段（不只是被选中的那个）：会话键的定义已经因为
+        # 实测被改过一次，日后若话题模式下字段又变，排障时要能一眼看出"当时飞书下发了什么"，
+        # 而不是再去搭一遍探针。
         logger.info(
             "已提交任务",
             extra={"session_id": session_id, "event_id": message.event_id,
-                   "scope": key.scope, "thread_id": message.thread_id},
+                   "scope": key.scope, "external_id": key.external_id,
+                   "thread_id": message.thread_id, "root_id": message.root_id,
+                   "parent_id": message.parent_id, "message_id": message.message_id},
         )
 
     # ── 内部 ────────────────────────────────────────────────────────────────

@@ -66,6 +66,7 @@
 - 作用域配置 `FEISHU_SESSION_SCOPE`：`reply`（默认，上述链）/ `chat`（整群一条 `chat_id`）。
 - **与 D5 的耦合**：`reply` 作用域依赖回复链，所以「用户可见 ack 必须用 reply 发送」从一个体验选择升级成了**多轮能否成立的支柱**——bot 的 ack 挂进同一条链后，用户回复 ack 时 `root_id` 仍指向最初那条消息。当初选 reply 的理由（顺带建立回复链）现在是硬需求。
 - **不做真话题群的专用作用域**：真话题群里首条消息即带 `thread_id`，那种情况下 `thread_id` 优先才是对的。但目前没有可验证的话题群，加一个未经实测的模式比不加更糟（这次的教训正是"未实测的假设会把顺序定反"）。届时新增 `thread` 作用域即可，不影响现有两种。
+- **话题模式下的二次实测（2026-07-29 晚，同一测试群）**：把 ack 改为 `reply_in_thread=True` 后，飞书会以原消息为根建出话题。实测**话题内的后续消息仍带 `root_id` 且指向话题根**——于是 `root_id → message_id` 这条链在话题模式下同样成立，**无需**为 `thread_id` 加会话别名。证据：一次 6 轮的话题对话全部收敛到同一 `external_id`（`channel_sessions` 单行 + `conversation_turns` 12 条）。这条推翻了「话题模式可能要改回 `thread_id` 优先」的担心，也让 D4 的解析链在两种群形态下都通。
 - 映射表持久化（复用现有 SQLAlchemy，新增 `channel_session` 表：`channel / scope / external_id / session_id / created_at`，`(channel, external_id)` 唯一索引），存的是**解析后**的键，进程重启不丢会话。
 - **身份字段**：用 `sender.sender_id.open_id`（恒有值）；`sender.sender_id.user_id` 实测在未开通通讯录权限时**不下发**，不可依赖。
 - **@bot 判定**：比对 `mentions[].id.open_id` 与机器人自身 open_id。不可用 `mentioned_type == "bot"`（群里有别的机器人会误判）、不可用 `name` 匹配（改名即失效）。

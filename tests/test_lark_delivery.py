@@ -29,11 +29,13 @@ class FakeSender:
 
     def __init__(self, fail_times: int = 0, always_fail: bool = False) -> None:
         self.calls: List[Tuple[str, str]] = []
+        self.kwargs: List[dict] = []
         self._fail_times = fail_times
         self._always_fail = always_fail
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
+    async def reply(self, message_id: str, text: str, **kwargs) -> bool:
         self.calls.append((message_id, text))
+        self.kwargs.append(kwargs)
         if self._always_fail:
             return False
         if self._fail_times > 0:
@@ -75,6 +77,19 @@ async def test_every_terminal_state_gets_delivered(status):
     assert is_terminal(status)
     assert len(sender.calls) == 1
     assert sender.calls[0] == (MSG_ID, f"{status.value} 的回复")
+
+
+@pytest.mark.asyncio
+async def test_result_is_sent_as_rich_text_in_thread():
+    """结果走富文本卡片（否则 Agent 的 markdown 会原样显示星号），且进话题。"""
+    sender = FakeSender()
+
+    await LarkDelivery(sender, sleep=_no_sleep)(
+        result(TaskStatus.SUCCEEDED, reply="**加粗**的回复")
+    )
+
+    assert sender.kwargs[0].get("rich") is True
+    assert sender.kwargs[0].get("in_thread") is not False
 
 
 @pytest.mark.asyncio
@@ -128,7 +143,7 @@ async def test_result_waits_for_ack():
     ack = asyncio.ensure_future(slow_ack())
 
     class OrderRecordingSender:
-        async def reply_text(self, message_id: str, text: str) -> bool:
+        async def reply(self, message_id: str, text: str, **kwargs) -> bool:
             order.append("result")
             return True
 
@@ -225,7 +240,7 @@ async def test_missing_reply_target_does_not_raise():
 @pytest.mark.asyncio
 async def test_sender_exception_is_contained():
     class ExplodingSender:
-        async def reply_text(self, message_id: str, text: str) -> bool:
+        async def reply(self, message_id: str, text: str, **kwargs) -> bool:
             raise RuntimeError("网络炸了")
 
     # 不抛出即通过：delivery 崩了不该把 executor 的 worker 带走。

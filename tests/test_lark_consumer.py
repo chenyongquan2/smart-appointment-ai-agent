@@ -37,7 +37,7 @@ class FakeApiClient:
     async def fetch_bot_info(self):
         return self._bot
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
+    async def reply(self, message_id: str, text: str, **kwargs) -> bool:
         self.replies.append((message_id, text))
         return True
 

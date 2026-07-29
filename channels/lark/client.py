@@ -19,6 +19,8 @@ from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
 from lark_oapi.core.enum import AccessTokenType, HttpMethod
 from lark_oapi.core.model import BaseRequest
 
+from channels.lark.format import build_text_card
+
 logger = logging.getLogger(__name__)
 
 # 取自身信息的接口，SDK 未包装，走原始请求。实测返回 bot.open_id 与事件载荷里
@@ -80,26 +82,48 @@ class LarkClient:
             return None
         return body.get("bot") or None
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
-        """以纯文本回复指定消息。
+    async def reply(
+        self,
+        message_id: str,
+        text: str,
+        *,
+        in_thread: bool = True,
+        rich: bool = False,
+    ) -> bool:
+        """回复指定消息。
 
         用**回复**而非往群里发新消息，有两个不可让的理由：① 结果出现在触发它的那条消息
-        下方，群里多人并行提问时不会错位；② ``reply`` 作用域的会话键靠回复链维系，
-        bot 的消息挂进链里，用户回复它时 ``root_id`` 仍指向最初那条消息（见
-        ``session_key`` 模块 docstring）。
+        下方，群里多人并行提问时不会错位；② 会话键靠回复链/话题维系，bot 的消息挂进链里，
+        用户接着说时才仍收敛到同一会话（见 ``session_key`` 模块 docstring）。
+
+        Args:
+            message_id: 被回复的消息 id。
+            text: 正文（markdown 由 ``rich`` 决定是否渲染）。
+            in_thread: ``True``（默认）发进**话题**——原消息成为话题根，一问一答连同后续
+                追问都收进同一话题，主聊天流只留一条折叠入口。``False`` 则是引用回复，
+                每条消息头上都顶一遍被引用的原文，消息一多群里就糊。
+            rich: ``True`` 时用交互式卡片渲染 markdown（加粗/换行），否则纯文本原样发出。
 
         Returns:
             是否投递成功。失败只返回 ``False`` 并记日志——重试策略归 delivery，
             本层不做重试（否则两处都重试会放大成 N×M 次）。
         """
+        if rich:
+            msg_type = "interactive"
+            payload: Any = build_text_card(text)
+        else:
+            msg_type = "text"
+            payload = {"text": text}
+
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
             .request_body(
                 ReplyMessageRequestBody.builder()
                 # ensure_ascii=False：否则中文被转成 \uXXXX，虽能显示但日志里没法读。
-                .content(json.dumps({"text": text}, ensure_ascii=False))
-                .msg_type("text")
+                .content(json.dumps(payload, ensure_ascii=False))
+                .msg_type(msg_type)
+                .reply_in_thread(in_thread)
                 .build()
             )
             .build()

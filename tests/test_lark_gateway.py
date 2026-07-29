@@ -68,10 +68,12 @@ class FakeSender:
 
     def __init__(self, ok: bool = True) -> None:
         self.calls: List[Tuple[str, str]] = []
+        self.kwargs: List[dict] = []
         self._ok = ok
 
-    async def reply_text(self, message_id: str, text: str) -> bool:
+    async def reply(self, message_id: str, text: str, **kwargs) -> bool:
         self.calls.append((message_id, text))
+        self.kwargs.append(kwargs)
         return self._ok
 
 
@@ -95,7 +97,9 @@ def wired():
         executor=executor, sender=sender, channel_sessions=repo,
         bot_open_id=BOT, on_complete=lambda result: None,
     )
-    return SimpleNamespace(gw=gw, sender=sender, executor=executor, repo=repo)
+    ns = SimpleNamespace(gw=gw, sender=sender, executor=executor, repo=repo)
+    ns.kwargs_of_last_call = lambda: sender.kwargs[-1] if sender.kwargs else {}
+    return ns
 
 
 async def settle() -> None:
@@ -115,6 +119,19 @@ async def test_mention_submits_task_and_acks(wired):
     assert len(wired.executor.tasks) == 1
     assert wired.executor.tasks[0].user_input == "我想预约"        # @ 占位符已剔除
     assert wired.sender.calls == [(FIRST_MSG, ACK_REPLY)]
+
+
+@pytest.mark.asyncio
+async def test_ack_goes_into_a_thread(wired):
+    """ack 是第一条回复，话题由它创建——原消息成为话题根，后续全收进这个话题。
+
+    若它退回引用回复（in_thread=False），群里就会变成一问一答平铺、每条机器人消息
+    头上顶一遍原文的样子（改造前实测截图正是如此）。
+    """
+    wired.gw.handle_event(make_event())
+    await settle()
+
+    assert wired.kwargs_of_last_call().get("in_thread") is not False
 
 
 @pytest.mark.asyncio
@@ -289,7 +306,7 @@ async def test_handler_returns_before_ack_completes(wired):
         def __init__(self) -> None:
             self.done = False
 
-        async def reply_text(self, message_id: str, text: str) -> bool:
+        async def reply(self, message_id: str, text: str, **kwargs) -> bool:
             started.set()
             await asyncio.sleep(0.05)
             self.done = True
