@@ -5,6 +5,7 @@ from .repositories import (
     UserBehaviorRepository,
     ConversationRepository,
     ConversationSummaryRepository,
+    ChannelSessionRepository,
 )
 from typing import Optional
 
@@ -34,6 +35,7 @@ class DatabaseRouter:
         self.user_behavior_repo = UserBehaviorRepository(self.session_manager)
         self.conversation_repo = ConversationRepository(self.session_manager)
         self.conversation_summary_repo = ConversationSummaryRepository(self.session_manager)
+        self.channel_session_repo = ChannelSessionRepository(self.session_manager)
 
     @property
     def technicians(self) -> TechnicianRepository:
@@ -59,6 +61,11 @@ class DatabaseRouter:
     def summaries(self) -> ConversationSummaryRepository:
         """获取会话摘要缓存数据仓库"""
         return self.conversation_summary_repo
+
+    @property
+    def channel_sessions(self) -> ChannelSessionRepository:
+        """获取 IM 渠道会话映射数据仓库"""
+        return self.channel_session_repo
 
     def close(self):
         """关闭数据库连接"""
