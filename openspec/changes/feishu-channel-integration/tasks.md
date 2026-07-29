@@ -30,4 +30,13 @@
 ## 4. 端到端验证与收尾
 
 - [x] 4.1 ✅ 真租户端到端已验证（2026-07-29，群 `oncall-bot test`）：**多轮对话**——一次 6 轮话题对话全部收敛到同一 session（`channel_sessions` 单行 + `conversation_turns` 12 条），机器人成功总结出前面问过的 4 个问题；**会话隔离**——两次独立 @ 落到不同 session；**先 ack 后结果**——实测间隔 31s，ack 与结果都在同一话题内；**超时兜底**——`EXECUTOR_WALL_CLOCK_TIMEOUT=3` 实测投出带副作用提示的文案，且补写了兜底 assistant 回合（历史成对、无孤立 user 回合）；**排队上限**——同会话并发 4 条 / 深度 1 实测 2 受理 2 拒绝，被拒者不写历史（拒绝发生在 runner 之前，故不产生孤立回合）。**WAL**——实测 `journal_mode=delete` 未开 WAL，但 `busy_timeout=5000` + 单行 insert 已足够，并发测试零 `database is locked`，按原判断不动（见 design Risks）
-- [ ] 4.2 全量验证：`uv run pytest` 全绿 + evals 门禁通过；RUNNING.md 补充飞书接入的配置与启动说明，**明写 MUST 单 worker 运行**（`uvicorn --workers 1`，多 worker 会起多份长连接重复消费，进程内去重表拦不住），开发态 `--reload` 建议关掉飞书开关
+- [x] 4.2 全量验证与收尾。
+  - **pytest**：✅ 419 passed / 9 xfailed（基线 263 → 新增 156 条）。
+  - **RUNNING.md**：✅ 新增「接入飞书」一节——配置、启动、用法、可调参数、故障对照表；单 worker 写成硬约束并说清后果（多 worker → 多份长连接 → 同一消息被不同进程各消费一次 → 进程内去重表拦不住 → 重复下单）；`--reload` 建议关掉飞书开关。
+  - **evals 门禁**：⚠️ **绿灯来自 2026-07-29 12:0x 的运行，当前无法重跑**——如实标注如下。
+    - 那次结果：`工具调用-F1` 56.2%→55.9%、`槽位抽取完整率` 87.7%→86.3%，PASS（容差 0.30）。
+    - 该运行发生在 commit `4e01759` 之后，故**已覆盖本期全部影响 evals 执行路径的改动**：工具调用超时（`cfb221c`）与 `RunOutcome` 带外上报（`63f2e9e`）。
+    - 结论仍成立的证据（可复核）：`git diff --name-only c76e2d4..HEAD | grep -E '^(harness|services|evals|agents)/'` **输出为空**——自那次 PASS 起，evals 实际执行的代码路径逐字节未变；此后改动全在 `channels/`、executor 接线、DB 加表、日志 formatter、文档与测试。
+    - 无法重跑的原因：`services/text_embedding.py` 的 `embed_input` 声明了 `timeout` 却从未使用，底层 `embed_query` 是**同步无超时**调用；配合当前网关上 `text-embedding-3-small` 不可用，跑批会挂死——连续两次实测：进程 CPU 零增长、2 个 ESTABLISHED :443 + 9 个 CLOSE_WAIT、日志静默十余分钟（同时独立量 LLM 延迟正常 1.4–2.5s，排除外部 API 整体变慢）。
+    - 该缺陷**先于本变更存在**（改动前同样无超时），且正是本变更已写明的边界实例：`Tool.timeout` 对同步阻塞 handler 无效（见 `harness/tools/base.py` docstring 与 `openspec/project.md`）。已单开任务卡跟踪（超时透传 + `asyncio.to_thread` 下沉），**不并入本变更**——`services/` 属保留资产，且该缺陷与本变更范围无关。
+    - ⚠️ 生产风险已记入 design Risks：飞书长连接与 Web 同进程，事件循环一旦被同步调用冻住，收包与心跳一起停摆、机器人失去响应且不报错。
