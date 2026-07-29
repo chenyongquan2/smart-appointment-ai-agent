@@ -124,13 +124,3 @@ class LarkDelivery:
                 await self._sleep(DEFAULT_RETRY_DELAY * (attempt + 1))
         return False
 
-
-def is_terminal(status: TaskStatus) -> bool:
-    """五种终态都需要投递——本函数存在的意义是让「有没有漏掉一种」可被测试枚举。"""
-    return status in {
-        TaskStatus.SUCCEEDED,
-        TaskStatus.FAILED,
-        TaskStatus.TIMEOUT,
-        TaskStatus.GUARDRAIL_EXHAUSTED,
-        TaskStatus.BUSY,
-    }

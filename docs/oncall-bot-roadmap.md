@@ -41,8 +41,22 @@ config/              新增飞书凭据、并发与超时参数
 
 ## 第 1 期：飞书 Channel + 任务执行层
 
-**状态**：proposal 已生成并经设计评审收敛，待人审 →
-`openspec/changes/feishu-channel-integration/`（proposal / design / specs×4 / tasks）
+**状态**：✅ 实现完成、真租户端到端已验证，待归档 →
+`openspec/changes/feishu-channel-integration/`（proposal / design / specs×5 / tasks）
+
+已在飞书群 `oncall-bot test` 跑通：@bot 多轮对话（话题内 6 轮收敛到同一 session）、
+会话隔离、先 ack 后结果（实测间隔 31s）、超时兜底带副作用提示、排队上限提示。
+分支 `feat/feishu-executor`。
+
+**实测校正的三处设计错误**（都是"逻辑上说得通、只有真数据能证伪"的那类）：
+1. `thread_id` 排在会话键解析链首位会**切断多轮**——它只出现在续话消息上，首条没有，
+   于是首条与其回复落到不同 session。正解是 `root_id → message_id`
+2. `lark_oapi.ws.Client.start()` 用自己的模块级 loop `run_until_complete`，在 FastAPI
+   lifespan 里会抛 "loop is already running"；更隐蔽的是那个 loop 是 **import 时**抓的，
+   `_connect()` 用它 `create_task` 起收包循环 → 在 FastAPI 下收包 task 永不执行，
+   表现为"连上了但一条事件都收不到且不报错"。必须建连前重绑到运行中的 loop
+3. `JsonFormatter` 把 `extra={...}` **全部丢弃**，全应用的结构化字段等于白写——为实测
+   特意加的诊断字段一个都没输出，只能改从数据库反查
 
 **范围**：只做管道，不加新功能。做完的效果是「现有预约 Agent 原封不动出现在飞书群里，能多轮对话、话题隔离」。
 

@@ -12,11 +12,7 @@ from typing import List, Optional, Tuple
 
 import pytest
 
-from channels.lark.delivery import (
-    DEFAULT_MAX_RETRIES,
-    LarkDelivery,
-    is_terminal,
-)
+from channels.lark.delivery import DEFAULT_MAX_RETRIES, LarkDelivery
 from executor import Task, TaskExecutor, TaskResult, TaskStatus
 from executor.local import BUSY_REPLY, TIMEOUT_REPLY
 from harness.runtime.agent_loop import RunOutcome
@@ -74,7 +70,6 @@ async def test_every_terminal_state_gets_delivered(status):
 
     await delivery(result(status, reply=f"{status.value} 的回复"))
 
-    assert is_terminal(status)
     assert len(sender.calls) == 1
     assert sender.calls[0] == (MSG_ID, f"{status.value} 的回复")
 

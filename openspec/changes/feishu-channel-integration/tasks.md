@@ -29,5 +29,5 @@
 
 ## 4. 端到端验证与收尾
 
-- [ ] 4.1 用真实飞书租户凭据在测试群端到端验证：@bot 多轮对话、会话隔离、长任务先 ack 后结果、超时兜底回复、排队上限提示；确认 `db/base/session_manager.py` 是否已开 WAL（10 并发写 SQLite 的 locked 风险，真出现则开 WAL）
+- [x] 4.1 ✅ 真租户端到端已验证（2026-07-29，群 `oncall-bot test`）：**多轮对话**——一次 6 轮话题对话全部收敛到同一 session（`channel_sessions` 单行 + `conversation_turns` 12 条），机器人成功总结出前面问过的 4 个问题；**会话隔离**——两次独立 @ 落到不同 session；**先 ack 后结果**——实测间隔 31s，ack 与结果都在同一话题内；**超时兜底**——`EXECUTOR_WALL_CLOCK_TIMEOUT=3` 实测投出带副作用提示的文案，且补写了兜底 assistant 回合（历史成对、无孤立 user 回合）；**排队上限**——同会话并发 4 条 / 深度 1 实测 2 受理 2 拒绝，被拒者不写历史（拒绝发生在 runner 之前，故不产生孤立回合）。**WAL**——实测 `journal_mode=delete` 未开 WAL，但 `busy_timeout=5000` + 单行 insert 已足够，并发测试零 `database is locked`，按原判断不动（见 design Risks）
 - [ ] 4.2 全量验证：`uv run pytest` 全绿 + evals 门禁通过；RUNNING.md 补充飞书接入的配置与启动说明，**明写 MUST 单 worker 运行**（`uvicorn --workers 1`，多 worker 会起多份长连接重复消费，进程内去重表拦不住），开发态 `--reload` 建议关掉飞书开关
