@@ -52,12 +52,32 @@
 - **超时只对可中断的工具生效**：`asyncio.wait_for` 无法中断同步阻塞调用。现有工具 handler 签名虽是 async，底下打的若是同步 SQLite / FAISS，到点也 cancel 不掉，会一直占着事件循环。这条边界必须写进工具编写约定——否则第 3 期移植 `repokit.py` 的 git 子进程调用时，会以为有超时保护而其实没有。需要真超时的同步工具自行下沉线程池。
 - 工具超时**刻意不重试**，沿用 `_dispatch` 既有的不对称理由：工具可能有副作用（写库下单），重试等于重复执行。
 
-### D4 会话键解析成优先级链，事件去重用内存 TTL
+### D4 会话键用 `root_id → message_id`，`thread_id` 不参与取键（已实测校正）
 
-- **不能假设消息带 `thread_id`**：它只在开启话题模式的群中下发；普通群内 @bot 的消息只有 `chat_id` / `message_id` / 回复链的 `root_id`。故会话键解析为 `thread_id → root_id → message_id` 取首个非空，配 `FEISHU_SESSION_SCOPE`（`thread` 默认 / `chat` 整群一条）。默认语义 = "一次 @bot 开一条会话，在该消息下回复继续多轮"，避免整群成员共用一条历史互相串味。
+**✅ 已用真实租户实测**（2026-07-29，普通群 `oncall-bot test`；原始载荷见 `docs/evidence/feishu-event-payload-2026-07-29.log`）。实测结果推翻了本决策的初版：
+
+| 消息 | `thread_id` | `root_id` / `parent_id` | `message_id` | `chat_id` |
+|---|---|---|---|---|
+| 首条 @bot 消息 | **无** | **无** | 有 | 有 |
+| 对某条消息的回复 | 有（`omt_…`，飞书自动建话题） | 有（= 被回复消息的 id） | 有 | 有 |
+
+- 初版把解析链定为 `thread_id → root_id → message_id`——**这个顺序是错的**。`thread_id` 只出现在续话消息上、首条没有，于是首条会落到 `feishu:{message_id}`、它的回复却落到 `feishu:{thread_id}`，两者不同，多轮直接断裂。把 `thread_id` 排在首位等于亲手切断自己要建立的那条链。
+- 正确解法是 **`root_id → message_id`**，它天然自洽：首条取自身 `message_id`；其后每条回复的 `root_id` 都指回那条首条消息，全部收敛到同一 session。`thread_id` MUST NOT 参与取键，只作排障字段记日志。
+- 作用域配置 `FEISHU_SESSION_SCOPE`：`reply`（默认，上述链）/ `chat`（整群一条 `chat_id`）。
+- **与 D5 的耦合**：`reply` 作用域依赖回复链，所以「用户可见 ack 必须用 reply 发送」从一个体验选择升级成了**多轮能否成立的支柱**——bot 的 ack 挂进同一条链后，用户回复 ack 时 `root_id` 仍指向最初那条消息。当初选 reply 的理由（顺带建立回复链）现在是硬需求。
+- **不做真话题群的专用作用域**：真话题群里首条消息即带 `thread_id`，那种情况下 `thread_id` 优先才是对的。但目前没有可验证的话题群，加一个未经实测的模式比不加更糟（这次的教训正是"未实测的假设会把顺序定反"）。届时新增 `thread` 作用域即可，不影响现有两种。
 - 映射表持久化（复用现有 SQLAlchemy，新增 `channel_session` 表：`channel / scope / external_id / session_id / created_at`，`(channel, external_id)` 唯一索引），存的是**解析后**的键，进程重启不丢会话。
-- **⚠ 待真租户验证**：上述字段可用性是基于飞书 API 的判断，不是实测结论。实施顺序上 MUST 先用一条真实消息把事件载荷打出来确认，再动建表——表一旦写入数据，改键定义就要迁移。
+- **身份字段**：用 `sender.sender_id.open_id`（恒有值）；`sender.sender_id.user_id` 实测在未开通通讯录权限时**不下发**，不可依赖。
+- **@bot 判定**：比对 `mentions[].id.open_id` 与机器人自身 open_id。不可用 `mentioned_type == "bot"`（群里有别的机器人会误判）、不可用 `name` 匹配（改名即失效）。
 - event_id 去重用内存 TTL 集合（默认 5 分钟 + 容量上限 LRU）。**理由是防重复副作用而非性能权衡**：`create_appointment` 没有幂等键，重复消费一次事件就是真的多下一单，去重是本期唯一的防线。进程重启后的极小概率重复，显式记账为残余风险。
+
+### D10 长连接不能用 SDK 的 `start()` 接入 FastAPI lifespan
+
+`lark_oapi.ws.Client.start()` 内部是 `loop.run_until_complete(self._connect())` + `loop.run_until_complete(_select())`，用的是 SDK 自己的模块级事件循环。FastAPI lifespan 里已有运行中的循环，直接调 `start()` 会抛 "loop is already running"。
+
+故 consumer MUST 改为 `await client._connect()`，并另起 `asyncio.create_task(client._ping_loop())` 维持心跳；断线重连仍由 SDK 的 `auto_reconnect` 承担。独立脚本（如 `scripts/feishu_event_probe.py`）用同步 `start()` 无妨。
+
+这条是装上依赖读源码才发现的——设计阶段看文档看不出来。
 
 ### D5 双层 ack + delivery 统一收口，绝不静默
 

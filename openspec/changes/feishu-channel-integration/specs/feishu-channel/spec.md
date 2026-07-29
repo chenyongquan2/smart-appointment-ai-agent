@@ -26,32 +26,61 @@
 - **WHEN** 长时间运行并持续收到事件
 - **THEN** 去重表按 TTL 与容量上限淘汰旧条目，内存占用有界
 
-### Requirement: 会话键解析与话题到会话的映射
+### Requirement: 会话键解析与会话映射
 
-系统 SHALL 从消息事件解析出稳定的会话键，解析顺序为 `thread_id → root_id → message_id`（取首个非空者）；会话作用域 SHALL 可配置（`thread` 默认 / `chat` 整群共用一条会话）。session_id 命名为 `feishu:{解析出的键}`。同一会话内的多轮消息 MUST 共享同一会话记忆，不同会话 MUST 相互隔离。映射 SHALL 持久化（进程重启不丢），存储的是**解析后**的键。
+系统 SHALL 从消息事件解析出稳定的会话键。会话作用域 SHALL 可配置：
 
-理由：`thread_id` 仅在开启话题模式的群中下发，普通群内 @bot 的消息只有 `chat_id` / `message_id` / 回复链的 `root_id`。直接以 `thread_id` 作会话键在普通群会取到空值。默认 `thread` 作用域的语义是「一次 @bot 开一条会话，在该消息下回复继续多轮」，既贴合飞书交互习惯，也避免整群成员共用一条历史而互相串味。
+- `reply`（**默认**）：解析顺序 `root_id → message_id`（取首个非空者）。语义为「一次 @bot 开一条会话，在该消息下回复即继续同一会话」。
+- `chat`：直接用 `chat_id`，整群共用一条会话。
 
-实施约束：本条的字段可用性判断 MUST 在真实租户以一条真实消息的事件载荷验证后再落 DB 结构，验证 MUST 先于映射表的建表实施。
+session_id 命名为 `feishu:{解析出的键}`。同一会话内的多轮消息 MUST 共享同一会话记忆，不同会话 MUST 相互隔离。映射 SHALL 持久化（进程重启不丢），存储的是**解析后**的键。
 
-#### Scenario: 同话题多轮
-- **WHEN** 用户在同一话题（或同一回复链）内先后发送两条消息
-- **THEN** 第二条消息的处理能引用第一条的上下文
+`thread_id` MUST NOT 参与会话键的选取（可作为排障字段记入日志）。理由是实测得出的硬约束（证据见 `docs/evidence/feishu-event-payload-2026-07-29.log`）：
 
-#### Scenario: 跨话题隔离
-- **WHEN** 两个不同话题各发送一条消息
-- **THEN** 两者使用不同 session_id，记忆互不可见
+| 消息 | `thread_id` | `root_id` | `message_id` |
+|---|---|---|---|
+| 首条 @bot 消息 | **无** | **无** | 有 |
+| 对某条消息的回复 | 有（飞书自动建话题） | 有（= 被回复消息的 id） | 有 |
 
-#### Scenario: 普通群消息无 thread_id 时的回退
-- **WHEN** 收到的消息事件不含 `thread_id`
-- **THEN** 系统按 `root_id → message_id` 回退取键，不因字段缺失而失败或落到空会话键
+即 `thread_id` **只出现在续话消息上、首条没有**。若把它排在解析链首位，首条消息会落到 `feishu:{message_id}`、其回复却落到 `feishu:{thread_id}`——两者不同，多轮直接断裂。而 `root_id → message_id` 天然自洽：首条取自身 `message_id`，其后每条回复的 `root_id` 都指回那条首条消息。
+
+由此 `reply` 作用域依赖回复链，故「用户可见 ack」MUST 以回复（reply）方式发送——机器人的 ack 因此挂进同一条链，用户回复 ack 时 `root_id` 仍指向最初那条消息，会话不变。
+
+非目标：真话题模式群（首条消息即带 `thread_id`）的专用作用域**不在本变更范围内**——尚无可用于验证的话题群，加一个未经实测的模式比不加更糟。届时新增 `thread` 作用域即可，不影响上述两种。
+
+#### Scenario: 回复即续话
+- **WHEN** 用户 @bot 发一条消息，随后回复该消息（或回复 bot 对它的 ack）
+- **THEN** 两条消息解析出同一会话键，第二条的处理能引用第一条的上下文
+
+#### Scenario: 各自独立的 @ 互不干扰
+- **WHEN** 用户在同一群内两次独立 @bot（都不是回复）
+- **THEN** 两者解析出不同会话键，记忆互不可见
+
+#### Scenario: thread_id 不参与取键
+- **WHEN** 收到一条同时带 `thread_id` 与 `root_id` 的回复消息
+- **THEN** 会话键取自 `root_id`，`thread_id` MUST NOT 影响结果
+
+#### Scenario: 整群作用域
+- **WHEN** 作用域配置为 `chat`
+- **THEN** 同群所有消息解析出同一会话键（`chat_id`），不区分回复关系
 
 ### Requirement: 用户身份传递
-系统 SHALL 从事件中取发送者的 open_id，作为 `user_id` 随任务提交，使长期偏好按人隔离；会话历史仍按会话键共享。
+系统 SHALL 从事件中取发送者的 `open_id`（`sender.sender_id.open_id`），作为 `user_id` 随任务提交，使长期偏好按人隔离；会话历史仍按会话键共享。
+
+MUST NOT 依赖 `sender.sender_id.user_id`——实测该字段在未开通通讯录权限时不下发（证据见 `docs/evidence/feishu-event-payload-2026-07-29.log`），而 `open_id` 恒有值。
 
 #### Scenario: 群内多人发言
-- **WHEN** 同一话题内两位成员先后 @bot
+- **WHEN** 同一会话内两位成员先后 @bot
 - **THEN** 两条消息进入同一会话历史，但各自携带不同 user_id
+
+### Requirement: @bot 判定
+系统 SHALL 通过比对 `message.mentions[].id.open_id` 与**机器人自身的 open_id** 判定本条消息是否 @ 了自己；机器人自身 open_id SHALL 在启动时从开放平台接口取得或经配置注入。
+
+MUST NOT 以 `mentioned_type == "bot"` 判定（群内存在其它机器人时会误判），MUST NOT 以 `name` 匹配（机器人改名即失效）。
+
+#### Scenario: 群内有多个机器人
+- **WHEN** 群消息 @ 的是另一个机器人
+- **THEN** 系统忽略该消息，不提交任务、不回复
 
 ### Requirement: 双层 ack
 
