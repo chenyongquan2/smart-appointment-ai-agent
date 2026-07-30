@@ -11,6 +11,7 @@
 """
 
 from .text_embedding import (
+    aembed_input,
     embed_input,
     find_best_match_indices,
     save_technician_embeddings,
@@ -23,6 +24,7 @@ from .user_behavior_service import UserBehaviorService
 from .recommendation_service import RecommendationService
 
 __all__ = [
+    'aembed_input',
     'embed_input',
     'find_best_match_indices',
     'save_technician_embeddings',

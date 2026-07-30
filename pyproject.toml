@@ -34,6 +34,8 @@ dev = [
     # starlette TestClient 依赖 httpx（Web 端到端回归测试用）。此前只是传递依赖，
     # 显式声明避免上游变动时测试无声失效。
     "httpx>=0.27",
+    # 把「事件循环被同步阻塞冻住」这类故障从「CI 挂死」变成「明确失败」。
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.uv]
@@ -42,5 +44,8 @@ package = false
 [tool.pytest.ini_options]
 # 让 pytest 把项目根加入 sys.path，使 `import agents/config/...` 可解析
 pythonpath = ["."]
+# pytest-timeout 的默认方法。thread 不依赖事件循环，故即便事件循环被同步阻塞冻住
+# 也能把「挂死」变成「明确失败」——见 tests/test_embedding_timeout.py 的说明。
+timeout_method = "thread"
 # 让 @pytest.mark.asyncio 标记的协程测试被真正收集执行（否则是未知 mark）
 asyncio_mode = "auto"

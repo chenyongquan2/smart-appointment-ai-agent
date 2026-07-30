@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from typing import List, Dict, Tuple, Optional
 from db.db_router import DatabaseRouter
-from .text_embedding import embed_input
+from .text_embedding import aembed_input
 import logging
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class KnowledgeService:
             try:
                 # 生成嵌入向量
                 text_for_embedding = f"{knowledge['content']} {' '.join(knowledge['keywords'])}"
-                embedding = embed_input(text_for_embedding)
+                embedding = await aembed_input(text_for_embedding)
                 
                 # 保存到数据库
                 self.db.add_document(
@@ -134,7 +134,7 @@ class KnowledgeService:
                     # 如果没有嵌入向量，生成一个
                     logger.warning(f"文档 {doc['id']} 缺少嵌入向量，正在生成...")
                     text_for_embedding = f"{doc['content']} {' '.join(doc.get('keywords', []))}"
-                    embedding = embed_input(text_for_embedding)
+                    embedding = await aembed_input(text_for_embedding)
                     
                     # 更新数据库
                     self.db.update_document(doc['id'], embedding=embedding)
@@ -164,7 +164,7 @@ class KnowledgeService:
 
         try:
             # 生成查询的嵌入向量
-            query_embedding = embed_input(query)
+            query_embedding = await aembed_input(query)
             query_array = np.array([query_embedding]).astype('float32')
             
             # 向量搜索
@@ -203,7 +203,7 @@ class KnowledgeService:
             
             # 生成嵌入向量
             text_for_embedding = f"{content} {' '.join(keywords)}"
-            embedding = embed_input(text_for_embedding)
+            embedding = await aembed_input(text_for_embedding)
             
             # 保存到数据库
             doc_id = self.db.add_document(content, category, keywords, embedding)
@@ -235,7 +235,7 @@ class KnowledgeService:
                 
                 # 生成新的嵌入向量
                 text_for_embedding = f"{final_content} {' '.join(final_keywords)}"
-                embedding = embed_input(text_for_embedding)
+                embedding = await aembed_input(text_for_embedding)
             
             # 更新数据库
             success = self.db.update_document(doc_id, content, category, keywords, embedding)
