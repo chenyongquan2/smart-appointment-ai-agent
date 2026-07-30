@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from api.chat_handler import ProcessUserInput_stream, resolve_session_id
+from api.chat_handler import chat_stream, resolve_session_id
 import logging
 
 # 创建logger实例
@@ -30,11 +30,15 @@ async def read_root(request: Request):
 
 @router.post("/chat/stream", summary="流式聊天")
 async def chat_stream_endpoint(chat: ChatRequest):
-    """处理流式聊天请求（按 session_id 隔离会话；响应头回传 X-Session-Id）"""
+    """处理流式聊天请求（按 session_id 隔离会话；响应头回传 X-Session-Id）
+
+    经 executor 的同步内联模式执行（`chat_stream`）——与飞书路径共享同一套并发记账，
+    但 token 流仍在本请求协程内直接透传，对外行为与改造前一致。
+    """
     session_id = resolve_session_id(chat.session_id)
 
     async def token_generator():
-        async for token in ProcessUserInput_stream(chat.message, session_id=session_id):
+        async for token in chat_stream(chat.message, session_id=session_id):
             yield token
     return StreamingResponse(
         token_generator(),
@@ -48,7 +52,7 @@ async def chat_endpoint(chat: ChatRequest):
     session_id = resolve_session_id(chat.session_id)
 
     async def token_generator():
-        async for token in ProcessUserInput_stream(chat.message, session_id=session_id):
+        async for token in chat_stream(chat.message, session_id=session_id):
             yield token
     return StreamingResponse(
         token_generator(),

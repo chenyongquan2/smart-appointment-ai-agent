@@ -1,10 +1,6 @@
-# structured-logging Specification
+# structured-logging 规格（delta）
 
-## Purpose
-
-统一应用的日志输出:以集中的初始化入口产出单行结构化 JSON 日志,消除 `agents/` 与 `api/knowledge.py` 中的裸 `print`,在不改变业务逻辑的前提下提升可观测性与可解析性。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 统一结构化 JSON 日志
 
@@ -38,23 +34,3 @@
 
 - **WHEN** `extra` 中含不可 JSON 序列化的对象
 - **THEN** 该字段以其字符串表示输出，记录过程不抛异常
-
-### Requirement: agents 与 api 不得用 print 输出
-
-`agents/` 与 `api/knowledge.py` MUST NOT 通过 `print` 向 stdout 输出运行信息;一切运行/调试/错误输出 MUST 经 `logging.getLogger(__name__)` 取得的 logger。
-
-#### Scenario: 无残留 print
-- **WHEN** 检索 `agents/`(排除测试与 `__pycache__`)与 `api/knowledge.py`
-- **THEN** 不存在 `print(` 调用
-
-#### Scenario: 日志级别语义正确
-- **WHEN** 替换原 `print`
-- **THEN** 启动/状态/路由类用 `debug`/`info`,失败类用 `error`(语义与原意一致,不改控制流)
-
-### Requirement: 不引入行为回归
-
-本次仅替换输出方式,MUST NOT 改变业务逻辑、控制流或函数签名;现有测试套件 MUST 保持通过。
-
-#### Scenario: 测试仍全绿
-- **WHEN** 替换完成后运行 `uv run pytest`
-- **THEN** 结果不劣于改前(`failed=0`,xfailed 计数不变)
