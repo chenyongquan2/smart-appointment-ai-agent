@@ -6,7 +6,7 @@
 
 - `config/model_provider.py:create_embedding_model()` 创建 `OpenAIEmbeddings` 时**不传任何超时**。实测该实例 `timeout` 未设置、`request_timeout` 为 `None` → 落到 openai 客户端默认 600 秒。
 - `services/text_embedding.py:embed_input(..., timeout: int = 600)` 的 `timeout` **从未被使用**，函数体只有两行：建模型 + `embeddings.embed_query(text)`。签名里那个 600 是对客户端默认值的无效复述。
-- `embed_query` 是**同步**调用。`services/knowledge_service.py` 有 **6 处**调用它，全部位于 `async def` 内（`search` / `initialize` / `_create_default_knowledge` / `_build_vector_index` / `add_document` / `update_document`）。
+- `embed_query` 是**同步**调用。`services/knowledge_service.py` 有 **5 处**调用它，全部位于 `async def` 内（`search` / `_create_default_knowledge` / `_build_vector_index` / `add_document` / `update_document`；`initialize` 本身不直接调用，它调的是前面这几个）。
 - 每次 `embed_input` 都重新 `create_embedding_model()`，即每次调用新建一个客户端。
 
 后果链：同步阻塞调用跑在事件循环上 → 请求挂住即占住整个循环 → `asyncio.wait_for` 的定时器回调都无法执行 → **任何外层超时都失效**。已归档 change `feishu-channel-integration` 把飞书长连接放进同一进程（其 design D7），于是这个缺陷的后果从「跑批卡住」升级为「收包与心跳一起停摆、机器人静默失联且不报错」。
@@ -50,10 +50,10 @@
 
 ### D3 只改 `async` 上下文里的调用点
 
-`KnowledgeService` 的 6 处调用全部位于 `async def` 内，故全部改为 `await aembed_input(...)`。
+`KnowledgeService` 的 5 处调用全部位于 `async def` 内，故全部改为 `await aembed_input(...)`。
 
 - `search` 是**热路径**（每次 `search_knowledge` 工具调用都走它），必须改。
-- `initialize` / `_build_vector_index` / `_create_default_knowledge` 是启动期批量向量化，不并发、但同样会在启动时冻住循环（且它们循环调用多次，累积阻塞更久）。既然都在 `async def` 里，一并改，不留半吊子。
+- `_build_vector_index` / `_create_default_knowledge` 是启动期批量向量化，不并发、但同样会在启动时冻住循环（且它们循环调用多次，累积阻塞更久）。既然都在 `async def` 里，一并改，不留半吊子。
 - `add_document` / `update_document` 走管理端 API，同理。
 
 ### D4 不顺手做客户端复用与缓存
@@ -73,17 +73,30 @@
 - [超时后检索静默返回空，看起来像「不报错但永远没结果」] → `KnowledgeService.search` 现有实现会记 ERROR 日志（当前 503 就是这样暴露的），保持该行为；日志里查得到。
 - [同步 `embed_input` 仍然存在，将来有人在 `async` 里误用它] → 在两个函数的 docstring 里互相指明「async 上下文用 `aembed_input`」，并在 `openspec/project.md` 的工具编写约定处已有同类告示（`Tool.timeout` 对同步阻塞无效那条）。这是约定而非强制，属残余风险。
 - [`aembed_query` 在某些 provider 上未实现或行为不一致] → Azure 与 OpenAI 兼容两条路径都由 LangChain 的同一基类提供该方法；若某 provider 缺失，回退到 `to_thread` 包装（次优但不阻塞循环），实施时若遇到再定。
-- [改了 6 处调用点，可能漏掉某处] → 实施后以 `grep -n "embed_input" services/` 逐一核对，确保 `async def` 内不再有同步调用。
+- [改了 5 处调用点，可能漏掉某处] → 实施后以 `grep -n "embed_input" services/` 逐一核对，确保 `async def` 内不再有同步调用。
 
 ## Migration Plan
 
 无数据迁移。按顺序分两步，每步可独立验证：
 
 1. 超时落地（`create_embedding_model` + `embed_input` 真正透传）+ `.env.example`。此时挂死风险已从「永久」降为「至多 20 秒」，但事件循环在这 20 秒内仍会被冻住。
-2. 异步路径（`aembed_input` + 6 处调用点）。此时事件循环不再被阻塞。
+2. 异步路径（`aembed_input` + 5 处调用点）。此时事件循环不再被阻塞。
 
 回滚：两步都是加法（新增参数/新增函数/改调用点），回滚即还原调用点；`EMBEDDING_TIMEOUT_SECONDS` 留空时可退回原行为（不建议，仅作应急）。
 
 ## Open Questions
 
-- `EMBEDDING_TIMEOUT_SECONDS` 的缺省值 20 秒是否合适，需在真实网关上观察一次正常请求的延迟分布后确认（当前该网关上模型不可用，无法立即观察；缺省值可先按 20 落地，后续按实测调）。
+- ~~`EMBEDDING_TIMEOUT_SECONDS` 的缺省值 20 秒是否合适~~ → **仍未解决，如实标注**：实施后的跑批中 76 次嵌入调用**全部是 503 失败**（模型在当前网关仍不可用，属另一张独立任务卡），因此只验证了「失败快速返回」，**没有一次成功请求可用于观察正常耗时**。20 秒仍是按量级推定的值（向量化是单次无生成的短请求，秒级完成；600 秒等于没有上限）。待模型可用后据实测校准。这条不阻塞本变更——即便 20 秒偏紧，后果是「可恢复的误杀」而非「无限期挂死」。
+
+## 实施后的实测结果（回填）
+
+本变更是否奏效，唯一的端到端证据是同一跑批能否跑完：
+
+| | 修复前（连续两次） | 修复后 |
+|---|---|---|
+| 跑批结果 | 挂死，停在采样 1/3、CPU 零增长 | **跑完 3 次采样，退出码 0** |
+| 503 失败 | 10 / 17 次后即挂死 | **76 次全部快速返回** |
+| 端到端延迟 | 39.6s ± 16.1s | **27.7s ± 5.0s** |
+| 门禁 | 无法运行 | PASS（F1 56.2%→54.5%、槽位 87.7%→81.9%） |
+
+延迟下降与抖动收窄是意外收获：事件循环不再被同步调用冻住，并发跑批的吞吐与稳定性一并改善——原先那 ±16.1s 的抖动里，有一部分正是「某个协程把循环占住、其余协程排队等」造成的。

@@ -30,6 +30,7 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-timeout>=2.4.0",
 ]
 
 [tool.uv]
@@ -38,5 +39,8 @@ package = false
 [tool.pytest.ini_options]
 # 让 pytest 把项目根加入 sys.path，使 `import agents/config/...` 可解析
 pythonpath = ["."]
+# pytest-timeout 的默认方法。thread 不依赖事件循环，故即便事件循环被同步阻塞冻住
+# 也能把「挂死」变成「明确失败」——见 tests/test_embedding_timeout.py 的说明。
+timeout_method = "thread"
 # 让 @pytest.mark.asyncio 标记的协程测试被真正收集执行（否则是未知 mark）
 asyncio_mode = "auto"
