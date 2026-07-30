@@ -1,0 +1,42 @@
+# 任务清单：飞书 Channel + 任务执行层
+
+## 1. 任务执行层（executor/）
+
+- [x] 1.1 定义任务模型与接口：`Task`（session_id, user_id, input, channel 元数据）、`submit(task, on_complete) → task_id`（异步）与 `execute_inline(task)`（同步透传 generator）两种模式、结构化终态 `TaskResult{status, reply_text, error}`（成功/失败/超时/guardrail 耗尽/忙碌拒绝）。不引入 `TaskHandle`
+- [x] 1.2 实现进程内 asyncio executor：每 session 一把锁（同话题串行）+ 每 session 排队深度上限（默认 5，超出以「忙碌」终态回调、不入队）、全局 `Semaphore` 并发上限（默认 10，可配）、墙钟超时 `asyncio.wait_for`（默认 600s，可配）。两种模式共享同一 Semaphore 与同一 per-session 锁
+- [x] 1.3 接入 harness：worker 按任务拉起 AgentLoop（复用 `api/chat_handler` 现有装配逻辑），从 token 流择出 `[REPLY]` 填入 `TaskResult.reply_text`（协议解析归 executor，Channel 不碰），`GuardrailExhausted` 映射为失败终态
+- [x] 1.4 非成功终态补写兜底 assistant 回合：`ProcessUserInput_stream` 捕 `asyncio.CancelledError` → 写入与投递文案一致的 assistant 回合 → **重新抛出**（不得吞掉，否则 executor 误判成功）；失败/guardrail 耗尽终态同样补写。确认 `_summary.compact_if_needed` 被跳过一轮时可容忍
+- [x] 1.5 `Tool` 增加可选 `timeout` 字段（默认 `None` → 取全局缺省 60s，可配），`agent_loop._dispatch` 按 `tool.timeout` 施加超时；超时**不重试**、当错误结果回灌（复用现有「工具执行失败」回灌口径）；**`delegate` 显式豁免**（其 handler 内部是整个子 AgentLoop，全局 60s 会误杀）；LLM 侧不动（`guarded_invoke` 已有）
+- [x] 1.6 在工具编写约定（`openspec/project.md` 或工具基类 docstring）写明超时边界：`asyncio.wait_for` 只能中断有 await 点的工具，同步阻塞工具（同步 SQLite/FAISS/子进程）需自行下沉线程池，否则声明了 timeout 也无效
+- [x] 1.7 `user_id` 透传：`ProcessUserInput_stream` 增加可选 `user_id` 参数，传给 `SessionStore.get_or_create(sid, user_id=...)`（该参数已支持、只是无人传）；缺省仍为 `default_user`，Web 行为不变
+- [x] 1.8 executor 单测（注入 fake 慢任务/抛错任务）：同话题串行、跨话题并行、并发上限排队、排队深度上限拒绝、墙钟超时终态、五种终态回调各一条；工具超时回灌为错误结果且不被重试；`delegate` 不被默认超时截断；取消时兜底回合被写入且 `CancelledError` 继续传播
+
+## 2. Web 接线切换（对外行为不变）
+
+- [x] 2.1 `web/routes.py`/`api/chat_handler.py` 改走 `execute_inline`（generator 直接透传，不经跨协程队列），加 `EXECUTOR_ENABLED` 环境变量开关（默认 true）保留旧直调路径可回滚
+- [x] 2.2 **新增 Web 层端到端回归测试**（这是改道无回归的唯一有效证据）：`starlette.TestClient` 打 `/chat/stream`，LLM 注入 fake（复用 `tests/test_chat_handler_e2e.py` 的模块级单例 monkeypatch 手法，离线确定性），断言 ① token 序列与改造前一致 ② `X-Session-Id` 响应头 ③ 多轮上下文接续 ④ 并发不同 session 不串号。`httpx` 显式加入 dev 依赖组
+- [x] 2.3 跑 `uv run pytest` 全绿 + `evals/` 门禁通过（退出码 0）。**注意 evals 的有效范围**：`evals/agent_capture.py` 直接构造 `AgentLoop`，不经 `chat_handler`/`web`/executor，故它证明的是「1.5 的工具超时改动没伤到 AgentLoop」，**不能**作为 Web 改道无回归的依据（详见 design「验证覆盖边界」）
+
+## 3. 飞书接入层（channels/lark/）
+
+- [x] 3.1 引入 `lark-oapi` 依赖（uv add），`.env` 增加 app_id/app_secret/domain/`FEISHU_ENABLED`/`FEISHU_SESSION_SCOPE`/并发与超时配置项，`.env.example` 补说明（含所需 im 权限 scope 清单）
+- [x] 3.2 **先验证再建表**：✅ 已实测（2026-07-29，普通群 `oncall-bot test`），原始载荷存档 `docs/evidence/feishu-event-payload-2026-07-29.log`，探针脚本 `scripts/feishu_event_probe.py`。**结论推翻了原设计的解析顺序**：首条 @bot 消息无 `thread_id`/`root_id`，回复消息三者全有 → 会话键必须用 `root_id → message_id`，`thread_id` 不可排首位（否则首条与其回复落到不同 session，多轮断裂）
+- [x] 3.3 DB 新增 `channel_session` 映射表（`channel / scope / external_id / session_id / created_at`，`(channel, external_id)` 唯一索引）与 Repository；会话键按 **`root_id → message_id`** 解析（依 3.2 实测；`thread_id` 不参与取键，只记日志），作用域 `reply`（默认）/ `chat`，session_id 命名 `feishu:{解析后的键}`
+- [x] 3.4 实现 gateway：事件解析（仅处理 @bot 文本消息；**@判定比对 `mentions[].id.open_id` 与机器人自身 open_id**——不可用 `mentioned_type=="bot"`（群内有其它机器人会误判）或 `name` 匹配（改名即失效），机器人 open_id 启动时取一次）、event_id 内存 TTL 去重（默认 5 分钟 + 容量上限 LRU；**理由是防重复下单，不是性能优化**）、会话键解析、取 `sender.sender_id.open_id` 作 user_id（`sender_id.user_id` 实测不下发，不可依赖）、提交任务 → 发用户可见 ack（**必须用 reply**——`reply` 作用域依赖回复链，ack 挂进链里才能让用户回复 ack 时仍收敛到同一 session）→ 事件回调立即返回（不 await 任务）
+- [x] 3.5 实现 delivery：终态回调统一出口，成功/失败/超时/guardrail 耗尽/忙碌拒绝五种终态文案投递回原会话，投递失败重试 2 次 + 结构化错误日志（绝不静默）；超时文案含副作用提示（「若已产生预约请勿重复操作」），且系统不自动重试
+- [x] 3.6 实现 consumer：lark-oapi 长连接订阅 `im.message.receive_v1`，在 FastAPI lifespan 启动、受 `FEISHU_ENABLED` 控制（默认 false）。**MUST 用 `await client._connect()` + 另起 `_ping_loop()` task，不可调 SDK 的 `start()`**——后者内部是 `loop.run_until_complete`，在已有运行中事件循环的 lifespan 里会抛 "loop is already running"（见 design D10）。连接状态结构化日志，启动时权限自检并明确报错
+- [x] 3.7 channel 单测（fake 飞书 client）：@判定（含群内其它机器人被 @ 时忽略）、event 去重幂等、去重表 TTL/容量不无界、**会话键解析（首条取 `message_id`、回复取 `root_id`、带 `thread_id` 时仍取 `root_id`、`chat` 作用域取 `chat_id`）**、同会话共享/跨会话隔离、user_id 随任务传递、协议 ack 不阻塞、用户 ack 以 reply 发出、五种终态均有投递、投递失败重试
+
+## 4. 端到端验证与收尾
+
+- [x] 4.1 ✅ 真租户端到端已验证（2026-07-29，群 `oncall-bot test`）：**多轮对话**——一次 6 轮话题对话全部收敛到同一 session（`channel_sessions` 单行 + `conversation_turns` 12 条），机器人成功总结出前面问过的 4 个问题；**会话隔离**——两次独立 @ 落到不同 session；**先 ack 后结果**——实测间隔 31s，ack 与结果都在同一话题内；**超时兜底**——`EXECUTOR_WALL_CLOCK_TIMEOUT=3` 实测投出带副作用提示的文案，且补写了兜底 assistant 回合（历史成对、无孤立 user 回合）；**排队上限**——同会话并发 4 条 / 深度 1 实测 2 受理 2 拒绝，被拒者不写历史（拒绝发生在 runner 之前，故不产生孤立回合）。**WAL**——实测 `journal_mode=delete` 未开 WAL，但 `busy_timeout=5000` + 单行 insert 已足够，并发测试零 `database is locked`，按原判断不动（见 design Risks）
+- [x] 4.2 全量验证与收尾。
+  - **pytest**：✅ 419 passed / 9 xfailed（基线 263 → 新增 156 条）。
+  - **RUNNING.md**：✅ 新增「接入飞书」一节——配置、启动、用法、可调参数、故障对照表；单 worker 写成硬约束并说清后果（多 worker → 多份长连接 → 同一消息被不同进程各消费一次 → 进程内去重表拦不住 → 重复下单）；`--reload` 建议关掉飞书开关。
+  - **evals 门禁**：⚠️ **绿灯来自 2026-07-29 12:0x 的运行，当前无法重跑**——如实标注如下。
+    - 那次结果：`工具调用-F1` 56.2%→55.9%、`槽位抽取完整率` 87.7%→86.3%，PASS（容差 0.30）。
+    - 该运行发生在 commit `4e01759` 之后，故**已覆盖本期全部影响 evals 执行路径的改动**：工具调用超时（`cfb221c`）与 `RunOutcome` 带外上报（`63f2e9e`）。
+    - 结论仍成立的证据（可复核）：`git diff --name-only c76e2d4..HEAD | grep -E '^(harness|services|evals|agents)/'` **输出为空**——自那次 PASS 起，evals 实际执行的代码路径逐字节未变；此后改动全在 `channels/`、executor 接线、DB 加表、日志 formatter、文档与测试。
+    - 无法重跑的原因：`services/text_embedding.py` 的 `embed_input` 声明了 `timeout` 却从未使用，底层 `embed_query` 是**同步无超时**调用；配合当前网关上 `text-embedding-3-small` 不可用，跑批会挂死——连续两次实测：进程 CPU 零增长、2 个 ESTABLISHED :443 + 9 个 CLOSE_WAIT、日志静默十余分钟（同时独立量 LLM 延迟正常 1.4–2.5s，排除外部 API 整体变慢）。
+    - 该缺陷**先于本变更存在**（改动前同样无超时），且正是本变更已写明的边界实例：`Tool.timeout` 对同步阻塞 handler 无效（见 `harness/tools/base.py` docstring 与 `openspec/project.md`）。已单开任务卡跟踪（超时透传 + `asyncio.to_thread` 下沉），**不并入本变更**——`services/` 属保留资产，且该缺陷与本变更范围无关。
+    - ⚠️ 生产风险已记入 design Risks：飞书长连接与 Web 同进程，事件循环一旦被同步调用冻住，收包与心跳一起停摆、机器人失去响应且不报错。

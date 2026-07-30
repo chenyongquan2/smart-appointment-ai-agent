@@ -13,6 +13,9 @@ tool message 喂回，循环迭代，直至模型产出最终文本回复或触�
 
 from __future__ import annotations
 
+import asyncio
+import math
+from enum import Enum
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -39,6 +42,26 @@ from harness.runtime.system_prompt import build_system_prompt
 # 触达步数上限时的安全兜底回复（前端按 [REPLY] 前缀渲染）。
 _FALLBACK_REPLY = "抱歉，本次处理步骤过多，暂时无法完成。请换种说法或稍后再试。"
 
+# 单次工具调用的全局缺省超时（秒）。工具可用自身的 ``Tool.timeout`` 覆盖或豁免。
+# 取值依据：介于 LLM 单次超时（30s，见 guardrails/retry）与任务墙钟总超时（600s，
+# 见 executor）之间。现有本地 DB / RAG 工具远快于此，该上限主要为将来的网络工具服务。
+DEFAULT_TOOL_TIMEOUT = 60.0
+
+
+class RunOutcome(str, Enum):
+    """一次 ``run`` 的结束方式——回复文本之外的「带外」信号。
+
+    为什么需要它：``COMPLETED`` 之外的四种结束方式**都 yield 同一句** ``_FALLBACK_REPLY``，
+    调用方（如任务执行层）单看 token 流无从分辨「模型答完了」还是「护栏把它拦停了」。
+    靠比对兜底文案来反推正是黄金准则禁止的脆弱字符串解析，故用结构化枚举带外上报。
+    """
+
+    COMPLETED = "completed"                      # 模型不再要工具，产出了真正的最终回复
+    GUARDRAIL_EXHAUSTED = "guardrail_exhausted"  # LLM 重试护栏耗尽（见 guardrails/retry）
+    SPIN_DETECTED = "spin_detected"              # 连续相同工具调用达上限，判定打转
+    BUDGET_EXCEEDED = "budget_exceeded"          # 上下文 token 预算超限，未再发起 LLM 调用
+    MAX_STEPS = "max_steps"                      # 跑满步数上限仍未收敛
+
 
 class AgentLoop:
     """TAO 循环编排器。
@@ -52,6 +75,8 @@ class AgentLoop:
         repeat_limit: 连续相同工具调用达到该次数即判定打转并终止；``None`` 时禁用。
         llm_timeout / llm_max_attempts / llm_base_delay: LLM 调用护栏参数（超时秒数、
             最大尝试次数、指数退避基准秒数），透传给 ``guarded_invoke``。
+        tool_timeout: 单次工具调用的**全局缺省**超时秒数（默认 60）；``None`` 时禁用
+            全局缺省。单个工具可用自身的 ``Tool.timeout`` 覆盖或豁免（如 ``delegate``）。
         retry_sleep: 退避等待实现（默认 ``asyncio.sleep``）；测试可注入 no-op。
         on_tool_call / on_observation: 可选 trace 钩子（默认 no-op）。
         tracer: 可选可观测 tracer（Phase 6）；注入时为整次 run 开 root span、每步开
@@ -72,6 +97,7 @@ class AgentLoop:
         llm_timeout: float = DEFAULT_TIMEOUT,
         llm_max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         llm_base_delay: float = DEFAULT_BASE_DELAY,
+        tool_timeout: Optional[float] = DEFAULT_TOOL_TIMEOUT,
         retry_sleep: Optional[Callable[[float], Awaitable[None]]] = None,
         on_tool_call: Optional[Callable[[dict[str, Any]], None]] = None,
         on_observation: Optional[Callable[[str, Any], None]] = None,
@@ -85,6 +111,7 @@ class AgentLoop:
         self.llm_timeout = llm_timeout
         self.llm_max_attempts = llm_max_attempts
         self.llm_base_delay = llm_base_delay
+        self.tool_timeout = tool_timeout
         self._retry_sleep = retry_sleep
         self._on_tool_call = on_tool_call or (lambda call: None)
         self._on_observation = on_observation or (lambda name, result: None)
@@ -101,6 +128,7 @@ class AgentLoop:
         session_id: Optional[str] = None,
         history: Optional[list[BaseMessage]] = None,
         system_suffix: Optional[str] = None,
+        on_outcome: Optional[Callable[["RunOutcome"], None]] = None,
     ) -> AsyncGenerator[str, None]:
         """驱动 TAO 循环，流式产出最终回复。
 
@@ -112,6 +140,11 @@ class AgentLoop:
                 Phase 3 行为一致）。
             system_suffix: 系统提示补充（如长期偏好提示），追加到 system prompt 末尾；
                 ``None``/空串时不追加。
+            on_outcome: 可选回调，本次 run 结束前以 ``RunOutcome`` 恰好调用一次，供调用
+                方区分「答完了」与「被护栏拦停」（后者的回复文本都是同一句兜底，无法从
+                token 流分辨）。**刻意作为每次调用的参数而非构造参数**：``AgentLoop`` 是
+                跨请求共享的模块级单例，构造期回调会在并发会话间串号。缺省 ``None`` 时
+                行为与接入前完全一致（向后兼容）。
 
         最终回复（含 ``max_steps`` 兜底）以 ``[REPLY]`` 前缀 yield，调用方可据此
         捕获回复文本并回写会话历史（``AgentLoop`` 自身保持无状态、不写 DB）。
@@ -120,6 +153,9 @@ class AgentLoop:
         # ① 组装初始上下文（context engineering 的落点）
         # 顺序固定：系统提示(可带后缀) → 历史 → 本轮用户输入。
         # ════════════════════════════════════════════════════════════════════
+        # 带外 outcome 上报：缺省 no-op，故未接入的调用方行为完全不变。
+        report = on_outcome or (lambda outcome: None)
+
         system_content = self.system_prompt
         if system_suffix:
             # system_suffix 典型是「长期偏好提示」（Phase 4 LongTermMemory 生成），
@@ -153,6 +189,7 @@ class AgentLoop:
                 # 预算护栏：发 LLM 前先估算累计上下文体量，超预算就不再「花钱」调用，
                 # 直接优雅收尾（绝不无谓地烧 token）。
                 if self.max_tokens is not None and estimate_tokens(messages) > self.max_tokens:
+                    report(RunOutcome.BUDGET_EXCEEDED)
                     yield f"[REPLY]{_FALLBACK_REPLY}"
                     return
 
@@ -167,6 +204,7 @@ class AgentLoop:
                     except GuardrailExhausted:
                         # 重试都失败：不让异常冒泡崩掉请求，记一笔 error 后给兜底回复。
                         self._tracer.add_event(step, "error", {"type": "guardrail_exhausted"})
+                        report(RunOutcome.GUARDRAIL_EXHAUSTED)
                         yield f"[REPLY]{_FALLBACK_REPLY}"
                         return
                     messages.append(ai)  # 模型这轮输出也加回上下文（下轮它能看到自己说过啥）
@@ -180,6 +218,7 @@ class AgentLoop:
                     if not tool_calls:
                         # 空 = 模型判断信息已够、不再要工具 → 这就是最终回复，结束循环。
                         # 前缀 [REPLY] 是与 chat_handler 的约定，供其择出回复文本回写历史。
+                        report(RunOutcome.COMPLETED)
                         yield f"[REPLY]{_content_text(ai.content)}"
                         return
 
@@ -187,6 +226,7 @@ class AgentLoop:
                     # （模型陷入「反复调同一工具同一参数」的死胡同时及时止损）。
                     if spin.check(tool_calls):
                         self._tracer.add_event(step, "error", {"type": "spin_detected"})
+                        report(RunOutcome.SPIN_DETECTED)
                         yield f"[REPLY]{_FALLBACK_REPLY}"
                         return
 
@@ -216,6 +256,7 @@ class AgentLoop:
             # ════════════════════════════════════════════════════════════════
             # ⑥ 兜底：跑满 max_steps 仍没出最终回复 → 安全收尾，绝不无限循环
             # ════════════════════════════════════════════════════════════════
+            report(RunOutcome.MAX_STEPS)
             yield f"[REPLY]{_FALLBACK_REPLY}"
         finally:
             self._tracer.end_span(root)  # 关 root span → 导出整条 trace（中途 return 也会执行）
@@ -234,18 +275,51 @@ class AgentLoop:
             sleep=self._retry_sleep,             # 退避用的 sleep（测试注入 no-op，不真睡）
         )
 
+    def _timeout_for(self, name: str) -> Optional[float]:
+        """解析某工具本次调用适用的超时秒数；``None`` 表示不设超时。
+
+        优先级：工具自身声明 > loop 的全局缺省。``NO_TIMEOUT``（即 ``math.inf``）
+        与全局缺省为 ``None`` 一样，都归一成「不设超时」。
+        """
+        try:
+            declared = self.registry.get(name).timeout
+        except KeyError:
+            # 未注册的工具名：超时取值无关紧要，随后 dispatch 会抛 KeyError 并被回灌成错误。
+            declared = None
+        effective = self.tool_timeout if declared is None else declared
+        if effective is None or math.isinf(effective):
+            return None
+        return effective
+
     async def _dispatch(self, call: dict[str, Any]) -> Any:
-        """分发单个工具调用；异常被捕获并作为错误结果回灌（不崩循环）。
+        """分发单个工具调用；超时与异常都被捕获并作为错误结果回灌（不崩循环）。
 
         与 ``_guarded_invoke`` 刻意「不对称」：工具可能有副作用（如写库下单），重试
         会重复执行，故这里「绝不重试」、只做错误隔离——把异常吞成一句话当成正常工具
-        结果喂回模型，让它下一轮自行补救（换参 / 换工具 / 告知用户）。
+        结果喂回模型，让它下一轮自行补救（换参 / 换工具 / 告知用户）。超时同理：
+        中断后当错误结果回灌，**不重发**。
+
+        超时的两个边界（见 ``harness/tools/base.Tool`` 的 docstring）：
+        - 只能中断在 await 点让出控制权的 handler；同步阻塞的 handler 取消不掉。
+        - ``CancelledError`` 继承自 ``BaseException`` 而非 ``Exception``，故下面的
+          ``except Exception`` **不会**吞掉它——外层任务被取消（如 executor 的墙钟
+          超时）时，取消信号照常向上传播，这是刻意保留的行为。
         """
+        name = call.get("name", "?")
         try:
             # call 形如 {"name": 工具名, "args": {...}, "id": 调用id}；分发到 registry。
-            return await self.registry.dispatch(call["name"], call.get("args") or {})
+            # 先算超时再建协程：否则解析超时时若抛错，已创建的协程无人 await（RuntimeWarning）。
+            timeout = self._timeout_for(call["name"])
+            coro = self.registry.dispatch(call["name"], call.get("args") or {})
+            if timeout is None:
+                return await coro
+            return await asyncio.wait_for(coro, timeout)
+        except asyncio.TimeoutError:
+            # 单独成一支（而非并进下面的 Exception）：给模型一句能据以决策的明确说明，
+            # 让它知道是「太慢被掐断」而非「参数错/服务报错」，下一轮可换更窄的查询。
+            return f"工具执行超时（{name}）：超过 {timeout} 秒未返回，已中断且不会重试。"
         except Exception as exc:  # noqa: BLE001 —— 故意捕获「全部」异常：工具失败须回灌而非冒泡
-            return f"工具执行失败（{call.get('name', '?')}）：{exc}"
+            return f"工具执行失败（{name}）：{exc}"
 
 
 def _content_text(content: Any) -> str:

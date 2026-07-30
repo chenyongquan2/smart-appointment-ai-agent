@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, JSON, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -89,6 +89,37 @@ class ConversationSummary(Base):
     #   为何用 turn id 而非"第几条"计数：id 单调递增、抗并发，"id 之后即新增"语义稳定。
     covered_upto = Column(Integer, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+class ChannelSession(Base):
+    """IM 渠道会话 → Agent 会话的映射（change: feishu-channel-integration）。
+
+    ``external_id`` 存的是**解析后**的会话键，不是原始事件字段。飞书普通群的解析链是
+    ``root_id → message_id``（首条 @bot 消息取自身 message_id，其后每条回复的 root_id
+    都指回它，于是收敛到同一会话）；``scope='chat'`` 时取 ``chat_id``。
+    ⚠ ``thread_id`` **不参与**取键——实测它只出现在续话消息上、首条没有，排在解析链
+    首位会让首条与其回复落到不同会话，多轮直接断裂（证据见
+    ``docs/evidence/feishu-event-payload-2026-07-29.log``）。
+
+    这张表为何存在（诚实说明）：``session_id`` 本可由 ``external_id`` 确定性派生
+    （``feishu:{key}``），所以**正确性并不依赖本表**，进程重启后照样能派生出同一个值。
+    表的价值在两点：① 让绑定关系**权威且稳定**——派生规则日后若调整，已建立的会话仍按
+    表中记录延续，不会因换规则而集体断档；② 审计与反查，从 ``session_id`` 找回它对应
+    群里的哪次对话（第 4 期 oncall triage 要把 trace 关联回真实对话）。
+    """
+
+    __tablename__ = 'channel_sessions'
+    id = Column(Integer, primary_key=True)
+    channel = Column(String, nullable=False)                    # 'feishu' / 将来的 'dingtalk' 等
+    scope = Column(String, nullable=False)                      # 'reply' / 'chat'
+    external_id = Column(String, nullable=False)                # 解析后的会话键
+    session_id = Column(String, nullable=False, index=True)     # 对应的 Agent 会话标识
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # 同一渠道下一个外部键只能绑一个会话——并发下靠 DB 约束兜底，不只靠应用层先查后写。
+    __table_args__ = (
+        UniqueConstraint('channel', 'external_id', name='uq_channel_session_external'),
+    )
+
 
 class BadCase(Base):
     """坏 case 回流记录（Phase 6：评估闭环）。

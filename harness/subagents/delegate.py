@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from harness.observability.tracer import Tracer
 from harness.subagents.registry import SubAgentRegistry
-from harness.tools.base import Tool
+from harness.tools.base import NO_TIMEOUT, Tool
 from harness.tools.registry import ToolRegistry
 
 
@@ -89,9 +89,16 @@ def build_delegate_tool(
     # ④ 最终产出一个再普通不过的 Tool（四要素：name/description/args_schema/handler）。
     #    关键认知：delegate 从主 Agent 视角看，和 find_technician 这类领域工具毫无二致——
     #    它走的是完全相同的 tool-calling 路径，「派生子 Agent」只是它 handler 内部的事。
+    #
+    #    唯一的例外是 timeout=NO_TIMEOUT：正因为「handler 内部是一整个子 AgentLoop」
+    #    （最多 8 步，每步 LLM 最多 30s×3 次重试），它与「一次本地 DB 查询」的合理耗时
+    #    差着数量级。主 Agent 的 registry 里又只注册了 delegate 一个工具，若让它套用
+    #    工具的全局缺省超时（60s），正常任务会被随机截断——那是误杀而非保护。
+    #    子 Agent 内层的领域工具仍各自受全局缺省超时约束，故这里豁免不留缺口。
     return Tool(
         name="delegate",
         description=description,
         args_schema=DelegateArgs,
         handler=_handler,
+        timeout=NO_TIMEOUT,
     )

@@ -10,10 +10,16 @@ async agent loop），签名为 ``async def handler(args: BaseModel) -> Any``。
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final, Optional
 
 from pydantic import BaseModel
+
+# 声明「本工具不受超时约束」的取值。用于 handler 内部本就是长任务的编排型工具——
+# 典型是 delegate：它的 handler 跑的是一整个子 AgentLoop（多步 LLM 调用），
+# 与一次本地 DB 查询共用同一个上限必然误杀其一（见 change: feishu-channel-integration D3）。
+NO_TIMEOUT: Final[float] = math.inf
 
 
 # frozen=True：实例创建后字段只读（不可变）。工具是「声明式配置」，注册后不该被改，
@@ -35,6 +41,15 @@ class Tool:
         dangerous: 是否为有副作用的危险操作（如写库的 ``create_appointment``）。
             危险工具在分发前须经权限闸门判定（见 ``harness/guardrails/permission``）；
             只读查询工具保持默认 ``False``。
+        timeout: 本工具单次调用的超时秒数。``None``（默认）= 采用运行时的全局缺省；
+            具体数值 = 覆盖全局缺省；``NO_TIMEOUT`` = 豁免超时。
+
+    超时的适用边界（重要，写工具时必读）：
+        超时依赖 ``asyncio`` 的取消机制，**只能中断在 await 点让出控制权的 handler**。
+        若 handler 内部执行的是同步阻塞调用（同步 SQLite / FAISS / 子进程等），到点也
+        取消不掉，它会一直占着事件循环直到自己返回——此时即使声明了 ``timeout`` 也
+        **没有**超时保护。需要真实超时的同步工具 MUST 自行把阻塞调用下沉到线程池
+        （如 ``asyncio.to_thread``），否则 ``timeout`` 只是一句空声明。
     """
 
     # ── 四要素 ──────────────────────────────────────────────────────────
@@ -43,6 +58,7 @@ class Tool:
     args_schema: type[BaseModel]                           # 注意是「类」本身（type[...]），不是实例；run() 里才实例化
     handler: Callable[[BaseModel], Awaitable[Any]]         # 收「已校验的 args 实例」，返回 awaitable（统一 async）
     dangerous: bool = False                                # 默认只读安全；写库类工具显式置 True，触发权限判定
+    timeout: Optional[float] = None                        # None=取全局缺省；数值=覆盖；NO_TIMEOUT=豁免（见类 docstring 的适用边界）
 
     async def run(self, raw_args: dict[str, Any]) -> Any:
         """校验原始参数并执行 handler。"""

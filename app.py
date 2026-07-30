@@ -107,11 +107,35 @@ def create_app() -> FastAPI:
     # 静态文件
     app.mount("/static", StaticFiles(directory="web/static"), name="static")
 
+    # 飞书长连接消费者（change: feishu-channel-integration）。
+    # 与 Web 同进程，故与 executor / SessionStore 共用同一套模块级单例，SQLite 也保持
+    # 单写者。⚠ 因此服务 MUST 单 worker 运行：多 worker 会起多份长连接、同一条消息被
+    # 不同进程各消费一次，而事件去重表是进程内的，拦不住跨进程重复（= 重复下单）。
+    feishu_consumer = {"instance": None}
+
     # 添加启动事件
     @app.on_event("startup")
     async def startup_event():
-        """应用启动时自动初始化系统"""
+        """应用启动时自动初始化系统，并按开关启动飞书接入"""
         await initialize_system()
+
+        # 用 chat_handler 里装配好的 executor 与 Repository，Channel 不自建这些对象。
+        from api.chat_handler import channel_sessions, executor
+        from channels.lark.consumer import build_consumer_from_env
+
+        consumer = build_consumer_from_env(executor, channel_sessions)
+        if consumer is not None:
+            # start() 内部已收口异常、失败只返回 False——一个 Channel 起不来不该让
+            # 整个 Web 服务也起不来。
+            if await consumer.start():
+                feishu_consumer["instance"] = consumer
+
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """应用关闭时断开飞书长连接"""
+        consumer = feishu_consumer.get("instance")
+        if consumer is not None:
+            await consumer.stop()
 
     return app
 

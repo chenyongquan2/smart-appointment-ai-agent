@@ -24,12 +24,17 @@ dependencies = [
     "requests>=2.25.0",
     "mcp>=1.0.0",
     "opentelemetry-sdk>=1.20,<2.0",
+    "lark-oapi>=1.7.1",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    # starlette TestClient 依赖 httpx（Web 端到端回归测试用）。此前只是传递依赖，
+    # 显式声明避免上游变动时测试无声失效。
+    "httpx>=0.27",
+    # 把「事件循环被同步阻塞冻住」这类故障从「CI 挂死」变成「明确失败」。
     "pytest-timeout>=2.4.0",
 ]
 
