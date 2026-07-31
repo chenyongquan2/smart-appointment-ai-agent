@@ -27,6 +27,35 @@
 - **重定基线走既有闸门**：数据集变更属会改门禁判定的行为变更（见记忆 `eval-trigger-nondeterminism`），必须 `--samples 3` 重定并人审，不能沿用旧基线。
 - **分类靠脚本自检**：扩容后用一段一次性统计（每类计数 / split 分布 / schema 合法性）自查是否达标，纳入 tasks 验证步骤，避免「以为够了实际某类没到 30」。
 
+## 现状盘点结果（回填，tasks 1.1/1.2）
+
+实测 `evals/cases.jsonl`（2026-07-30，共 51 条，无非法行）：
+
+| 类别 | dev 现状 | 距 30 | held-out |
+|---|---|---|---|
+| appointment | 20 | +10 | 3 |
+| query | 6 | +24 | 2 |
+| pay | 5 | +25 | 2 |
+| statistics | 5 | +25 | 2 |
+| other | 5 | +25 | 1 |
+| **合计** | **41** | **+109** | 10（+20） |
+
+另：29 条带 `expected_outcome`（22 `create_appointment` + 7 `search_knowledge`）、6 条多轮（均 2 轮）。
+
+**关键发现：现有稳定性是靠冗余买来的。** appointment 的 20 条里 **10 条（50%）是同一个模板**——「我要预约{时间}做{时长}{项目}，要{力度}{性别}技师{姓名}，帮我订好」。这是 `evals-stabilize-gate-three` 为稳定门禁而加的祈使式锚点（见记忆 `eval-trigger-nondeterminism`：稳定性靠数据集冗余）。
+
+由此**把 Risks 里「数字可能波动/下探」这条预测收紧**：走多样性路线后指标不是"可能波动"，而是**很可能真降**——因为被替换掉的正是那批人为压低方差的同款样本，而新增的是它们测不到的难例。`工具调用-F1` 从 56% 落到 40–45% 区间属正常，验收判据仍是「CI 收窄 + 分布合理」，绝不是追旧数字。这条预期必须在重定基线前对齐，否则会被误判成回归。
+
+**各意图的标注约定（实测归纳，新增用例须遵循）**：
+
+| 意图 | `expected_tools` | `expected_outcome` | `expected_slots` |
+|---|---|---|---|
+| appointment | `[find_technician, check_availability, create_appointment]`（信息不全时可为子集） | `create_appointment` | 有 |
+| query | `[search_knowledge]`（问技师时加 `find_technician`） | `search_knowledge` | 一般无 |
+| pay / statistics / other | `[]` | 无 | 无 |
+
+`pay`/`statistics`/`other` 的 `expected_tools` 为空**不是缺标注**——它们测的正是「不该调工具时别乱调」，是负样本。
+
 ## Risks / Trade-offs
 
 - **人工造数成本高**：30×5 + 30 held-out ≈ 180 条，多为手写。缓解：按意图类分批、复用现有句式骨架再做变体，但严格避免近似重复冒充。
