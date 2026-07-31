@@ -103,7 +103,7 @@
 {"input": "你能陪我聊聊天吗", "expected_intent": "other", "expected_tools": [], "split": "held-out"}
 {"input": "有空位吗我想做个按摩", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
 {"input": "今天下班后还能约吗，大概七点多", "expected_intent": "appointment", "expected_tools": ["check_availability"], "expected_slots": {"start_time": "今天19:00"}}
-{"input": "下周三想做个足疗，你们那天有人吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"], "expected_slots": {"project": "足疗"}}
+{"input": "下周三想做个足疗，你们那天有人吗", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability"], "expected_slots": {"start_time": "下周三", "project": "足疗"}}
 {"input": "我原本约的是今晚八点，能不能挪到明天早上", "expected_intent": "appointment", "expected_tools": ["check_availability"]}
 {"input": "不好意思，我明天那个预约要取消掉", "expected_intent": "appointment", "expected_tools": []}
 {"input": "约个明早的推拿", "expected_intent": "appointment", "expected_tools": ["find_technician", "check_availability", "create_appointment"], "expected_slots": {"start_time": "明天09:00", "project": "推拿"}, "expected_outcome": "create_appointment"}
