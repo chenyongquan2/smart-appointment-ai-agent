@@ -76,7 +76,9 @@ uv run python evals/run_evals.py --heldout-only      # 只评 held-out（体检�
 ```
 
 - **基线/门禁恒基于 dev**：`--update-baseline` / `--gate` 只用 dev 结果；即便同时传 `--include-heldout`，held-out 也**物理上进不了** `baseline.json`（运行器用 `_split_results` 在 `build_report` 前就把两个子集拆开，held-out 只走"分集呈现"分支）。`--heldout-only` 不含 dev，故禁止与 `--update-baseline`/`--gate` 同用（退出码 2）。
-- **规模（本切片）**：dev **41 条**（每类 ≥5：appointment 20 / query 6 / pay 5 / statistics 5 / other 5），held-out **10 条**（覆盖全部 5 类，技师名与 dev 不重复）。仍是手写合成——统计意义提升但**不代表真实分布**，真实分布靠改造 7 在线回灌（后续）。held-out 才 10 条、CI 很宽，定位为"粗过拟合体检"而非结论，规模化留后续切片。
+- **规模下限约定（change `evals-dataset-scaleup-v2`）**：dev **每类 ≥30 条**、held-out **≥30 条且覆盖全部 5 类**。当前实际：全量 **184 条** = dev **154**（appointment 33 / query 31 / pay 30 / statistics 30 / other 30）+ held-out **30**（appointment 7 / pay 6 / query 6 / statistics 6 / other 5），含 **12 条多轮**、**68 条**标 `expected_outcome`。
+- **扩容的取舍**：本轮扩容**以多样性优先**（口语/正式、简短/冗长、缺槽待澄清、含噪声、模糊与相对时间、多槽位组合、改约/取消、边界表述），刻意不复制既有那批同款祈使模板——那批是 `evals-stabilize-gate-three` 为压低方差、稳定门禁而加的冗余锚点，再堆只会让指标虚高而测不出新东西。**代价是指标点估计会下探**：这是「终于测到了以前测不到的难例」，不是回归；验收判据为「CI 收窄 + 分布合理」，不追旧数字。
+- 仍是手写合成——统计意义提升但**不代表真实分布**，真实分布靠改造 7 在线回灌（后续）。距「几百~几千条」的门槛仍有距离，规模化属持续投入项。
 
 ## 运行
 
@@ -93,7 +95,7 @@ uv run python evals/run_evals.py --concurrency 1   # 串行基准路径（排障
 
 用例之间无共享可变状态（每条一个独立 `Tracer` + `InMemoryExporter` 沙盒、`AgentLoop` 无状态），故用 `asyncio.gather` + 信号量受限并发。`--concurrency N` 默认 **5**。
 
-- **实测提速**：全量 41 条 × 3 采样 从串行约 **57 分钟** → 并发 **18.4 分钟**（**3.1×**）；单次跑约 6 分钟。20 条子集上测得 4.5×，全量偏低是因含 8 条多轮长尾用例拖收尾。
+- **实测提速**：全量 41 条 × 3 采样 从串行约 **57 分钟** → 并发 **18.4 分钟**（**3.1×**）；单次跑约 6 分钟（该实测基于 41 条时期；数据集扩至 dev 154 条后单轮跑批量约为其 3.8 倍，请按此外推）。20 条子集上测得 4.5×，全量偏低是因含 8 条多轮长尾用例拖收尾。
 - **为何默认 5 而非更高**：每条用例内部还会派生子 Agent，实际在途请求是并发数的数倍；网关限流阈值未知（重定基线期间实测到过 503 与 `APIConnectionError`）。5 已拿到收益大头，冒进的边际收益低、风险高。
 - **三条硬约束**（有离线单测守，见 `tests/test_eval_concurrency.py`）：结果**与输入同序**（下游 `_split_results` 靠 zip 同序拆 dev/held-out，错位会把 held-out 算进 dev 基线）、**在途数 ≤ N**、**单条失败隔离**（异常在 `_run_case` 内吞成 N/A，不冒泡到 `gather`、不取消其它在途）。
 - `--concurrency 1` 走**真串行**分支（非"信号量=1 的并发"），作为排障与对照的基准路径，行为与并发化之前等价。
