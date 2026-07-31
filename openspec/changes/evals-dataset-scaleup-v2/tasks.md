@@ -5,22 +5,22 @@
 
 ## 2. dev 集扩容（每类 ≥30）
 
-- [ ] 2.1 `appointment` 扩到 ≥30：含多槽位组合、缺槽待澄清、改约、含噪声表述；有业务终态者标 `expected_outcome: create_appointment`。
-- [ ] 2.2 `query` 扩到 ≥30：价格/项目/技师/位置等咨询变体；有业务终态者标 `expected_outcome: search_knowledge`。
-- [ ] 2.3 `pay` 扩到 ≥30：已选定待支付的多种表述（保持 outcome N/A）。
-- [ ] 2.4 `statistics` 扩到 ≥30：工作人员上报已完成的多种表述（保持 outcome N/A）。
-- [ ] 2.5 `other` 扩到 ≥30：与按摩无关的干扰/边界表述（保持 outcome N/A）。
-- [ ] 2.6 在扩容中补若干多轮 `turns` 用例（预约逐步给槽/澄清/改约），字段遵循单轮/多轮互斥约束。
+- [x] 2.1 `appointment` 扩到 ≥30：含多槽位组合、缺槽待澄清、改约、含噪声表述；有业务终态者标 `expected_outcome: create_appointment`。
+- [x] 2.2 `query` 扩到 ≥30：价格/项目/技师/位置等咨询变体；有业务终态者标 `expected_outcome: search_knowledge`。
+- [x] 2.3 `pay` 扩到 ≥30：已选定待支付的多种表述（保持 outcome N/A）。
+- [x] 2.4 `statistics` 扩到 ≥30：工作人员上报已完成的多种表述（保持 outcome N/A）。
+- [x] 2.5 `other` 扩到 ≥30：与按摩无关的干扰/边界表述（保持 outcome N/A）。
+- [x] 2.6 在扩容中补若干多轮 `turns` 用例（预约逐步给槽/澄清/改约），字段遵循单轮/多轮互斥约束。
 
 ## 3. held-out 集扩容（≥30，覆盖 5 类）
 
-- [ ] 3.1 新增 held-out 用例至 ≥30 条、5 类每类 ≥1，`split: "held-out"`；风格与 dev 有意区分（不同措辞/场景）以体检过拟合。
-- [ ] 3.2 确认 held-out 未复用 dev 原句（防泄漏）。
+- [x] 3.1 新增 held-out 用例至 ≥30 条、5 类每类 ≥1，`split: "held-out"`；风格与 dev 有意区分（不同措辞/场景）以体检过拟合。
+- [x] 3.2 确认 held-out 未复用 dev 原句（防泄漏）。
 
 ## 4. 数据自检
 
-- [ ] 4.1 跑一次性统计脚本核对：dev 每类 ≥30、held-out ≥30 且覆盖 5 类、schema 合法（单轮/多轮互斥、split ∈ {dev,held-out}、outcome 仅标有工具终态类）。
-- [ ] 4.2 `uv run python evals/run_evals.py`（默认 dev）能无格式错误加载全部用例；`--include-heldout` 能分集加载 held-out。
+- [x] 4.1 跑一次性统计脚本核对：dev 每类 ≥30、held-out ≥30 且覆盖 5 类、schema 合法（单轮/多轮互斥、split ∈ {dev,held-out}、outcome 仅标有工具终态类）。。✅ 自检脚本全绿：184 条无非法项——dev 每类 ≥30（appointment 33 / query 31 / pay 30 / statistics 30 / other 30）、held-out 30 条覆盖 5 类、单轮/多轮互斥、split 合法、工具名合法、`expected_outcome` 只出现在 appointment/query 且必在 `expected_tools` 内、输入无完全重复、held-out 与 dev 无同句（防泄漏）
+- [x] 4.2 `uv run python evals/run_evals.py`（默认 dev）能无格式错误加载全部用例；`--include-heldout` 能分集加载 held-out。。✅ `load_cases` 加载 184 条无格式错误；分集过滤正确（默认 dev 154 / include_heldout 184 / heldout_only 30）
 
 ## 5. 重定基线（闸门 2 前置）
 
