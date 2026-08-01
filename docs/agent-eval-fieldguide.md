@@ -619,6 +619,7 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 | 多次采样 / 方差 / 置信区间 | ✅ | 改造 3（archive `2026-06-24-evals-multisample-variance-ci`）：多次采样 + 聚合级 mean±95% t-CI |
 | 延迟 | ⚠️ 部分 | 只测分类器单次调用（[metrics.py:118](../evals/metrics.py#L118)），非全链路 |
 | token / 成本 | ❌ 无 | 完全没测 |
+| **指标对类别构成敏感** | ⚠️ **已实测暴露** | `工具调用-F1` 是宏平均，而 [metrics.py](../evals/metrics.py) 对**空期望集给免费满分**（`expected` 为空→召回记 1、`actual` 为空→精确记 1）。`pay`/`statistics`/`other` 均为 `expected_tools: []`，agent 不乱调工具即得 F1=1.0。`evals-dataset-scaleup-v2` 把负样本占比从 15/41(37%) 推到 90/154(58%) 后，F1 由 56.2% 机械升至 78.5%——**与能力无关**。后果有二：① 跨数据集版本比较无意义（已知，故重定基线）；② **同一数字内部，难例失败与易例满分被混在一起看不见**。建议后续按正/负样本分档呈现，或至少在报告附分解 |
 | **— 数据集（§4）—** | | |
 | 版本化 | ✅ | `cases.jsonl` 进 git |
 | 规模 / 真实分布 / held-out | ⚠️/✅ | **184 条**（dev 154 每类≥30 + held-out 30，`evals-dataset-scaleup-v2`；含 12 条多轮）、绝大多数手写合成；✅ 已切出 `dev`/`held-out` 留出集（门禁恒基于 dev），规模仍差一个数量级 |
