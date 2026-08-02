@@ -1,4 +1,11 @@
-"""search_knowledge 工具：薄封装 KnowledgeService.search。"""
+"""search_knowledge 工具：薄封装知识库检索端口。
+
+原先直连 ``KnowledgeService``（本地 SQLite+FAISS）；本地 RAG 已于 change
+``remove-local-rag`` 移除，改为依赖 ``services/knowledge_search.py`` 的可替换端口。
+工具的四要素（name / description / args_schema / dangerous）**一字未改**——这正是
+「换检索实现时工具层一行都不用动」这条设计主张的兑现，故上层的 registry 注册、
+子 Agent 工具切片、评估用例标注全都无需跟着改。
+"""
 
 from __future__ import annotations
 
@@ -11,18 +18,17 @@ from harness.tools.schemas import SearchKnowledgeArgs
 # handler 收到的 args 已是「被 SearchKnowledgeArgs 校验过」的强类型实例（Tool.run 里完成），
 # 故这里可直接 args.query / args.top_k 访问，无需再做存在性/类型检查。
 async def _handler(args: SearchKnowledgeArgs) -> list[dict[str, Any]]:
-    # 延迟 import，避免加载工具模块即拉起重型 service / 索引。
-    from services.knowledge_service import KnowledgeService
+    # 延迟 import，避免加载工具模块即拉起端口背后的实现（未来是远程 RAG client）。
+    from services.knowledge_search import get_knowledge_search
 
-    # 这就是「工具是 services/ 的薄封装」：工具自身不写检索逻辑，只负责把已校验的参数
-    # 转交给 KnowledgeService。真正的 SQLite+FAISS 检索都在 service 里（本层不重写业务逻辑）。
-    service = KnowledgeService()
-    # 懒初始化：service 未建好索引时先 initialize（getattr 容错——属性不存在按 False 处理，
-    # 即也会初始化）。注意这是「方法内每次都 new 一个 service」，并非全局单例。
-    if not getattr(service, "initialized", False):
-        await service.initialize()
-    # 参数映射：把校验后的 args 字段一一转交 service.search；工具层到此结束，不加工返回值。
-    return await service.search(args.query, top_k=args.top_k, category=args.category)
+    # 「薄封装」的极致形态：解析当前端口 + 转交已校验的参数，到此为止。
+    # 每次调用都重新 get（而非模块加载时取一次），故运行中注入的实现能即时生效。
+    #
+    # 未接入任何实现时，缺省端口会抛 KnowledgeBackendNotConfigured——不在这里 catch：
+    # agent loop 的 _dispatch 会把它吞成「工具执行失败（search_knowledge）：…」回灌给模型，
+    # loop 继续。刻意不降级成空列表，否则模型会当成「库里没有」而编造答案（见 design D2）。
+    port = get_knowledge_search()
+    return await port.search(args.query, top_k=args.top_k, category=args.category)
 
 
 # 模块级单例：这一个 Tool 实例会被 build_default_registry 直接注册、复用。

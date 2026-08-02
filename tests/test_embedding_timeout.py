@@ -14,6 +14,15 @@
 
 全程离线：注入永不返回的 fake，不触网、不产生分钟级真实等待。
 
+⚠ **覆盖缺口**（change: remove-local-rag）：本文件原有一条
+``test_knowledge_search_does_not_block_the_loop``，把断言推到「真实调用链也不冻住循环」。
+它随 ``KnowledgeService`` 一并删除，故目前只在 ``aembed_input`` 这一层守「不阻塞」，
+**没有**任何一条用例守真实调用链。这不是无关紧要的——技师专长匹配那条链
+（``harness/tools/technician.py`` 的 async handler → ``TechnicianFinder`` →
+``find_best_match_indices`` → 同步 ``embed_input``）**当前就违反本文件第 2 组守的约束**，
+属已知缺陷、单列为独立任务处理。接入远程 RAG client 时也须按 ``guardrails`` 需求
+补回等价的「心跳不停」用例。
+
 两条"不阻塞"用例带 ``@pytest.mark.timeout``，理由值得记一笔：把修复改回同步实现后，
 这些用例**不会失败而会挂死**——事件循环被冻住，连它们自己的 ``asyncio.wait_for``
 定时器都跑不了。任何基于 asyncio 的超时在这种情形下都失效，测试救不了自己。
@@ -193,36 +202,6 @@ async def test_event_loop_keeps_running_while_embedding_waits(monkeypatch):
 
     assert ticks == 5   # 心跳全跑完了 → 循环没被嵌入调用占住
     assert fake.async_calls == 1
-
-
-@pytest.mark.timeout(20)
-@pytest.mark.asyncio
-async def test_knowledge_search_does_not_block_the_loop(monkeypatch):
-    """把范围推到真实调用链：`KnowledgeService.search` 也不得冻住循环。
-
-    这条守的是「调用点确实改成了 await 异步版」——若某处漏改回同步调用，心跳会停。
-    """
-    fake = HangingEmbeddings()
-    monkeypatch.setattr(te, "create_embedding_model", lambda **kw: fake)
-
-    from services.knowledge_service import KnowledgeService
-
-    service = KnowledgeService()
-    service.initialized = True  # 跳过索引构建，本条只测 search 的阻塞行为
-
-    ticks = 0
-
-    async def heartbeat() -> None:
-        nonlocal ticks
-        for _ in range(5):
-            await asyncio.sleep(0.01)
-            ticks += 1
-
-    search = asyncio.ensure_future(service.search("营业时间"))
-    await asyncio.wait_for(heartbeat(), timeout=2.0)
-    search.cancel()
-
-    assert ticks == 5
 
 
 # --------------------------------------------------------------------------- #

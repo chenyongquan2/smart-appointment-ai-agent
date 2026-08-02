@@ -1,6 +1,8 @@
 # Smart Appointment AI Agent
 
-Smart Appointment AI Agent 是一个面向按摩门店场景的智能预约与咨询系统。项目基于 FastAPI、LangChain、FAISS、SQLite 和多 Agent 协作架构，实现了意图识别、RAG 知识问答、技师智能匹配、预约管理、用户行为分析和个性化提醒等能力。
+Smart Appointment AI Agent 是一个面向按摩门店场景的智能预约与咨询系统。项目基于 FastAPI、LangChain、SQLite 和 Agent Harness 架构，实现了意图识别、知识问答、技师智能匹配、预约管理、用户行为分析和个性化提醒等能力。
+
+> ℹ️ 知识库检索（RAG）已从本仓移出：`search_knowledge` 工具现依赖 [services/knowledge_search.py](services/knowledge_search.py) 定义的**可替换端口**，实现将由一个独立的 RAG 项目提供。未接入时该工具会明确报"知识库未接入"，Agent 会如实告知用户而不编造答案。
 
 这个项目的核心目标不是只做一个普通的预约表单，而是尝试把门店前台日常需要处理的高频工作自动化：理解用户想咨询还是预约，判断服务偏好，匹配合适技师，检查可用时间，生成预约结果，并在必要时结合天气、历史行为和偏好数据给出更贴近用户的提醒与推荐。
 
@@ -14,12 +16,12 @@ Smart Appointment AI Agent 是一个面向按摩门店场景的智能预约与�
 
 - **智能任务分类**：自动识别用户是在咨询服务、预约技师、查询无关问题，还是触发用户行为分析，并将请求路由到对应 Agent。
 - **多 Agent 协作**：通过任务分类 Agent、咨询 Agent、预约 Agent 和用户行为 Agent 分工处理复杂流程，减少单个模块的职责膨胀。
-- **RAG 知识咨询**：使用 FAISS 向量索引检索知识库内容，结合大模型生成自然语言回答，支持流式输出。
+- **知识咨询**：通过 `search_knowledge` 工具检索门店知识库，结合大模型生成自然语言回答，支持流式输出。检索实现走可替换端口（本地 RAG 已移除，待接入独立 RAG 项目）。
 - **智能预约管理**：根据用户需求、技师专长、历史偏好和可用时间进行匹配，辅助完成预约确认。
 - **用户行为分析**：记录用户交互与预约行为，分析偏好模式，并用于后续推荐和个性化反馈。
 - **个性化提醒**：在预约完成后，可结合实时天气等外部信息生成更贴近实际场景的提醒。
-- **Embedding 缓存优化**：通过数据库缓存和文件缓存减少重复向量计算，提高知识检索性能。
-- **数据管理能力**：支持知识库、技师信息和用户行为数据的增删改查，并在数据变化后自动维护索引。
+- **技师专长向量匹配**：用 embedding + FAISS 按专长相似度排序技师，指定技师没空时推荐最接近的替代人选。
+- **数据管理能力**：支持技师信息和用户行为数据的增删改查。
 - **日志与兜底机制**：保留关键处理过程日志，在信息不足或异常情况下提供更稳定的降级处理。
 
 ## 系统架构
@@ -70,20 +72,21 @@ DB Layer
 - 控制不同 Agent 之间的切换
 - 处理无法分类或超出能力范围的问题
 
-### Consultation Agent
+### Consultant 子 Agent
 
-咨询 Agent 负责知识问答场景，使用 RAG 流程从知识库中检索相关内容，再结合大模型生成回答。
+咨询由 harness 的 `consultant` 子 Agent 承担（[harness/subagents/consultant.py](harness/subagents/consultant.py)），主 Agent 通过 `delegate` 工具按需派生。它**只持有** `search_knowledge` 一个只读工具——拿不到写库的 `create_appointment`，故在能力上就不可能误下单（最小权限原则）。
 
 ```text
-任务分类 → 知识检索 → FAISS 相似度搜索 → 流式回答
+主 Agent → delegate(consultant) → search_knowledge（端口）→ 流式回答
 ```
 
 主要职责：
 
-- 区分咨询问题类型
-- 从知识库检索相关内容
-- 构建提示词
-- 生成自然语言回答
+- 从知识库检索相关内容（经可替换端口）
+- 据检索结果生成自然语言回答
+- 检索结果不足时如实说明，不编造价格或政策
+
+> 早期版本还有一条 pre-harness 的硬路由咨询链路（`agents/consultant/` + `/api/consultation`），已随本地 RAG 一并移除。
 
 ### Appointment Agent
 
@@ -121,9 +124,11 @@ DB Layer
 
 系统并不让一个 Agent 处理所有事情，而是先判断用户意图，再分发给对应模块。这样可以让咨询、预约、行为分析等逻辑保持独立，也更容易扩展新的 Agent。
 
-### 2. 用 RAG 解决专业知识回答
+### 2. 用知识库解决专业知识回答
 
-按摩服务相关的项目介绍、注意事项、适用人群等内容更适合通过知识库维护。RAG 能让回答基于可控知识来源，而不是完全依赖大模型自由生成。
+按摩服务相关的项目介绍、注意事项、适用人群等内容更适合通过知识库维护，让回答基于可控知识来源，而不是完全依赖大模型自由生成。
+
+检索能力被收敛成一个**出站端口**而非内置实现：这样知识库可以独立演进（换检索算法、换服务、独立评测），Agent 侧的工具契约一行都不用改；测试与评估还能注入固定返回的 fake，获得离线确定性。
 
 ### 3. 用用户行为让推荐更个性化
 
@@ -146,9 +151,9 @@ Agent 负责智能流程，Service 负责业务逻辑，Repository 负责数据�
 - **后端框架**：FastAPI、Uvicorn
 - **AI 框架**：LangChain
 - **大模型接入**：兼容 OpenAI 格式的模型提供商，例如 Qwen、DeepSeek、Zhipu、OpenAI、Azure OpenAI
-- **向量检索**：FAISS
+- **向量检索**：FAISS（技师专长相似度匹配）
 - **数据库**：SQLite、SQLAlchemy
-- **RAG 能力**：Embedding、向量索引、知识库检索、提示词构建
+- **知识库检索**：可替换端口（`services/knowledge_search.py`），实现由独立 RAG 项目提供
 - **流式响应**：Python AsyncGenerator
 - **前端页面**：Jinja2 模板、静态 CSS
 - **外部服务扩展**：MCP，用于天气等外部信息接入
@@ -161,27 +166,23 @@ Agent 负责智能流程，Service 负责业务逻辑，Repository 负责数据�
 Smart appointment AI agent/
 ├── agents/                         # 多 Agent 智能层
 │   ├── task_classification_agent.py # 任务分类与主路由
-│   ├── consultant_agent.py          # RAG 咨询 Agent
 │   ├── appointment_agent.py         # 智能预约 Agent
 │   ├── user_behavior_agent.py       # 用户行为分析 Agent
 │   ├── task_classification/         # 意图识别、状态管理、路由逻辑
-│   ├── consultant/                  # 知识检索、提示词、回答生成
 │   ├── appointment/                 # 预约解析、技师匹配、消息构建
 │   └── user_behavior/               # 行为记录、偏好管理、模式分析
 ├── api/                             # API 编排层
 │   ├── appointment.py               # 预约接口
-│   ├── consultation.py              # 咨询接口
 │   ├── task.py                      # 任务分类接口
 │   ├── chat_handler.py              # 流式聊天处理
 │   ├── technician.py                # 技师管理接口
-│   ├── knowledge.py                 # 知识库管理接口
 │   └── user_behavior_analysis.py    # 用户行为分析接口
 ├── services/                        # 业务逻辑层
 │   ├── appointment_service.py       # 预约业务逻辑
-│   ├── knowledge_service.py         # 知识库管理
+│   ├── knowledge_search.py          # 知识库检索端口（待接入独立 RAG）
 │   ├── recommendation_service.py    # 推荐逻辑
 │   ├── technician_service.py        # 技师信息管理
-│   ├── text_embedding.py            # Embedding 与向量处理
+│   ├── text_embedding.py            # Embedding 与向量处理（技师专长匹配）
 │   └── user_behavior_service.py     # 用户行为服务
 ├── db/                              # 数据持久化层
 │   ├── models.py                    # SQLAlchemy 模型
@@ -322,7 +323,6 @@ uv run pytest tests/test_task_classification_agent.py
 ## 主要页面
 
 - 首页聊天与预约入口：`web/templates/index.html`
-- 知识库管理：`web/templates/knowledge_management.html`
 - 技师管理：`web/templates/technician.html`
 - 技师排班：`web/templates/technician_schedule.html`
 - 用户行为分析：`web/templates/user_behavior_analysis.html`
@@ -350,7 +350,7 @@ uv run pytest tests/test_task_classification_agent.py
 
 ## 项目价值
 
-这个项目把多 Agent、RAG、用户行为分析、预约调度和外部工具接入放在同一个真实业务场景中验证。它既是一个按摩门店智能前台原型，也可以作为学习 AI Agent 工程化、分层架构、RAG 系统和业务自动化的综合实践项目。
+这个项目把 Agent Harness、子 Agent 编排、用户行为分析、预约调度和外部工具接入放在同一个真实业务场景中验证。它既是一个按摩门店智能前台原型，也可以作为学习 AI Agent 工程化、分层架构、评估体系和业务自动化的综合实践项目。
 
 
 

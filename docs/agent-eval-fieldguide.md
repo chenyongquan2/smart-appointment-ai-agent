@@ -443,7 +443,7 @@ if not eligible:
 
 ### 5.5 RAG 评估专题（本项目有 RAG，必讲）
 
-本项目知识查询走的是 **RAG（SQLite + FAISS 向量检索）**——[knowledge.py:18](../harness/tools/knowledge.py#L18) 的 `search_knowledge` 工具薄封装了 [services/knowledge_service.py](../services/knowledge_service.py)，embedding 在 [services/text_embedding.py](../services/text_embedding.py)。RAG 系统的评估**分两段**，面试高频：
+本项目知识查询走 `search_knowledge` 工具。**2026-08-02 起本地 RAG（SQLite+FAISS）已移除**（change `remove-local-rag`）：[harness/tools/knowledge.py](../harness/tools/knowledge.py) 现在薄封装的是 [services/knowledge_search.py](../services/knowledge_search.py) 的**可替换端口**，实现将由一个独立的 RAG 项目提供；未注入实现时每次检索都以「知识库尚未接入」明确失败收场。下面这套两段式评估法讲的是**接入之后**该怎么评（也是面试要答的通用方法论），当前本仓没有可评的检索实现：
 
 ![RAG 评估分两段：检索段用 Recall@k/Precision@k/MRR，生成段用 RAG 三元组](diagrams/rag-two-stage-eval.svg)
 
@@ -460,9 +460,9 @@ if not eligible:
 | **Faithfulness / Groundedness（忠实度）** | 回答是不是**有检索内容支撑**、没瞎编 | **幻觉** |
 | **Answer Relevance（答案相关性）** | 回答真的回应了用户的问题吗 | 答非所问 |
 
-> 🔗 **本项目现状**：RAG 系统在（检索 + 生成俱全），但 **`evals/` 完全没有评 RAG 质量**——既没测检索 Recall@k，也没测三元组。这不是遗漏，是**主动暂缓**（改造 5，2026-06-24 决策）：本地 RAG（SQLite+FAISS）后续要整体换成一个独立的外部 RAG 服务，现在评本地实现没有长期价值，等迁移完成后再补。
+> 🔗 **本项目现状**：`evals/` 从来没评过 RAG 质量——既没测检索 Recall@k，也没测三元组。这不是遗漏，是**主动暂缓**（改造 5，2026-06-24 决策），而 2026-08-02 的 `remove-local-rag` 把本地实现直接删了，暂缓变成了**外移**：组件级检索评估（Recall@k / MRR / nDCG）随 RAG 一起归独立项目——那套只需要 query + 期望文档，不涉及 Agent。**但 RAG 对最终回答的贡献拆不走**，检索召回率高 ≠ Agent 答得好（可能不用、用错、组织得差），那是端到端问题，对应本仓已有的 `任务成功率` 与 `回复质量通过率`。这正是本项目分层评估的核心论点：**组件级好 ≠ 端到端好**。
 
-> 💬 **面试怎么说**：「RAG 要分检索段和生成段评——检索看 Recall@k / MRR，生成看 RAG 三元组：上下文相关性、忠实度（防幻觉）、答案相关性。我项目里有 SQLite+FAISS 的 RAG，但这块评估我主动选择暂缓——因为本地 RAG 后续要换成一个独立的外部服务，现在花力气评一个要被替换掉的实现没有长期价值，等迁移完再补，这也是个判断力取舍。」
+> 💬 **面试怎么说**：「RAG 要分检索段和生成段评——检索看 Recall@k / MRR，生成看 RAG 三元组：上下文相关性、忠实度（防幻觉）、答案相关性。我项目原本有 SQLite+FAISS 的本地 RAG，后来我把它整个拆出去了：组件级检索评估跟着 RAG 服务走，但 RAG 对最终回答的贡献留在 Agent 侧的端到端指标里——因为检索召回率高不等于 Agent 答得好。拆分最大的收益其实不是‘能单独评 RAG’，而是**让 Agent 评估不再被 RAG 的可用性绑架**：之前 embedding 网关抽风那几天，我的评估要么跑不动、要么指标全是废数；现在检索是个可注入的端口，评估时塞个返回固定文档的 fake 就能拿到离线确定性的结果。」
 
 ### 5.6 成本与延迟
 
@@ -613,8 +613,8 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 | 客观比对（`==`/`set`/分档 P/R/F1） | ✅ | 工具调用已从 `set` 升到分档（参数级/序列级，改造 2） |
 | LLM-as-judge（回复质量） | ✅ | 改造 4（archive `2026-06-24-evals-llm-judge-response-quality`）：pointwise 二元 + 校准机制 |
 | **— RAG 评估（§5.5）—** | | |
-| 检索 Recall@k / MRR | ⏸️ 暂缓 | 本地 RAG 在（[knowledge_service.py](../services/knowledge_service.py)）但暂不评——后续将换成调用独立的外部 RAG 服务（见 §11 改造 5） |
-| 生成 RAG 三元组 | ⏸️ 暂缓 | 同上，待 RAG 服务迁移后再评 |
+| 检索 Recall@k / MRR | ➡️ 已外移 | 本地 RAG 已删（`remove-local-rag`，2026-08-02），组件级检索评估随独立 RAG 项目走（见 §11 改造 5） |
+| 生成 RAG 三元组 | ⏸️ 暂缓 | 待独立 RAG 接入端口后再评；其对最终回答的贡献已由 `任务成功率` / `回复质量通过率` 覆盖 |
 | **— 评估可信度（§7）—** | | |
 | 多次采样 / 方差 / 置信区间 | ✅ | 改造 3（archive `2026-06-24-evals-multisample-variance-ci`）：多次采样 + 聚合级 mean±95% t-CI |
 | 延迟 | ⚠️ 部分 | 只测分类器单次调用（[metrics.py:118](../evals/metrics.py#L118)），非全链路 |
@@ -656,10 +656,12 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 - `--judge` 对最终回复做 pointwise 二元裁决 + `judge_human_agreement`（Cohen's κ）校准函数（见 §6）。
 - **⚠️ 诚实边界**：只有校准能力、还没真跑校准 → 标「未校准」、不进门禁；仍是 pointwise 二元、非 pairwise。续做而非新缺口。
 
-### 改造 5 · RAG 评估（检索 + 生成）— ⏸️ 暂缓
+### 改造 5 · RAG 评估（检索 + 生成）— ➡️ 组件级已外移 / 生成段待接入
 
 - **暂缓理由（2026-06-24 决策）**：本地 RAG（SQLite+FAISS）后续将整体替换为外部 RAG 服务，现在评本地实现无长期价值。
-- 待迁移完成后，对外部服务补检索 **Recall@k/MRR** + 生成 **RAG 三元组**（复用改造 4 的 judge）。见 §5.5。
+- **落地（2026-08-02，change `remove-local-rag`）**：本地实现已删除，`search_knowledge` 改走 [services/knowledge_search.py](../services/knowledge_search.py) 的可替换端口。**边界**：组件级检索评估（Recall@k / MRR / nDCG）随 RAG 外移到独立项目；RAG 对最终回答的贡献**拆不掉**，仍由本仓的 `任务成功率` / `回复质量通过率` 承担。
+- **过渡期的指标读法**：未接入实现期间 `search_knowledge` 恒以「知识库未接入」失败收场，故 `query` 类的 `任务成功率` 归零、`回复质量通过率` 下探。**这是已知缺口，不是模型能力退化**；门禁两项（`工具调用-F1` / `槽位抽取完整率`）与工具返回值无关，一分不动，故本次未重定基线。
+- 待独立 RAG 接入后，对其补检索 **Recall@k/MRR**（在那边）+ 生成 **RAG 三元组**（复用改造 4 的 judge，在这边）。见 §5.5。
 
 ### 改造 6 · CI 回归门禁（基线持久化 + 阈值阻断）— ✅ 已落地
 
@@ -788,6 +790,6 @@ LLM 裁判**自己也有偏差**，知道这些 = 懂行：
 | [harness/observability/tracer.py](../harness/observability/tracer.py) | 可观测 tracer——在线评估的数据地基 | §3 |
 | [harness/runtime/agent_loop.py](../harness/runtime/agent_loop.py) | TAO 循环——端到端/轨迹评估要驱动它才有 actual_tools | §2、§5 |
 | [agents/task_classification/task_classifier.py](../agents/task_classification/task_classifier.py) | 被评估的意图分类器 | §2、§5 |
-| [services/knowledge_service.py](../services/knowledge_service.py) | RAG（SQLite+FAISS）检索——RAG 评估的对象 | §5.5 |
+| [services/knowledge_search.py](../services/knowledge_search.py) | 知识库检索端口——评估时注入 fake 即得离线确定性；本地 RAG 已移除 | §5.5 |
 
 > 想看「一条消息从进来到返回经过哪些文件」的端到端动线，回看 [harness-code-reading.md 第 7 站](harness-code-reading.md)。

@@ -2,12 +2,12 @@
 业务服务层模块
 
 包含：
-- 知识库服务
-- 技师服务  
+- 知识库检索端口（本地 RAG 已移除，待接入独立 RAG 项目）
+- 技师服务
 - 预约服务
 - 用户行为服务
 - 推荐调度服务
-- 文本嵌入工具
+- 文本嵌入工具（现服务于技师专长相似度匹配）
 """
 
 from .text_embedding import (
@@ -17,7 +17,12 @@ from .text_embedding import (
     save_technician_embeddings,
     load_technician_embeddings
 )
-from .knowledge_service import KnowledgeService
+from .knowledge_search import (
+    KnowledgeBackendNotConfigured,
+    KnowledgeSearchPort,
+    get_knowledge_search,
+    set_knowledge_search,
+)
 from .technician_service import TechnicianService
 from .appointment_service import AppointmentService
 from .user_behavior_service import UserBehaviorService
@@ -29,7 +34,10 @@ __all__ = [
     'find_best_match_indices',
     'save_technician_embeddings',
     'load_technician_embeddings',
-    'KnowledgeService',
+    'KnowledgeBackendNotConfigured',
+    'KnowledgeSearchPort',
+    'get_knowledge_search',
+    'set_knowledge_search',
     'TechnicianService',
     'AppointmentService',
     'UserBehaviorService',

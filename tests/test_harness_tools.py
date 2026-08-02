@@ -1,8 +1,12 @@
 """harness.tools 各工具单测（Phase 2）。
 
-策略:在工具 handler 延迟 import 的 service 模块命名空间上 monkeypatch service 类,
-断言"合法参数正确转交 service"与"非法参数触发 Pydantic 校验且 service 不被调用"。
-不依赖真实 DB / 网络。
+策略:在工具 handler 延迟 import 的模块命名空间上 monkeypatch 其依赖(service 类,或
+``search_knowledge`` 那样的检索端口),断言"合法参数正确转交下游"与"非法参数触发
+Pydantic 校验且下游不被调用"。不依赖真实 DB / 网络。
+
+``search_knowledge`` 的下游自 change ``remove-local-rag`` 起是 ``services/knowledge_search.py``
+的可替换端口(原为 ``KnowledgeService``);端口本身的行为(未接入时如何失败、注入后
+如何生效)另有 ``tests/test_knowledge_search_port.py`` 专门覆盖。
 """
 
 from __future__ import annotations
@@ -25,18 +29,13 @@ from harness.tools.technician import find_technician
 async def test_search_knowledge_delegates(monkeypatch):
     calls: dict[str, Any] = {}
 
-    class FakeKnowledgeService:
-        initialized = True
-
-        async def initialize(self):  # pragma: no cover - 不应被调用
-            calls["initialized"] = True
-
+    class FakeKnowledgeSearch:
         async def search(self, query, top_k=3, category=None):
             calls["search"] = (query, top_k, category)
             return [{"content": "doc", "score": 0.9}]
 
-    import services.knowledge_service as ks
-    monkeypatch.setattr(ks, "KnowledgeService", FakeKnowledgeService)
+    import services.knowledge_search as ks
+    monkeypatch.setattr(ks, "_current", FakeKnowledgeSearch())
 
     result = await search_knowledge.run({"query": "营业时间", "top_k": 2})
 
@@ -47,15 +46,13 @@ async def test_search_knowledge_delegates(monkeypatch):
 async def test_search_knowledge_invalid_args_skips_service(monkeypatch):
     called = {"hit": False}
 
-    class FakeKnowledgeService:
-        initialized = True
-
+    class FakeKnowledgeSearch:
         async def search(self, *a, **k):  # pragma: no cover
             called["hit"] = True
             return []
 
-    import services.knowledge_service as ks
-    monkeypatch.setattr(ks, "KnowledgeService", FakeKnowledgeService)
+    import services.knowledge_search as ks
+    monkeypatch.setattr(ks, "_current", FakeKnowledgeSearch())
 
     with pytest.raises(ValidationError):
         await search_knowledge.run({})  # 缺 query

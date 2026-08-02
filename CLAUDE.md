@@ -19,7 +19,8 @@
 - **依赖/运行**：uv（`uv run` / `uv sync`，不要用 pip）。**测试**：`uv run pytest`。
 - 结构化输出 > 字符串解析；一个概念一个文件；工具是 `services/` 的薄封装。
 - 单向依赖分层；按 `session_id` 隔离状态；TAO 循环而非 if/else 路由。
-- **不要重写**：`services/`、`db/`、`config/model_provider.py`、RAG（SQLite+FAISS）。
+- **不要重写**：`services/`、`db/`、`config/model_provider.py`。
+- **知识库检索**：本地 RAG（SQLite+FAISS）已移除；`search_knowledge` 走 [services/knowledge_search.py](services/knowledge_search.py) 的可替换端口，未接入时明确失败（不返回空列表）。接入独立 RAG 项目 = 实现一个端口 client 并注入。
 
 ## 验证
 

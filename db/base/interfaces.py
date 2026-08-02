@@ -85,61 +85,6 @@ class BaseScheduleRepository(ABC):
         pass
 
 
-class BaseKnowledgeRepository(ABC):
-    """
-    知识库数据访问抽象接口
-    
-    定义知识库相关的所有数据操作方法
-    """
-    
-    @abstractmethod
-    def add_document(self, content: str, category: str, keywords: Optional[List[str]] = None, 
-                    embedding: Optional[List[float]] = None) -> int:
-        """添加知识文档"""
-        pass
-    
-    @abstractmethod
-    def get_document(self, doc_id: int) -> Optional[Dict[str, Any]]:
-        """获取指定文档"""
-        pass
-    
-    @abstractmethod
-    def get_all_documents(self, include_inactive: bool = False) -> List[Dict[str, Any]]:
-        """获取所有文档"""
-        pass
-    
-    @abstractmethod
-    def update_document(self, doc_id: int, content: Optional[str] = None, category: Optional[str] = None, 
-                       keywords: Optional[List[str]] = None, embedding: Optional[List[float]] = None) -> bool:
-        """更新文档"""
-        pass
-    
-    @abstractmethod
-    def delete_document(self, doc_id: int, soft_delete: bool = True) -> bool:
-        """删除文档（支持软删除）"""
-        pass
-    
-    @abstractmethod
-    def search_documents_by_category(self, category: str) -> List[Dict[str, Any]]:
-        """按分类搜索文档"""
-        pass
-    
-    @abstractmethod
-    def search_documents_by_keywords(self, keywords: List[str]) -> List[Dict[str, Any]]:
-        """按关键词搜索文档"""
-        pass
-    
-    @abstractmethod
-    def get_all_categories(self) -> List[str]:
-        """获取所有分类"""
-        pass
-    
-    @abstractmethod
-    def get_documents_count(self) -> int:
-        """获取文档总数"""
-        pass
-
-
 class BaseUserBehaviorRepository(ABC):
     """
     用户行为数据访问抽象接口
