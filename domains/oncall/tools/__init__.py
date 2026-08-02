@@ -1,12 +1,31 @@
 """OnCall 值守域的工具集。
 
-两个都是**只读**工具（`dangerous=False`）——值守域的只读红线由 `policy.py` 硬 enforce，
-不靠这里的自觉。
+五个工具，**全部只读**（`dangerous=False`）：日志查询、资料加载、源码定位、源码检索、
+源码阅读。值守域连 clone 都没有——那是写操作，会被 `policy.py` 拒绝（见 change
+`oncall-domain-code` 的 design D2）。
 """
 
+from domains.oncall.tools.code import (
+    code_search,
+    locate_service_code_tool,
+    read_source,
+)
 from domains.oncall.tools.reference import load_reference
 from domains.oncall.tools.vlog import vlog_query
 
-TOOLS = (vlog_query, load_reference)
+TOOLS = (
+    vlog_query,
+    load_reference,
+    locate_service_code_tool,
+    code_search,
+    read_source,
+)
 
-__all__ = ["TOOLS", "vlog_query", "load_reference"]
+__all__ = [
+    "TOOLS",
+    "vlog_query",
+    "load_reference",
+    "locate_service_code_tool",
+    "code_search",
+    "read_source",
+]

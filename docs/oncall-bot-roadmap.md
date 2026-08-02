@@ -136,8 +136,12 @@ config/              新增飞书凭据、并发与超时参数
 | 切片 | 内容 | 状态 |
 |---|---|---|
 | 1 | oncall 域骨架 + `services/vlog.py` + `vlog_query` + 排查知识按需加载 | ✅ change `oncall-domain-vlog`（2026-08-02） |
-| 2 | `services/repo.py`（`repokit.py` 669 行）+ `code_analysis` | 待做 |
+| 2 | `services/repo.py` + `locate_service_code` / `code_search` / `read_source` | ✅ change `oncall-domain-code`（2026-08-02） |
 | 3 | `services/docs_search.py`（MT4/MT5 FTS）+ `mt_docs_search` | 待做 |
+
+**切片 2 已完成**：值守域现有**五个只读工具**。这里有个比"移植 669 行"更根本的问题：参考系统里 `code-analysis` = repokit 定位 worktree + **agent 用自己的文件系统工具去 grep/读**，而本项目的 harness **不给模型文件系统工具**——只移植 repokit 会得到一个"返回了路径但读不了"的死工具。故新写了两个**受管束的只读检索工具**（`code_search` / `read_source`），三重 jail：只收相对路径、`resolve()` 之后判子树（故挡得住 symlink）、`repo_dir` 只认 `repos/` 下纯目录名。
+
+**刻意不做 clone**：那是写操作，标 `dangerous=True` 就会被值守域的只读策略直接拒掉。参考系统靠"clone 前硬确认 + 埋锚点"这套人工闸门兜，本项目的答案更简单——agent 根本不 clone，仓库由运维预先备好，落空时返回 `need_clone` 引导状态。红线不打折，也省掉一整套确认机制。
 
 **切片 1 已完成**：`AGENT_DOMAIN=oncall` 即切到值守域（2 个只读工具、只读策略硬 enforce、
 4 份排查资料按需加载）。`probe.py` 的传输层从同步 `urllib` 换成 async httpx——**照搬就是

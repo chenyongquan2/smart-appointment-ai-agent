@@ -24,7 +24,10 @@ def test_oncall_domain_loads_with_all_five_slots():
 
     assert isinstance(domain, Domain)
     assert domain.name == "oncall"
-    assert {t.name for t in domain.tools} == {"vlog_query", "load_reference"}
+    assert {t.name for t in domain.tools} == {
+        "vlog_query", "load_reference",
+        "locate_service_code", "code_search", "read_source",   # 切片 2 新增
+    }
     assert domain.subagents == ()          # 值守是一条连贯推理链，本切片不拆子 Agent
     assert "值守" in domain.system_prompt
     assert callable(domain.policy)
@@ -315,7 +318,8 @@ def test_domain_without_subagents_exposes_tools_directly():
 
     registry = build_main_registry(load_domain("oncall"), _should_not_be_called)
 
-    assert set(registry.names()) == {"vlog_query", "load_reference"}
+    assert set(registry.names()) == {t.name for t in load_domain("oncall").tools}
+    assert len(registry.names()) == 5
 
 
 def test_domain_with_subagents_keeps_delegate_only():
