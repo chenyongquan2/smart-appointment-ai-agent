@@ -186,3 +186,36 @@ class ReadSourceArgs(BaseModel):
         default=60, ge=1, le=200,
         description="读多少行，上限 200。不提供「读整个文件」——先 code_search 找到行号，再读它周围。",
     )
+
+
+# --------------------------------------------------------------------------- #
+# MT 平台文档检索（切片 3）
+# --------------------------------------------------------------------------- #
+class MTPlatform(str, Enum):
+    """MT 平台。**必填、不猜**——两个平台的文档结构与语义都不同，猜错会查出完全
+    无关的结果，而调用方无从察觉。"""
+
+    MT4 = "mt4"
+    MT5 = "mt5"
+
+
+class MTDocsSearchArgs(BaseModel):
+    """mt_docs_search 入参。"""
+
+    platform: MTPlatform = Field(
+        description=(
+            "MT4 还是 MT5。**必填**——从日志判断：见 `CMT4Processor` / `src/ocs/MT4` / "
+            "`detail { mt4 {...} }` 走 mt4；见 `CMT5Processor` / `detail { mt5 {...} }` 走 mt5。"
+            "判不出来就先问用户，**别猜**：猜错会查出无关结果而你不会察觉。"
+        ),
+    )
+    query: str = Field(
+        description=(
+            "检索词：API 名、返回码常量、或一段描述（如 `OrderSend`、`MT_RET_REQUEST_INVALID`、"
+            "`账户余额不足`）。特殊字符会被自动按字面处理，不必转义、也不必担心语法。"
+        ),
+    )
+    limit: int = Field(
+        default=8, ge=1, le=30,
+        description="最多返回几条。缺省 8——文档条目通常较长，多了会淹没重点。",
+    )

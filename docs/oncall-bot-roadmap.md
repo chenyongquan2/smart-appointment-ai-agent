@@ -137,7 +137,16 @@ config/              新增飞书凭据、并发与超时参数
 |---|---|---|
 | 1 | oncall 域骨架 + `services/vlog.py` + `vlog_query` + 排查知识按需加载 | ✅ change `oncall-domain-vlog`（2026-08-02） |
 | 2 | `services/repo.py` + `locate_service_code` / `code_search` / `read_source` | ✅ change `oncall-domain-code`（2026-08-02） |
-| 3 | `services/docs_search.py`（MT4/MT5 FTS）+ `mt_docs_search` | 待做 |
+| 3 | `services/mt_docs.py`（MT4/MT5 FTS）+ `mt_docs_search` | ✅ change `oncall-domain-mtdocs`（2026-08-02） |
+
+**第 3 期三片全部完成。** 值守域现有**六个只读工具**：日志查询 · 资料加载 · 源码定位 · 源码检索 · 源码阅读 · MT 文档检索。
+
+**切片 3 已完成**：复用参考系统现成的两个 FTS 库（`mt4docs.db` 468K / `mt5api.db` 12M），**不重建语料**。三点值得记：
+- **为什么不直接让 AI 读 `/mt4-api-docs` skill**：那是 *Claude Code* 的 skill（装在 `~/.claude/skills/`），参考系统用的是 *opencode* 的 skill 机制。值守 bot 是本项目 harness 里的 agent——**没有 skill 机制、没有通用文件系统工具**，且 `~/.claude/skills/` 在部署的服务器上根本不存在。也不打算为此补 skill 机制：skill 的不可替代之处是"程序性指令多到要按情形动态加载"，而这里要的是检索，FTS 正是干这个的。
+- **12M 的库不进版本库**，走 `ONCALL_MT_DOCS_DIR` 配置；未配置时**明确报配置缺失**而非返回空——空结果会被模型读成"文档里没有这个码"，进而编造 API 语义。
+- **真库验证抓到两处**：① 摘录取成了 URL（`snippet(-1)` 是"命中哪列取哪列"，而 URL 里常含关键词）→ 改为固定取描述列；② 两个库装的都是 **Manager API**、不是 MQL 语言参考，拿 `OrderSend` 去查是 0 命中——模型不知道这个边界会把"不在库范围内"误报成"该 API 不存在"，已写进 description 与 prompt。
+
+⚠ **切片 3 与前两片不同：它不依赖内网或凭据，已端到端验证过**（配上真实库路径跑通了 registry → 工具 → service → FTS 全链路）。
 
 **切片 2 已完成**：值守域现有**五个只读工具**。这里有个比"移植 669 行"更根本的问题：参考系统里 `code-analysis` = repokit 定位 worktree + **agent 用自己的文件系统工具去 grep/读**，而本项目的 harness **不给模型文件系统工具**——只移植 repokit 会得到一个"返回了路径但读不了"的死工具。故新写了两个**受管束的只读检索工具**（`code_search` / `read_source`），三重 jail：只收相对路径、`resolve()` 之后判子树（故挡得住 symlink）、`repo_dir` 只认 `repos/` 下纯目录名。
 
