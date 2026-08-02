@@ -6,7 +6,7 @@
 
 from typing import Optional, Dict, Any, Callable
 from datetime import datetime, timedelta
-from services.text_embedding import find_best_match_indices
+from services.text_embedding import afind_best_match_indices
 
 
 class TechnicianFinder:
@@ -67,10 +67,14 @@ class TechnicianFinder:
                 yield_func(f"[THOUGHT][预约机器人] 未找到名为'{technician_name}'的技师\n")
             return None
 
-    def find_similar_available_technician(self, target_technician: Dict[str, Any], 
-                                        start_time: datetime, end_time: datetime, 
+    async def find_similar_available_technician(self, target_technician: Dict[str, Any],
+                                        start_time: datetime, end_time: datetime,
                                         yield_func: Optional[Callable] = None) -> Optional[Dict]:
-        """根据目标技师的专长查找相似且可用的技师"""
+        """根据目标技师的专长查找相似且可用的技师。
+
+        ⚠ 本方法是 **async**：内部要做向量化（远程 HTTP）。同步版会在 async 调用方
+        那里冻住整个事件循环——见 change ``fix-technician-embedding-blocking``。
+        """
         # 通过Services层访问数据库
         from services.appointment_service import AppointmentService
         appointment_service = AppointmentService()
@@ -93,9 +97,9 @@ class TechnicianFinder:
         if not target_strength:
             return None
             
-        # 使用文本嵌入找到最相似的技师
+        # 使用文本嵌入找到最相似的技师（并发向量化，不阻塞事件循环）
         strengths = [tech.get('strength', '') for tech in other_techs]
-        indices = find_best_match_indices(target_strength, strengths)
+        indices = await afind_best_match_indices(target_strength, strengths)
         
         if yield_func:
             yield_func(f"[THOUGHT][预约机器人] 根据专长相似度排序，准备检查可用性...\n")
@@ -112,13 +116,18 @@ class TechnicianFinder:
             yield_func(f"[THOUGHT][预约机器人] 没有找到相似且可用的技师\n")
         return None
     
-    def filter_technicians_by_preference(self, all_techs: list, preference: str) -> list:
-        """根据偏好筛选技师"""
+    async def filter_technicians_by_preference(self, all_techs: list, preference: str) -> list:
+        """根据偏好筛选技师（按专长与偏好的相似度重排）。
+
+        ⚠ 本方法是 **async**：内部要做向量化（远程 HTTP）。见类内同款说明。
+        无偏好时直接返回原列表——**不发任何请求**，这条短路很重要：多数用例不带偏好时
+        不该为此付一次网络往返。
+        """
         if not preference or preference == "无":
             return all_techs
-        
+
         strengths = [tech.get("strength", "") for tech in all_techs]
-        indices = find_best_match_indices(preference, strengths)
+        indices = await afind_best_match_indices(preference, strengths)
         return [all_techs[i] for i in indices]
     
     def filter_technicians_by_gender(self, all_techs: list, gender: str) -> list:
@@ -176,9 +185,15 @@ class TechnicianFinder:
             yield_func("[THOUGHT][预约机器人] 没有找到空闲技师\n")
         return None
     
-    def find_technician_with_thought(self, appointment_history: Dict[str, Any], 
+    async def find_technician_with_thought(self, appointment_history: Dict[str, Any],
                                    yield_func: Optional[Callable] = None) -> Optional[Dict]:
-        """带思考提示的技师检索流程"""
+        """带思考提示的技师检索流程。
+
+        ⚠ 本方法是 **async**（调用方必须 ``await``）：它会走到向量化那一步。
+        漏掉 ``await`` 拿到的是协程对象——真值恒为 True，会被误当成"找到技师了"，
+        故改动调用方时务必确认。当前调用方有两个：``harness/tools/technician.py``
+        与 ``agents/appointment/appointment_processor.py``。
+        """
         # 通过Services层访问数据库
         from services.appointment_service import AppointmentService
         appointment_service = AppointmentService()
@@ -210,7 +225,7 @@ class TechnicianFinder:
             # 如果指定技师不可用，查找相似技师并返回推荐信息
             target_tech = appointment_service.get_technician_by_name(technician_name)
             if target_tech:
-                similar_tech = self.find_similar_available_technician(target_tech, start_time, end_time, yield_func)
+                similar_tech = await self.find_similar_available_technician(target_tech, start_time, end_time, yield_func)
                 if similar_tech:
                     # 返回包含推荐信息的结果，但标记为需要用户确认
                     return {
@@ -239,7 +254,7 @@ class TechnicianFinder:
             yield_func(f"[THOUGHT][预约机器人] 根据性别'{gender}'筛选技师，找到{len(gender_filtered_techs)}位技师\n")
 
         # 再根据偏好筛选技师
-        filtered_techs = self.filter_technicians_by_preference(gender_filtered_techs, preference)
+        filtered_techs = await self.filter_technicians_by_preference(gender_filtered_techs, preference)
         if yield_func and preference and preference != "无":
             yield_func(f"[THOUGHT][预约机器人] 根据偏好'{preference}'进一步筛选，找到{len(filtered_techs)}位技师\n")
         

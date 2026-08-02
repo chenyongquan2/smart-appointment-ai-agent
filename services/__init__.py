@@ -13,7 +13,7 @@
 from .text_embedding import (
     aembed_input,
     embed_input,
-    find_best_match_indices,
+    afind_best_match_indices,
     save_technician_embeddings,
     load_technician_embeddings
 )
@@ -31,7 +31,7 @@ from .recommendation_service import RecommendationService
 __all__ = [
     'aembed_input',
     'embed_input',
-    'find_best_match_indices',
+    'afind_best_match_indices',
     'save_technician_embeddings',
     'load_technician_embeddings',
     'KnowledgeBackendNotConfigured',

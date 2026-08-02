@@ -223,7 +223,9 @@ class AppointmentProcessor:
         def collect_thoughts(msg):
             thought_msgs.append(msg)
         
-        tech = self.technician_finder.find_technician_with_thought(appointment_history, collect_thoughts)
+        # 必须 await：finder 内部要做向量化（远程 HTTP）。这里曾是同步调用，会在本
+        # async generator 里冻住事件循环——见 change fix-technician-embedding-blocking。
+        tech = await self.technician_finder.find_technician_with_thought(appointment_history, collect_thoughts)
         
         # 输出所有思考过程
         for msg in thought_msgs:
