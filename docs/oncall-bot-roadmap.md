@@ -39,10 +39,25 @@ config/              新增飞书凭据、并发与超时参数
 
 ---
 
+## ⛔ 贯穿性决策：预约域评测冻结（2026-08-02）
+
+**不再向预约域的评测投入任何新精力。** 预约域是要退役的，为一个将退役的域打磨评估数据没有回报。
+
+具体三条：
+
+1. **不恢复 `evals-dataset-scaleup-v2`**（分支 `feat/evals-dataset-scaleup`，17/18 完成、卡在重定基线）。它剩的活是一次约 64 分钟、数百次真实 LLM 调用的跑批，产出是"184 条**按摩预约**用例的更紧置信区间"。原先卡在"等独立 RAG 接入"，现在的答案不是等，是**放弃**。分支保持不合并，到第 4 期正式 close。数据集扩容的方法论已写进 `evals/README.md` 与 `docs/agent-eval-fieldguide.md`，知识留下了，只是那 184 条句子不进主干。
+2. **不重定基线、不扩数据集、不补预约域用例**。现有 51 条与 `baseline.json` 原样冻结。
+3. **预约域 evals 在第 2、3 期的定位降级为"零成本的运行时回归网"**——它衡量的是域无关运行时（TAO 循环 / ToolRegistry / 记忆 / 护栏）有没有被改坏，**不是**衡量 oncall 能力（它衡量不了：工具名都不同，`工具调用-F1` 与 oncall 不可比）。留着只因为不删的成本是零；一旦需要为它花时间，直接跳过。
+
+⚠ **随之而来的代价，别自欺**：本文档第 2 期原写"搬迁后现有 pytest + evals 门禁全绿即证明无损"。冻结后实际的网只剩 pytest（fake LLM，**不会推理"该调哪个工具"**）+ 至多跑一次现有 gate。工具层重构后"模型是否仍选对工具"这件事，覆盖是弱的。接受这个风险，是因为投入产出不划算，不是因为风险不存在。
+
+**什么时候才重新谈评测**：第 4 期，用 oncall 的真实排障对话建新数据集。届时**复用机制、重建数据**——`evals/` 的多采样 t-CI、门禁、dev/held-out 切分、任务成功率口径、trace triage 闭环、并发 runner 全部域无关可搬；域绑定的只有 `cases.jsonl` 与 `baseline.json` 两个文件。改造 1–8 没有白做。
+
+---
+
 ## 第 1 期：飞书 Channel + 任务执行层
 
-**状态**：✅ 实现完成、真租户端到端已验证，待归档 →
-`openspec/changes/feishu-channel-integration/`（proposal / design / specs×5 / tasks）
+**状态**：✅ 已归档 → `openspec/changes/archive/2026-07-30-feishu-channel-integration/`（proposal / design / specs×5 / tasks），已合并进 master
 
 已在飞书群 `oncall-bot test` 跑通：@bot 多轮对话（话题内 6 轮收敛到同一 session）、
 会话隔离、先 ack 后结果（实测间隔 31s）、超时兜底带副作用提示、排队上限提示。
@@ -103,7 +118,8 @@ config/              新增飞书凭据、并发与超时参数
 - 新增 `domains/` 结构：`tools/`（工具集）、`prompts/`（system prompt）、`policy.py`（权限策略）、`evals/`（用例集 + baseline）
 - 现有预约域整体下沉为 `domains/appointment/`（纯搬迁，行为不变）
 - 领域包**按配置装载**，运行时代码里 MUST NOT 出现 `if domain == ...`
-- 验证：搬迁后现有 pytest + evals 门禁全绿即证明无损
+- 顺带清掉 pre-harness 的 `agents/` 遗留层（约 2031 行：`appointment_agent` + `appointment/` + `user_behavior_agent` + `user_behavior/`，及喂它们的遗留端点）。**前置**：`harness/tools/technician.py` 仍横向依赖 `agents/appointment/technician_finder.py`（Phase 2 就记下的已知取舍，注释里写着"Phase 3 迁移技师查找逻辑下沉后即可去除"），须先把 `TechnicianFinder` 下沉到 `services/`。反正都是搬，一次搬到位
+- 验证：搬迁后 pytest 全绿。~~evals 门禁~~ → 见上文「预约域评测冻结」，evals 至多跑一次现有 gate，不为它投入新精力
 
 ---
 
@@ -143,7 +159,7 @@ config/              新增飞书凭据、并发与超时参数
 
 ## 新对话如何续上
 
-1. 读本文档 + `openspec/project.md`（黄金准则）
-2. `openspec status --change feishu-channel-integration` 看第 1 期进度
-3. 第 1 期：先落实上文「apply 前需先修正的两处」，再 `/opsx:apply`
-4. 后续各期：`/opsx:propose` 起新 change，范围照本文档对应小节
+1. 读本文档（**尤其是开头的「预约域评测冻结」决策**）+ `openspec/project.md`（黄金准则）
+2. `openspec list` 看有无 active change；第 1 / 1.5 期已归档并合并，当前应从**第 2 期**起步
+3. 各期：`/opsx:propose` 起新 change，范围照本文档对应小节 → 人审 → `/opsx:apply` → 验证 → `/opsx:archive`
+4. 别做的事：恢复 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例——见「预约域评测冻结」
