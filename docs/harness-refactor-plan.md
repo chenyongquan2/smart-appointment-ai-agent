@@ -23,7 +23,9 @@
 | 护栏 | 仅 try/except | 各 agent |
 | 可观测性 | `print("[DEBUG]")` | `task_classification_agent.py:83` |
 
-**保留**（这些设计是对的，不动）：五层分层架构、`services/` 业务逻辑、`db/` Repository、`config/model_provider.py` 的 Provider 抽象、RAG 的 SQLite+FAISS 基础。
+**保留**（这些设计是对的，不动）：五层分层架构、`services/` 业务逻辑、`db/` Repository、`config/model_provider.py` 的 Provider 抽象。
+
+> 📌 **本地 RAG 已于 2026-08-02 移除**（change `remove-local-rag`）：原文这里还列着「RAG 的 SQLite+FAISS 基础」作为保留项，但知识库后续由一个**独立的 RAG 项目**承担，本仓只留 [services/knowledge_search.py](../services/knowledge_search.py) 的可替换端口。FAISS 依赖仍在，服务的是技师专长相似度匹配。
 
 **替换**：`agents/` 这一层 —— 从"分类+路由"换成"harness（agent loop + tools + memory + guardrails + observability）"。
 
@@ -93,7 +95,7 @@
 **目标**：把 `services/` 的能力包装成 LLM 可调用的 **tools**。
 - 新建 `harness/tools/`，每个工具一个文件，含 name / description / args schema / handler。
 - 工具清单（薄封装，内部调 services/，不重写业务）：
-  - `search_knowledge(query, top_k)` → `KnowledgeService`
+  - `search_knowledge(query, top_k)` → ~~`KnowledgeService`~~ → 现为 `KnowledgeSearchPort`（本地 RAG 已移除，见上文 §0 的注）
   - `find_technician(time, project, preference, gender)` → `TechnicianFinder`/`technician_service`
   - `check_availability(technician_id, time)` → `appointment_service`
   - `create_appointment(slots)` → `appointment_service`

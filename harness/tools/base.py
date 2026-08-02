@@ -2,8 +2,8 @@
 
 每个工具是 ``services/`` 的薄封装，声明四要素：
 ``name`` / ``description`` / ``args_schema`` / ``handler``。
-handler 统一为 async（因 ``KnowledgeService.search`` 是 async，且对齐 Phase 3 的
-async agent loop），签名为 ``async def handler(args: BaseModel) -> Any``。
+handler 统一为 async（对齐 Phase 3 的 async agent loop，也让工具能直接 await 外部
+I/O——如知识库检索端口），签名为 ``async def handler(args: BaseModel) -> Any``。
 
 工具 MUST NOT 重写业务逻辑——仅把已校验的参数转交给对应 service 方法。
 """

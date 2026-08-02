@@ -24,16 +24,10 @@ class TechnicianSchedule(Base):
     appointment_id = Column(Integer, nullable=True)
     technician = relationship("Technician", back_populates="schedules")
 
-class KnowledgeDocument(Base):
-    __tablename__ = 'knowledge_documents'
-    id = Column(Integer, primary_key=True)
-    content = Column(Text, nullable=False)
-    category = Column(String, nullable=False)
-    keywords = Column(JSON, nullable=True)  # 存储关键词列表
-    embedding = Column(JSON, nullable=True)  # 存储嵌入向量
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    is_active = Column(Integer, default=1)  # 软删除标记
+# 说明：原 KnowledgeDocument（表 knowledge_documents）随本地 RAG 一并移除
+# （change: remove-local-rag）。已存在的 SQLite 表刻意**不删、不迁移**——摘掉 ORM 映射后
+# 它就是一张无人引用的静态表，而知识库内容今后由独立的 RAG 项目提供。
+# 原有的 10 条默认文档抄录在该 change 的 tasks.md 附录 A。
 
 class UserBehavior(Base):
     __tablename__ = 'user_behaviors'

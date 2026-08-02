@@ -8,12 +8,12 @@ Database Module
 - 会话管理
 """
 
-from .db_router import DatabaseRouter, TechnicianDBRouter, KnowledgeDBRouter
-from .repositories import TechnicianRepository, KnowledgeRepository, UserBehaviorRepository
+from .db_router import DatabaseRouter, TechnicianDBRouter
+from .repositories import TechnicianRepository, UserBehaviorRepository
 from .base import SessionManager
 from .models import (
-    Base, Technician, TechnicianSchedule, 
-    KnowledgeDocument, UserBehavior, UserPreference, UserRecommendation
+    Base, Technician, TechnicianSchedule,
+    UserBehavior, UserPreference, UserRecommendation
 )
 
 __all__ = [
@@ -22,11 +22,9 @@ __all__ = [
     
     # 兼容性路由器
     'TechnicianDBRouter',
-    'KnowledgeDBRouter',
-    
+
     # Repository模式
     'TechnicianRepository',
-    'KnowledgeRepository', 
     'UserBehaviorRepository',
     
     # 基础设施
@@ -36,7 +34,6 @@ __all__ = [
     'Base',
     'Technician',
     'TechnicianSchedule',
-    'KnowledgeDocument',
     'UserBehavior',
     'UserPreference',
     'UserRecommendation'

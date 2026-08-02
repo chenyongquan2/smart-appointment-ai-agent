@@ -65,31 +65,6 @@ async def user_behavior_page(request: Request):
     """用户行为分析页面"""
     return templates.TemplateResponse("user_behavior_analysis.html", {"request": request})
 
-@router.get("/knowledge", response_class=HTMLResponse, summary="知识库管理页面")
-async def knowledge_page(request: Request):
-    """知识库管理页面"""
-    # 通过API层获取知识库数据
-    try:
-        from api.knowledge import get_all_knowledge
-        
-        # 调用API层函数获取数据
-        knowledge_data = await get_all_knowledge()
-        documents = knowledge_data.get("documents", [])
-        categories = knowledge_data.get("categories", [])
-        
-        return templates.TemplateResponse("knowledge_management.html", {
-            "request": request,
-            "documents": documents,
-            "categories": categories
-        })
-    except Exception as e:
-        return templates.TemplateResponse("knowledge_management.html", {
-            "request": request,
-            "documents": [],
-            "categories": [],
-            "error": str(e)
-        })
-
 @router.get("/technician", response_class=HTMLResponse, summary="技师状态页面")
 async def technician_page(request: Request):
     """技师状态页面"""
@@ -156,23 +131,14 @@ async def admin_dashboard(request: Request):
     """系统管理仪表板"""
     try:
         # 通过API层获取系统状态信息
-        from api.knowledge import get_all_knowledge
         from api.technician import get_all_technicians
-        
-        # 获取知识库数据
-        knowledge_data = await get_all_knowledge()
-        knowledge_count = knowledge_data.get("total_count", 0)
-        categories = knowledge_data.get("categories", [])
-        
+
         # 获取技师数据
         technicians = await get_all_technicians()
-        
-        # 数据库信息
+
+        # 数据库信息（知识库已随本地 RAG 移除，见 change: remove-local-rag）
         db_info = {
-            "knowledge_count": knowledge_count,
-            "categories_count": len(categories),
             "technicians_count": len(technicians),
-            "categories": categories
         }
         
         return templates.TemplateResponse("admin_dashboard.html", {
@@ -193,18 +159,12 @@ async def database_admin_page(request: Request):
     """数据库管理页面"""
     try:
         # 通过API层获取数据库统计信息
-        from api.knowledge import get_all_knowledge
         from api.technician import get_all_technicians
-        
-        # 获取知识库数据
-        knowledge_data = await get_all_knowledge()
-        
+
         # 获取技师数据
         technicians = await get_all_technicians()
-        
+
         stats = {
-            "knowledge_documents": knowledge_data.get("total_count", 0),
-            "categories": len(knowledge_data.get("categories", [])),
             "technicians": len(technicians),
             "appointments": 0  # TODO: 通过API获取预约数量
         }

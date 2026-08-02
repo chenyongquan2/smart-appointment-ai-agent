@@ -16,7 +16,7 @@
 uv sync
 ```
 
-会自动创建 `.venv`（Python 3.10–3.12）并按 `uv.lock` 安装全部依赖。首次安装 `faiss-cpu` 可能要 1–2 分钟，属正常。
+会自动创建 `.venv`（Python 3.10–3.12）并按 `uv.lock` 安装全部依赖。首次安装 `faiss-cpu` 可能要 1–2 分钟，属正常（它现在只用于技师专长相似度匹配）。
 
 ### 2. 配置 `.env`
 
@@ -37,6 +37,10 @@ EMBEDDING_API_KEY=...
 EMBEDDING_BASE_URL=...
 EMBEDDING_MODEL=...
 ```
+
+> ℹ Embedding 现在只服务**技师专长相似度匹配**。知识库检索已不在本仓——本地 RAG
+> （SQLite+FAISS）已移除，`search_knowledge` 走 [services/knowledge_search.py](services/knowledge_search.py)
+> 的可替换端口，未注入实现时会明确报「知识库尚未接入」，待接入独立 RAG 项目。
 
 `OPENWEATHER_API_KEY` 是可选的（MCP 天气工具用），不填不影响主流程。
 
@@ -141,6 +145,7 @@ uv run pytest tests/test_task_classification_agent.py  # 单个文件
 | `TypeError: 'function' object is not subscriptable` | 用了 Python 3.13+。本项目需 3.10–3.12，务必用 `uv run` 而非系统 Python |
 | `ModuleNotFoundError` | 用了系统 Python。改用 `uv run <命令>` |
 | 聊天报模型鉴权错误 | 检查 `.env` 里的 `LLM_*` / `EMBEDDING_*` 配置 |
+| 咨询类问题答「知识库尚未接入」 | 预期行为：本地 RAG 已移除，独立 RAG 项目尚未接入（注入端口实现后即恢复） |
 | 飞书连上了但收不到消息 | ① 消息没真的 @ 到机器人；② 事件订阅里没加 `im.message.receive_v1`；③ 权限改动后没重新发布版本 |
 | 同一条飞书消息被回复两次 | 用了多 worker。必须 `--workers 1`（去重表是进程内的） |
 | 飞书里多轮对话接不上 | 在话题里接着说，而不是重新 @ 一次（后者是开新会话，见上文「怎么用」） |

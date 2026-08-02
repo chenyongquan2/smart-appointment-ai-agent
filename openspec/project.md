@@ -15,14 +15,15 @@
 - **Web**：FastAPI + uvicorn + Jinja2（`web/` 前端模板）
 - **数据校验**：Pydantic v2（结构化输出的核心）
 - **LLM 编排**：LangChain 0.3.x（`langchain-openai` / `-core` / `-community` / `-experimental`）
-- **RAG**：FAISS（向量）+ SQLite/SQLAlchemy
+- **向量化**：FAISS + embedding，**仅用于技师专长相似度匹配**（`services/text_embedding.py`）；知识库 RAG 已移除
+- **持久化**：SQLite/SQLAlchemy
 - **协议**：MCP
 - **依赖管理**：**uv**（`package = false`，用 `uv run` / `uv sync`，不要用 pip）
 - **测试**：pytest（`tests/`）
 
 ## 架构与分层
 
-五层结构（重构中）：`Channel/Gateway(FastAPI+web/)` → `Agent 层(agents/ → 重构为 harness/)` → `Services(services/)` → `DB(db/ Repository)` → `Config(config/, 含 model_provider Provider 抽象)`，外加 RAG（FAISS+SQLite）。
+五层结构（重构中）：`Channel/Gateway(FastAPI+web/)` → `Agent 层(agents/ → 重构为 harness/)` → `Services(services/)` → `DB(db/ Repository)` → `Config(config/, 含 model_provider Provider 抽象)`。知识库检索是一个**出站端口**（`services/knowledge_search.py`），实现将由独立的 RAG 项目提供。
 
 **依赖方向铁律**：单向向下。上层可依赖下层，下层**绝不**反向 import 上层。
 
@@ -39,8 +40,11 @@
 
 ## 不要动（保留资产）
 
-`services/`（业务逻辑）、`db/`（Repository）、`config/model_provider.py`（Provider 抽象）、RAG 的 SQLite+FAISS 基础。
+`services/`（业务逻辑）、`db/`（Repository）、`config/model_provider.py`（Provider 抽象）。
 重构只换"大脑的决策方式"（`agents/` → `harness/`），**不重写这些**。
+
+例外（已移除，非保留资产）：本地 RAG 的 SQLite+FAISS 知识库实现已于 change `remove-local-rag`
+删除，检索改由 `services/knowledge_search.py` 的端口承接，待接入独立的 RAG 项目。
 
 ## 验证（每个 change 必须过）
 

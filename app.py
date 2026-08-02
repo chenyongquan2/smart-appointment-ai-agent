@@ -2,7 +2,7 @@
 FastAPI应用程序
 
 主应用程序入口，配置中间件、路由和异常处理
-自动初始化知识库和技师数据
+自动初始化技师数据
 """
 import sys
 
@@ -14,10 +14,8 @@ for _stream in (sys.stdout, sys.stderr):
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from services.knowledge_service import KnowledgeService
 from services.technician_service import TechnicianService
 from services.recommendation_service import RecommendationService
-from typing import List, Optional
 import logging
 import asyncio
 
@@ -31,29 +29,11 @@ from config.logging_setup import setup_logging
 setup_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Pydantic模型
-from pydantic import BaseModel
-
-class KnowledgeRequest(BaseModel):
-    content: str
-    category: str
-    keywords: List[str] = []
-
-class SearchRequest(BaseModel):
-    query: str
-    top_k: int = 5
-    category: Optional[str] = None
-
 async def initialize_system():
     """系统启动时自动初始化"""
     try:
         logger.info("🚀 正在初始化智能预约系统...")
-        
-        # 初始化知识库服务
-        logger.info("📚 初始化知识库服务...")
-        knowledge_service = KnowledgeService()
-        await knowledge_service.initialize()
-        
+
         # 初始化技师服务
         logger.info("👨‍⚕️ 初始化技师服务...")
         technician_service = TechnicianService()

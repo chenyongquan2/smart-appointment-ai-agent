@@ -302,23 +302,25 @@ class ToolRegistry:
 具体工具 [`search_knowledge`](../harness/tools/knowledge.py#L30) 的 handler——体会「工具不写业务，只做转接」：
 
 ```python
-# knowledge.py:13
+# knowledge.py
 async def _handler(args: SearchKnowledgeArgs) -> list[dict]:   # args 已被校验，直接 .query 取用
-    # 延迟 import：模块加载时不拉起重型 service/索引，等真正被调用才初始化（加快启动、省内存）
-    from services.knowledge_service import KnowledgeService
-    service = KnowledgeService()
-    if not getattr(service, "initialized", False):   # 仅首次调用时初始化（懒加载）
-        await service.initialize()
-    # 直接把参数转交给既有 service——工具层不写任何检索/业务逻辑
-    return await service.search(args.query, top_k=args.top_k, category=args.category)
+    # 延迟 import：模块加载时不拉起端口背后的实现（未来是远程 RAG client）
+    from services.knowledge_search import get_knowledge_search
+    # 每次调用都重新解析端口，故运行中注入的实现（测试/评估的 fake）能即时生效
+    port = get_knowledge_search()
+    return await port.search(args.query, top_k=args.top_k, category=args.category)
     # ☝️「薄封装」的精髓：校验交给 Pydantic、业务交给 services/，工具只做「转接」
 
-# knowledge.py:30 —— 模块级单例，被 build_default_registry 直接注册
+# 模块级单例，被 build_default_registry 直接注册
 search_knowledge = Tool(name="search_knowledge", description="...何时该用...",
                         args_schema=SearchKnowledgeArgs, handler=_handler)  # 未传 dangerous→默认 False
 ```
 
-**为什么坚持只是薄封装**：业务、可靠性、领域逻辑（SQLite+FAISS 检索）全在既有的 `services/` 里，CLAUDE.md 明确「不要重写 services/」。工具层只做「参数校验 + 转交」，职责单一、易测、不与 service 重复维护——换检索实现时，工具层一行都不用动。
+**为什么坚持只是薄封装**：业务、可靠性、领域逻辑全在 `services/` 里，CLAUDE.md 明确「不要重写 services/」。工具层只做「参数校验 + 转交」，职责单一、易测、不与 service 重复维护——换检索实现时，工具层一行都不用动。
+
+> 🧪 **这条主张被真事验证过**：2026-08-02 的 change `remove-local-rag` 把本地 RAG（SQLite+FAISS）整条删掉、换成 [services/knowledge_search.py](../services/knowledge_search.py) 的可替换端口。工具的四要素（name / description / args_schema / dangerous）**一字未改**，于是 registry 注册、子 Agent 工具切片、184 条评估用例的标注、以及门禁基线**全都不用动**——handler 里换了两行，上层零改动。这就是「薄封装 + 稳定契约」的兑现方式。
+>
+> 顺带一提，端口未注入实现时**刻意抛异常**而不是返回空列表：空列表会被模型读成「查过了、库里没有」进而编造答案；而抛异常会走 agent loop 既有的失败回灌路径，模型看到「知识库尚未接入」的明确说明，`任务成功率` 也如实记为未达成（详见该 change 的 design D2）。
 
 ## 2.6 设计要点：单一真相源（一份 Pydantic 模型，两处使用）
 
