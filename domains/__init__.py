@@ -31,6 +31,7 @@ __all__ = [
     "available_domains",
     "build_tool_registry",
     "build_subagent_registry",
+    "build_main_registry",
     "DEFAULT_DOMAIN",
     "DOMAIN_ENV_VAR",
 ]
@@ -68,6 +69,12 @@ class Domain:
     evals_dir: Path
 
 
+def _load_oncall() -> Domain:
+    from domains.oncall import build_domain
+
+    return build_domain()
+
+
 def _load_appointment() -> Domain:
     # 函数内 import：装 A 域不该连带拉起 B 域的重型依赖。这在第 3 期尤其要紧——
     # oncall 域会拖着 VictoriaLogs 客户端、git worktree 之类的东西。
@@ -81,6 +88,7 @@ def _load_appointment() -> Domain:
 # 退化成「什么都没发生」。3 行字典，一眼看得出全集。
 _DOMAINS: dict[str, Callable[[], Domain]] = {
     "appointment": _load_appointment,
+    "oncall": _load_oncall,
 }
 
 
@@ -141,4 +149,34 @@ def build_subagent_registry(domain: Domain):
     registry = SubAgentRegistry()
     for agent in domain.subagents:
         registry.register(agent)
+    return registry
+
+def build_main_registry(domain: Domain, delegate_factory=None):
+    """按域的**结构**决定主 Agent 的工具面，而不是写死一种形状。
+
+    两种形状，取决于域声明了子 Agent 没有：
+
+    - **有子 Agent**（预约域）：主 registry 只放 ``delegate``，主 Agent 的唯一动作是
+      「派给哪个专员」，领域工具藏在各子 Agent 的工具子集里。
+    - **无子 Agent**（值守域）：主 registry **直接放域的全部工具**，主 Agent 自己调。
+
+    为什么必须支持第二种：值守的主动作（查日志 → 下钻 → 定位）是一条连贯的推理链，
+    下钻要用到上一步命中日志里的 pod_ip / traceId，拆成子 Agent 反而要靠汇总文本传递
+    中间态、必丢细节。**强行给它包一个「持有全部工具」的子 Agent 是纯开销**——多一层
+    LLM 循环、多一次上下文拷贝，换不来任何隔离收益。
+
+    这个分支判的是 ``len(domain.subagents)``（结构属性），**不是域名**——运行时依然
+    对「自己跑在哪个域」无知，见 domain-packages 的「运行时对域无知」需求。
+
+    发现于 change ``oncall-domain-vlog`` 的冒烟：此前这段装配写死在 ``api/chat_handler``
+    里，装上无子 Agent 的域会得到一个「只有 delegate、却无处可派」的主 Agent——
+    域的工具够不着，且不报错。
+    """
+    from harness.tools.registry import ToolRegistry
+
+    if not domain.subagents:
+        return build_tool_registry(domain)
+
+    registry = ToolRegistry(permission=domain.policy)
+    registry.register(delegate_factory())
     return registry
