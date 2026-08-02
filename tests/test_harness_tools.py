@@ -69,7 +69,9 @@ async def test_find_technician_delegates(monkeypatch):
     captured: dict[str, Any] = {}
 
     class FakeFinder:
-        def find_technician_with_thought(self, history, yield_func=None):
+        # async：真实的 find_technician_with_thought 是协程（内部要做向量化），
+        # 打桩必须同为 async，否则工具里的 await 会打在普通 dict 上而报错。
+        async def find_technician_with_thought(self, history, yield_func=None):
             captured["history"] = history
             captured["yield_func"] = yield_func
             return {"id": 7, "name": "张伟"}

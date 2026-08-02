@@ -14,14 +14,13 @@
 
 全程离线：注入永不返回的 fake，不触网、不产生分钟级真实等待。
 
-⚠ **覆盖缺口**（change: remove-local-rag）：本文件原有一条
-``test_knowledge_search_does_not_block_the_loop``，把断言推到「真实调用链也不冻住循环」。
-它随 ``KnowledgeService`` 一并删除，故目前只在 ``aembed_input`` 这一层守「不阻塞」，
-**没有**任何一条用例守真实调用链。这不是无关紧要的——技师专长匹配那条链
-（``harness/tools/technician.py`` 的 async handler → ``TechnicianFinder`` →
-``find_best_match_indices`` → 同步 ``embed_input``）**当前就违反本文件第 2 组守的约束**，
-属已知缺陷、单列为独立任务处理。接入远程 RAG client 时也须按 ``guardrails`` 需求
-补回等价的「心跳不停」用例。
+📌 **真实调用链的覆盖在哪**：本文件只在 ``aembed_input`` 这一层守「不阻塞」。原有的
+``test_knowledge_search_does_not_block_the_loop``（把断言推到真实调用链）随
+``KnowledgeService`` 删除（change: remove-local-rag），其角色现由
+``tests/test_technician_matching_nonblocking.py`` 承担——技师专长匹配那条链曾
+**真的违反过**本文件第 2 组守的约束（async handler → ``TechnicianFinder`` →
+同步 ``embed_input``），已于 change ``fix-technician-embedding-blocking`` 修复并补守。
+接入远程 RAG client 时须按 ``guardrails`` 需求为它补回同款用例。
 
 两条"不阻塞"用例带 ``@pytest.mark.timeout``，理由值得记一笔：把修复改回同步实现后，
 这些用例**不会失败而会挂死**——事件循环被冻住，连它们自己的 ``asyncio.wait_for``

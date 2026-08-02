@@ -36,7 +36,10 @@ async def _handler(args: FindTechnicianArgs) -> dict[str, Any] | None:
     # finder 里，工具层一行转交、绝不重写。返回技师信息字典；找不到时为 None。
     # yield_func 为 None：finder 本可流式吐 thought，但工具层不产出 thought 流，
     # 可观测交给上层（Phase 3 loop 的 tracer）统一负责，故这里显式关掉。
-    return finder.find_technician_with_thought(appointment_history, yield_func=None)
+    #
+    # 必须 await：finder 内部要做向量化（远程 HTTP）。这里曾经是同步调用，导致本
+    # async handler 在等待期间冻住整个事件循环——见 change fix-technician-embedding-blocking。
+    return await finder.find_technician_with_thought(appointment_history, yield_func=None)
 
 
 # 声明工具四要素；未设 dangerous → 默认 False（只读查找，分发时直接放行）。
