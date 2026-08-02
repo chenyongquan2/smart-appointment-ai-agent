@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
@@ -25,6 +25,7 @@ from evals.trace_collect import collect_tool_calls, collect_tool_outcomes
 from harness.observability.exporter import InMemoryExporter
 from harness.observability.tracer import Tracer
 from harness.runtime import AgentLoop
+from domains import load_domain
 from harness.runtime.system_prompt import build_system_prompt
 from harness.subagents import build_delegate_tool
 from harness.subagents.registry import SubAgentRegistry
@@ -49,6 +50,7 @@ def _build_capture_loop(
     llm: BaseChatModel,
     full_registry: ToolRegistry,
     subagents: SubAgentRegistry,
+    base_prompt: Optional[str] = None,
 ) -> tuple[AgentLoop, InMemoryExporter]:
     """按生产路径拼一个带独立 exporter 沙盒的主 loop（单/多轮共用，避免两份沙盒代码）。
 
@@ -63,7 +65,11 @@ def _build_capture_loop(
     loop = AgentLoop(
         llm=llm,
         registry=main_registry,
-        system_prompt=build_system_prompt(main_registry, subagents),
+        system_prompt=build_system_prompt(
+            base_prompt if base_prompt is not None else load_domain().system_prompt,
+            main_registry,
+            subagents,
+        ),
         tracer=tracer,  # 主 loop 自身的 delegate span 也进沙盒（采集时按默认剔除）
     )
     return loop, exporter

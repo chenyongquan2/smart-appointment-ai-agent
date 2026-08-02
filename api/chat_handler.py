@@ -36,8 +36,9 @@ from harness.runtime import AgentLoop
 from harness.runtime.agent_loop import RunOutcome
 from harness.runtime.session import SessionStore
 from harness.runtime.system_prompt import build_system_prompt
-from harness.subagents import build_default_subagent_registry, build_delegate_tool
-from harness.tools.registry import ToolRegistry, build_default_registry
+from harness.subagents import build_delegate_tool
+from domains import build_subagent_registry, build_tool_registry, load_domain
+from harness.tools.registry import ToolRegistry
 
 # 模块级单例（Phase 7）：
 # 这些对象在「import 本模块时」只建一次，被所有请求共享——故必须无状态/可并发复用
@@ -47,8 +48,12 @@ from harness.tools.registry import ToolRegistry, build_default_registry
 # - delegate 工具：主 Agent 据此自主派生子 Agent（取代硬编码路由）。
 # - 主 registry 只含 delegate：主 Agent 负责「决策派给谁」，不直接执行领域工具。
 _llm = create_chat_model(temperature=0)  # temperature=0：尽量确定性，利于评估对照与复现
-_full_registry = build_default_registry()
-_subagents = build_default_subagent_registry()
+
+# 领域包装载（change domain-packages）：工具集 / 子 Agent / 人设 / 权限策略全部来自
+# 当前装载的域（环境变量 AGENT_DOMAIN，缺省 appointment）。本文件对「跑在哪个域」无知。
+_domain = load_domain()
+_full_registry = build_tool_registry(_domain)
+_subagents = build_subagent_registry(_domain)
 
 # 在线评估闭环（改造 7）：把真实对话 trace 落盘，作为 triage 的 trace 源。
 # - 一个进程一个 trace 文件（run_id=进程级 uuid），主 loop 与子 Agent 共用同一 tracer，
@@ -76,7 +81,7 @@ _agent_loop = AgentLoop(
     llm=_llm,
     registry=_main_registry,
     # 主 Agent 专用系统提示：把可委派的子 Agent 清单写进去，模型才知道能派给谁。
-    system_prompt=build_system_prompt(_main_registry, _subagents),
+    system_prompt=build_system_prompt(_domain.system_prompt, _main_registry, _subagents),
     tracer=_tracer,  # 改造 7：主 loop 的 trace 落盘（含 root span 的 user_input/session_id）
 )
 

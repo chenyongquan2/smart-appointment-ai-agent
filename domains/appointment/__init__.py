@@ -1,0 +1,46 @@
+"""预约域领域包 —— 按摩/推拿门店的咨询与预约。
+
+这是本项目的原始领域，随 change `domain-packages` 从 `harness/` 下沉至此。它同时是
+「换域 = 换五样东西」这条设计判断的**参照实现**：第 3 期的 oncall 域照同一形状填即可。
+
+五个槽位：
+
+| 槽位 | 在哪 |
+|---|---|
+| 工具集 | `tools/`（5 个，薄封装 `services/`） |
+| 子 Agent 集 | `subagents/`（预约 / 咨询 / 行为分析） |
+| 系统提示 | `prompt.py` |
+| 权限策略 | `policy.py` |
+| 评估数据 | `evals/`（`cases.jsonl` + `baseline.json`，**只有数据在这，机制留在 `evals/`**） |
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from domains import Domain
+
+__all__ = ["build_domain"]
+
+# 数据目录用「相对本文件」定位而非 cwd：评估既可能从仓库根跑，也可能从别处跑。
+_EVALS_DIR = Path(__file__).parent / "evals"
+
+
+def build_domain() -> Domain:
+    """组装预约域。由 `domains.load_domain()` 调用。
+
+    函数内 import 的理由同 `domains/__init__.py` 的注册表：装本域时才拉起本域依赖。
+    """
+    from domains.appointment.policy import POLICY
+    from domains.appointment.prompt import SYSTEM_PROMPT
+    from domains.appointment.subagents import SUBAGENTS
+    from domains.appointment.tools import TOOLS
+
+    return Domain(
+        name="appointment",
+        tools=TOOLS,
+        subagents=SUBAGENTS,
+        system_prompt=SYSTEM_PROMPT,
+        policy=POLICY,
+        evals_dir=_EVALS_DIR,
+    )

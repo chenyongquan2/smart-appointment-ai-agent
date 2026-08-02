@@ -6,7 +6,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from harness.tools.base import Tool
-from harness.tools.registry import ToolRegistry, build_default_registry
+from harness.tools.registry import ToolRegistry
+from tests._domain_helpers import build_default_registry
 
 
 class _EchoArgs(BaseModel):

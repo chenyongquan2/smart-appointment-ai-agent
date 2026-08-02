@@ -225,8 +225,8 @@ loop 调用的就是工具。看「能力如何被包装成模型可调用的东
 
 - [ ] [tools/base.py](../harness/tools/base.py) — 工具基类（name / description / schema / handler）
 - [ ] [tools/registry.py](../harness/tools/registry.py) — 注册 + 生成 LLM schema + 按名分发
-- [ ] [tools/schemas.py](../harness/tools/schemas.py) — Pydantic 模型（Phase 1 结构化输出的成果）
-- [ ] 任挑一个具体工具：[tools/knowledge.py](../harness/tools/knowledge.py) 或 [tools/appointment.py](../harness/tools/appointment.py)
+- [ ] [domains/appointment/tools/schemas.py](../domains/appointment/tools/schemas.py) — Pydantic 模型（Phase 1 结构化输出的成果）
+- [ ] 任挑一个具体工具：[domains/appointment/tools/knowledge.py](../domains/appointment/tools/knowledge.py) 或 [domains/appointment/tools/appointment.py](../domains/appointment/tools/appointment.py)
 - [ ] 测试 [test_tool_registry.py](../tests/test_tool_registry.py) + [test_harness_tools.py](../tests/test_harness_tools.py)
 
 本站有三个文件，对应三层职责，按这个顺序读最顺：**`base.py`（单个工具长什么样）→ `registry.py`（一堆工具怎么管）→ 某个具体工具（薄封装到底多薄）**。`schemas.py` 贯穿其中，是「参数」的单一真相源。
@@ -293,13 +293,13 @@ class ToolRegistry:
 
 **dispatch 的三步顺序是刻意的**：先取工具 → 再权限闸门 → 最后才校验+执行。权限判定放在 Pydantic 校验**之前**，意味着一个被禁的危险操作根本不会浪费力气去校验参数；而错误隔离（try/except）在更外层的 loop `_dispatch` 里（第 1 站 1.4）——registry 只管「该不该做、怎么分发」，不管「崩了怎么办」，职责干净。
 
-另外两个方法第 6 站会用到：[`subset(names)`](../harness/tools/registry.py#L51) 复用「同一批 Tool 实例」切出一个子集 registry 给子 Agent（不拷贝、不重写）；[`build_default_registry()`](../harness/tools/registry.py#L123) 在模块底部把 5 个内置工具一次性注册好（用函数内 import 打破循环依赖）。
+另外两个方法第 6 站会用到：[`subset(names)`](../harness/tools/registry.py#L51) 复用「同一批 Tool 实例」切出一个子集 registry 给子 Agent（不拷贝、不重写）；工具的注册不再由 harness 写死——`build_tool_registry(domain)`（[domains/__init__.py](../domains/__init__.py)）把**当前装载的领域包**声明的工具装进 registry，并接上该域的权限策略（change `domain-packages`）。
 
 ## 2.5 关键代码 ③：薄封装到底多薄
 
-> 📄 源码出处：[harness/tools/knowledge.py:13-41](../harness/tools/knowledge.py#L13)
+> 📄 源码出处：[domains/appointment/tools/knowledge.py:13-41](../domains/appointment/tools/knowledge.py#L13)
 
-具体工具 [`search_knowledge`](../harness/tools/knowledge.py#L30) 的 handler——体会「工具不写业务，只做转接」：
+具体工具 [`search_knowledge`](../domains/appointment/tools/knowledge.py#L30) 的 handler——体会「工具不写业务，只做转接」：
 
 ```python
 # knowledge.py
@@ -311,7 +311,7 @@ async def _handler(args: SearchKnowledgeArgs) -> list[dict]:   # args 已被校�
     return await port.search(args.query, top_k=args.top_k, category=args.category)
     # ☝️「薄封装」的精髓：校验交给 Pydantic、业务交给 services/，工具只做「转接」
 
-# 模块级单例，被 build_default_registry 直接注册
+# 模块级单例，由领域包声明（domains/appointment/tools/__init__.py 的 TOOLS）
 search_knowledge = Tool(name="search_knowledge", description="...何时该用...",
                         args_schema=SearchKnowledgeArgs, handler=_handler)  # 未传 dangerous→默认 False
 ```
@@ -324,7 +324,7 @@ search_knowledge = Tool(name="search_knowledge", description="...何时该用...
 
 ## 2.6 设计要点：单一真相源（一份 Pydantic 模型，两处使用）
 
-> 📄 源码出处：[harness/tools/registry.py:92-104](../harness/tools/registry.py#L92) + [harness/tools/schemas.py](../harness/tools/schemas.py)
+> 📄 源码出处：[harness/tools/registry.py:92-104](../harness/tools/registry.py#L92) + [domains/appointment/tools/schemas.py](../domains/appointment/tools/schemas.py)
 
 前面 `Tool.run` 用 `args_schema` 做**运行时校验**；同一个 `args_schema` 还被 registry 拿去**生成喂给 LLM 的 schema**：
 
@@ -342,7 +342,7 @@ def to_openai_schema(self) -> list[dict]:     # 把所有已注册工具导出�
     # 结果会喂给 llm.bind_tools(...)，模型据此知道「有哪些工具、各要什么参数」
 ```
 
-**为什么这是关键设计**：校验规则和「告诉模型的参数说明」如果是两份手写的东西，迟早漂移——改了校验忘了改 schema，模型就会按过时的说明填参、然后被校验拒掉。这里两者**同源于一份 Pydantic 模型**，永远一致。[`schemas.py`](../harness/tools/schemas.py) 里每个 `Field(description=...)`（如 [`top_k`](../harness/tools/schemas.py#L22) 的 `ge=1, le=20`）都会被 `model_json_schema()` 抽进 schema——**那段 description 就是写给模型的提示词，那些 `ge/le` 就是校验约束**，一处定义、两处生效。
+**为什么这是关键设计**：校验规则和「告诉模型的参数说明」如果是两份手写的东西，迟早漂移——改了校验忘了改 schema，模型就会按过时的说明填参、然后被校验拒掉。这里两者**同源于一份 Pydantic 模型**，永远一致。[`schemas.py`](../domains/appointment/tools/schemas.py) 里每个 `Field(description=...)`（如 [`top_k`](../domains/appointment/tools/schemas.py#L22) 的 `ge=1, le=20`）都会被 `model_json_schema()` 抽进 schema——**那段 description 就是写给模型的提示词，那些 `ge/le` 就是校验约束**，一处定义、两处生效。
 
 > 🔑 **记住这条（后面反复用到）**：这份 schema 经 `llm.bind_tools(...)` 成为发给 LLM 的 API 请求里的 **`tools` 字段**（与 `messages` 平行的独立参数）。**它才是模型「能调用工具、知道参数怎么填」的唯一依据**——模型决定调用时，返回的不是文字而是结构化的 `tool_calls`（第 1 站 loop 据此 dispatch）。换句话说：**让模型「能调工具」的是这个 `tools` 字段，不是系统提示里的文字。** 在系统提示里再列一遍工具是**可选的、基本冗余的**（详见第 3 站 3.6 的客观澄清）。
 

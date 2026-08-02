@@ -113,6 +113,12 @@ config/              新增飞书凭据、并发与超时参数
 
 ## 第 2 期：领域包化（domains/）
 
+**状态**：✅ 已完成 → change `domain-packages`（2026-08-02）。`domains/appointment/` 五槽位齐全（工具集 / 子 Agent / 人设 / 权限策略 / 评估数据），`AGENT_DOMAIN` 缺省 `appointment`；`agents/` 遗留层约 2031 行已删（BREAKING：`/api/appointment`、`/api/user_behavior_analysis` 及对应页面下线）；`TechnicianFinder` 下沉 `services/`，工具层对 `agents/` 的横向依赖债还清。
+
+顺带**首次把权限闸门接进生产路径**——此前 `ToolRegistry` 从未收到过 policy，实际一直走 `allow_all` 默认。oncall 的只读红线要靠它硬 enforce，故在纯搬迁这期把管道通了并留测试守着。
+
+⚠ **发现三处剩余域泄漏**（记忆层的 `summary_schema.py` / `summary.py` / `long_term.py` 里嵌了预约域的提示词与枚举）。它们不是"放错位置的域内容"，而是"域无关机制里嵌了域特定文本"，要清干净得让这些文本随域可配——属行为变更，越出本期纯搬迁纪律。已写进 `tests/test_domain_loading.py` 的白名单（清掉后测试会提醒删白名单），第 3 期做 oncall 域时按需处理。
+
 **目标**：把「域」收敛成可装载的包，为 oncall 域腾出位置。
 
 - 新增 `domains/` 结构：`tools/`（工具集）、`prompts/`（system prompt）、`policy.py`（权限策略）、`evals/`（用例集 + baseline）

@@ -60,11 +60,6 @@ async def chat_endpoint(chat: ChatRequest):
         headers={"X-Session-Id": session_id},
     )
 
-@router.get("/user_behavior", response_class=HTMLResponse, summary="用户行为分析页面")
-async def user_behavior_page(request: Request):
-    """用户行为分析页面"""
-    return templates.TemplateResponse("user_behavior_analysis.html", {"request": request})
-
 @router.get("/technician", response_class=HTMLResponse, summary="技师状态页面")
 async def technician_page(request: Request):
     """技师状态页面"""
@@ -120,11 +115,6 @@ async def technician_schedule_page(request: Request):
             "schedule": [],
             "error": str(e)
         })
-
-@router.get("/user_behavior_analysis", response_class=HTMLResponse, summary="用户行为分析页面")
-async def user_behavior_analysis_page(request: Request):
-    """用户行为分析页面"""
-    return templates.TemplateResponse("user_behavior_analysis.html", {"request": request})
 
 @router.get("/admin", response_class=HTMLResponse, summary="系统管理页面")
 async def admin_dashboard(request: Request):
