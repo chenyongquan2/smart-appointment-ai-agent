@@ -23,14 +23,20 @@
 
 ## 架构与分层
 
-五层结构（重构中）：`Channel/Gateway(FastAPI+web/)` → `Agent 层(agents/ → 重构为 harness/)` → `Services(services/)` → `DB(db/ Repository)` → `Config(config/, 含 model_provider Provider 抽象)`。知识库检索是一个**出站端口**（`services/knowledge_search.py`），实现将由独立的 RAG 项目提供。
+分层结构：`Channel/Gateway(channels/ + web/)` → `Executor(executor/ 任务执行层)` → `Harness(harness/ 域无关运行时)` → `Domains(domains/ 可装载领域包)` → `Services(services/)` → `DB(db/ Repository)` → `Config(config/, 含 model_provider Provider 抽象)`。知识库检索是一个**出站端口**（`services/knowledge_search.py`），实现将由独立的 RAG 项目提供。
+
+**换域 = 换五样东西**（change `domain-packages`）：工具集 + 子 Agent 集 + 系统提示 + 权限策略 + 评估数据。这五样在 `domains/<name>/`，由 `AGENT_DOMAIN` 环境变量决定装哪个（缺省 `appointment`）。运行时（TAO 循环、记忆、护栏、Tracer、评估运行器）**一行不动**，且 MUST NOT 出现 `if domain == ...`。
+
+判断一段代码该放哪，只问：**换成另一个域还成立吗？** 成立 → 域无关，留 `harness/` 或 `evals/`；不成立 → 进领域包。这条判据有测试守着（`tests/test_domain_loading.py`）。
+
+⚠ 已知剩余泄漏：记忆层的 `summary_schema.py` / `summary.py` / `long_term.py` 里嵌了预约域的提示词与枚举，需让它们随域可配，属独立改造（白名单记在上述测试里）。
 
 **依赖方向铁律**：单向向下。上层可依赖下层，下层**绝不**反向 import 上层。
 
 ## 黄金准则（Golden Principles）
 
 1. **结构化输出 > 字符串解析**：意图/槽位一律用 Pydantic schema + function calling，禁止 `strip().lower()` + 白名单这类脆弱解析。
-2. **一个概念一个文件**：尤其工具——`harness/tools/` 下一个工具一个文件（name/description/args schema/handler）。
+2. **一个概念一个文件**：尤其工具——`domains/<name>/tools/` 下一个工具一个文件（name/description/args schema/handler）。
 3. **工具是薄封装**：tool 内部调用既有 `services/`，**不重写业务逻辑**。
    - 工具超时声明在工具自身（`Tool.timeout`；`None`=取全局缺省 60s，`NO_TIMEOUT`=豁免）。
    - ⚠ 超时**只能中断有 await 点的 handler**。内部跑同步阻塞调用（同步 SQLite / FAISS / 子进程）的工具，声明了 `timeout` 也掐不断——需要真超时就自行 `asyncio.to_thread` 下沉线程池。

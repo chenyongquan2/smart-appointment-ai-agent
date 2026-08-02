@@ -1,7 +1,13 @@
-"""
-技师查找器
+"""技师匹配 service —— 按时间/性别/专长偏好查找可用技师。
 
-负责根据用户需求查找合适的技师
+原在 `agents/appointment/technician_finder.py`。它是**业务逻辑**（匹配规则），按项目
+分层就该在 `services/`；`harness/tools/technician.py` 只是它的薄封装。此前留在
+`agents/` 导致工具层横向依赖 `agents/`，违反「单向向下」——那笔债从 Phase 2 记到现在，
+于 change `domain-packages` 兑现。
+
+⚠ 有几个方法是 **async**（内部要做向量化，远程 HTTP）：`find_technician_with_thought`
+/ `filter_technicians_by_preference` / `find_similar_available_technician`。同步调用会
+冻住事件循环，见 change `fix-technician-embedding-blocking`。
 """
 
 from typing import Optional, Dict, Any, Callable

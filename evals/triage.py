@@ -26,6 +26,7 @@ from typing import Any, Iterable, Optional
 from evals.trace_collect import collect_tool_calls
 from harness.observability.span import Span, SpanEvent
 from harness.observability.trace_signals import detect_bad_signals
+from domains import load_domain
 
 # 与 evals/cases.jsonl 同构的「真值」字段白名单——append 只写这些键，绝不把草稿的辅助字段写进用例集。
 CANONICAL_KEYS = (
@@ -37,7 +38,8 @@ CANONICAL_KEYS = (
     "source",
 )
 
-_CASES_FILE = Path(__file__).parent / "cases.jsonl"
+# 数据随域走（见 change domain-packages）；triage 机制本身域无关。
+_CASES_FILE = load_domain().evals_dir / "cases.jsonl"
 _TRACES_DIR = Path(__file__).parent / "traces"
 _ONLINE_SECTION_HEADER = "// --- online 回灌 (改造 7) ---"
 

@@ -15,17 +15,21 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import BaseModel, Field
 
 from harness.runtime import AgentLoop
-from harness.runtime.system_prompt import build_system_prompt
-from harness.subagents import (
-    SubAgent,
-    build_default_subagent_registry,
-    build_delegate_tool,
+from domains import load_domain
+from harness.runtime.system_prompt import (
+    GENERIC_BASE_PROMPT,
+    build_system_prompt,
 )
-from harness.subagents.appointment import APPOINTMENT_SUBAGENT
-from harness.subagents.consultant import CONSULTANT_SUBAGENT
-from harness.subagents.user_behavior import USER_BEHAVIOR_SUBAGENT
+
+_DOMAIN = load_domain()
+from harness.subagents import SubAgent, build_delegate_tool
+from tests._domain_helpers import build_default_subagent_registry
+from domains.appointment.subagents.appointment import APPOINTMENT_SUBAGENT
+from domains.appointment.subagents.consultant import CONSULTANT_SUBAGENT
+from domains.appointment.subagents.user_behavior import USER_BEHAVIOR_SUBAGENT
 from harness.tools.base import Tool
-from harness.tools.registry import ToolRegistry, build_default_registry
+from harness.tools.registry import ToolRegistry
+from tests._domain_helpers import build_default_registry
 
 
 # --------------------------------------------------------------------------- #
@@ -86,7 +90,7 @@ def test_agent_loop_default_system_prompt_unchanged():
     reg, _ = _fake_full_registry()
     llm = ScriptedChatModel(responses=[AIMessage(content="hi")])
     loop = AgentLoop(llm=llm, registry=reg)
-    assert loop.system_prompt == build_system_prompt(reg)
+    assert loop.system_prompt == build_system_prompt(GENERIC_BASE_PROMPT, reg)
 
 
 def test_agent_loop_custom_system_prompt_used():
@@ -241,7 +245,7 @@ async def test_main_agent_delegates_end_to_end():
     loop = AgentLoop(
         llm=llm,
         registry=main,
-        system_prompt=build_system_prompt(main, subagents),
+        system_prompt=build_system_prompt(_DOMAIN.system_prompt, main, subagents),
         on_tool_call=lambda call: seen.append(call["name"]),
     )
 

@@ -118,26 +118,3 @@ class ToolRegistry:
             }
             for tool in self._tools.values()
         ]
-
-
-def build_default_registry() -> ToolRegistry:
-    """注册全部内置工具，返回可用的 registry。"""
-    # 函数内 import（而非模块顶部）：打破潜在的循环依赖，也避免「一导入 registry 模块就
-    # 连带拉起所有工具及其重型依赖」。各 tool 是模块级单例（如 search_knowledge）。
-    from harness.tools.appointment import create_appointment
-    from harness.tools.availability import check_availability
-    from harness.tools.knowledge import search_knowledge
-    from harness.tools.preference import get_user_preferences
-    from harness.tools.technician import find_technician
-
-    registry = ToolRegistry()
-    # 逐个注册这套内置工具；顺序不影响分发（按名查找），但会影响导出 schema 的列举顺序。
-    for tool in (
-        search_knowledge,
-        find_technician,
-        check_availability,
-        create_appointment,   # 唯一写库的危险工具（dangerous=True），分发时会过权限闸门
-        get_user_preferences,
-    ):
-        registry.register(tool)
-    return registry

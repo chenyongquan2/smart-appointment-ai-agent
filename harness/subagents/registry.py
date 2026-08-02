@@ -41,18 +41,3 @@ class SubAgentRegistry:
     def all(self) -> list[SubAgent]:
         # 返回全部子 Agent 实例；delegate 的 description 与主 system prompt 据此渲染「团队成员」清单。
         return list(self._agents.values())
-
-
-def build_default_subagent_registry() -> SubAgentRegistry:
-    """注册全部内置子 Agent（预约 / 咨询 / 行为分析），返回可用的注册中心。"""
-    # 在函数内部 import（而非模块顶部）：打破「registry ←→ 各子 Agent 模块」的潜在循环依赖，
-    # 也让「注册哪些子 Agent」这件事集中在这一处、一目了然。
-    from harness.subagents.appointment import APPOINTMENT_SUBAGENT
-    from harness.subagents.consultant import CONSULTANT_SUBAGENT
-    from harness.subagents.user_behavior import USER_BEHAVIOR_SUBAGENT
-
-    registry = SubAgentRegistry()
-    # 逐个注册三个内置子 Agent；任一重名都会在这里 fail-fast（见 register）。
-    for agent in (APPOINTMENT_SUBAGENT, CONSULTANT_SUBAGENT, USER_BEHAVIOR_SUBAGENT):
-        registry.register(agent)
-    return registry

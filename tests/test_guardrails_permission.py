@@ -31,8 +31,8 @@ def test_dangerous_flag_defaults_false():
 
 
 def test_create_appointment_marked_dangerous():
-    from harness.tools.appointment import create_appointment
-    from harness.tools.knowledge import search_knowledge
+    from domains.appointment.tools.appointment import create_appointment
+    from domains.appointment.tools.knowledge import search_knowledge
 
     assert create_appointment.dangerous is True
     assert search_knowledge.dangerous is False  # 只读工具默认非危险

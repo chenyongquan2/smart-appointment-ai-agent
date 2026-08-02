@@ -17,11 +17,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from harness.tools.appointment import create_appointment
-from harness.tools.availability import check_availability
-from harness.tools.knowledge import search_knowledge
-from harness.tools.preference import get_user_preferences
-from harness.tools.technician import find_technician
+from domains.appointment.tools.appointment import create_appointment
+from domains.appointment.tools.availability import check_availability
+from domains.appointment.tools.knowledge import search_knowledge
+from domains.appointment.tools.preference import get_user_preferences
+from domains.appointment.tools.technician import find_technician
 
 
 # --- search_knowledge -------------------------------------------------------
@@ -76,7 +76,7 @@ async def test_find_technician_delegates(monkeypatch):
             captured["yield_func"] = yield_func
             return {"id": 7, "name": "张伟"}
 
-    import agents.appointment.technician_finder as tf
+    import services.technician_matching as tf
     monkeypatch.setattr(tf, "TechnicianFinder", FakeFinder)
 
     result = await find_technician.run(

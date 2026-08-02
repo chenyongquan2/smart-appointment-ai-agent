@@ -5,6 +5,13 @@ ClassificationProcessor 里隐式的 if/else 路由约定（黄金准则：显�
 
 工具的逐条说明书来自各 Tool 的 ``description``（单一真相源），由
 ``build_system_prompt`` 在运行时拼接，避免在此处重复维护。
+
+**域人设不在这里**：``base_prompt`` 由调用方从当前装载的领域包传入
+（``domains/<name>/prompt.py``）。本模块只负责「怎么拼」——那套逻辑换任何域都成立，
+故属域无关运行时（见 change ``domain-packages`` 的 design D4）。
+
+刻意让调用方**显式传参**，而不是在函数内部 ``load_domain()``：后者会把一个纯函数变成
+依赖全局状态的函数，测试要打桩环境变量才能换提示——那是把「域无知」做成了「域隐形」。
 """
 
 from __future__ import annotations
@@ -16,26 +23,33 @@ from harness.tools.registry import ToolRegistry
 if TYPE_CHECKING:  # 仅类型注解，运行时不 import，避免与 subagents→runtime 形成循环。
     from harness.subagents.registry import SubAgentRegistry
 
-# 角色与行为基线。不在此枚举具体工具——工具清单由 registry 动态注入。
-BASE_SYSTEM_PROMPT = (
-    "你是一家按摩/推拿门店的智能助手，负责处理来自顾客与工作人员的消息，"
-    "覆盖两类事务：服务咨询（价格、项目、技师、营业信息等）与预约办理。\n"
+
+# 域无关的兜底人设。**正常路径不该用到它**——生产与评估都从领域包传入 `Domain.system_prompt`。
+# 它只服务于「没显式给 system_prompt 就 new 了个 AgentLoop」的场景（多见于单测与临时脚本）。
+#
+# 为什么需要它：`AgentLoop` 是域无关的运行时类，此前它的缺省分支直接引用了
+# `BASE_SYSTEM_PROMPT`——也就是把「你是一家按摩门店的智能助手」硬挂在了运行时上。
+# 那是一处域泄漏，领域包化时才暴露出来。这里换成不含任何业务词汇的最小基线。
+GENERIC_BASE_PROMPT = (
+    "你是一个智能助手，通过调用工具完成用户请求。\n"
     "\n"
     "工作方式（TAO 循环）：\n"
-    "- 你可以调用下面列出的工具来获取信息或执行操作；根据用户意图自主决定调用哪个、"
-    "以及是否需要连续多步调用（例如：先查技师，若不可用再查替代技师，最后创建预约）。\n"
-    "- 每次工具返回结果后，结合结果判断下一步：还需要更多信息就继续调用工具；"
-    "已经能给出完整答复或已完成预约，就直接用自然语言回复用户、不要再做无谓的工具调用。\n"
-    "- 与按摩/预约无关的请求（如闲聊、问天气），礼貌说明只能协助按摩与预约相关事务。\n"
+    "- 根据用户意图自主决定调用哪个工具、以及是否需要连续多步调用。\n"
+    "- 每次工具返回结果后判断下一步：还需要更多信息就继续调用工具；"
+    "已经能给出完整答复就直接用自然语言回复，不要再做无谓的工具调用。\n"
     "- 回复用简体中文，语气友好、简洁。"
 )
 
 
 def build_system_prompt(
+    base_prompt: str,
     registry: ToolRegistry,
     subagents: Optional["SubAgentRegistry"] = None,
 ) -> str:
-    """拼接基线提示与当前已注册工具的说明书。
+    """拼接域人设与当前已注册工具的说明书。
+
+    Args:
+        base_prompt: 当前领域包的人设文本（``Domain.system_prompt``）。
 
     当主 registry 含 ``delegate`` 工具且传入 ``subagents`` 时，额外把可派生子 Agent 的
     职责清单渲染进提示（显式优于隐式），使主 Agent 知道「有哪些专员、各管什么」。
@@ -43,7 +57,7 @@ def build_system_prompt(
     """
     # ──────────────────────────────────────────────────────────────────────
     # 本函数产出的系统提示分三块，「必要性」截然不同（理解这点很关键）：
-    #   A. BASE_SYSTEM_PROMPT（角色 + TAO + 何时停 + 边界）—— 必需、不可替代。
+    #   A. base_prompt（域人设：角色 + TAO + 何时停 + 边界）—— 必需、不可替代。
     #      这些「跨工具的策略与边界」无法由工具 schema 表达，删了模型会乱答/跑题/该停不停。
     #   B. 下面「可用工具：」逐条回显 —— 对「模型能不能调用工具」而言【基本冗余】。
     #      模型能调工具，靠的是 bind_tools 注入的 API ``tools`` 字段（即
@@ -61,10 +75,10 @@ def build_system_prompt(
     #    新增/删除一个工具，这段提示会自动跟着变，无需手改文案（单一真相源）。
     tools = [registry.get(name) for name in registry.names()]
     if not tools:
-        return BASE_SYSTEM_PROMPT  # 一个工具都没注册：只回基线提示，不拼空的「可用工具：」段
+        return base_prompt  # 一个工具都没注册：只回基线提示，不拼空的「可用工具：」段
     # lines 是「一行一条」地攒提示内容，最后用换行拼成整段；空串 "" 用来制造空行分隔。
     # 注：lines[0] 即上文说的【A】（必需）；下面这段「可用工具：」即【B】（对机制基本冗余）。
-    lines = [BASE_SYSTEM_PROMPT, "", "可用工具："]
+    lines = [base_prompt, "", "可用工具："]
     for tool in tools:
         # 每个工具的说明书 = 它自己的 description（单一真相源）。
         # 易误解点：这里不重复描述工具用法，全靠各 Tool 类里写好的 description——

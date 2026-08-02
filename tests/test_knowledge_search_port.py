@@ -26,9 +26,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 import services.knowledge_search as ks
 from harness.observability.trace_signals import TOOL_FAILURE_PREFIX
 from harness.runtime import AgentLoop
-from harness.tools.knowledge import search_knowledge
+from domains.appointment.tools.knowledge import search_knowledge
 from harness.tools.registry import ToolRegistry
-from harness.tools.schemas import SearchKnowledgeArgs
+from domains.appointment.tools.schemas import SearchKnowledgeArgs
 
 
 class ScriptedChatModel(BaseChatModel):

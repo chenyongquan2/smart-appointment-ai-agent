@@ -62,6 +62,15 @@
 - **v1 不纳入门禁**：任务成功依赖工具触发、是强非确定项，先只打印观察；不在 `GATED_METRICS`，`--gate` 不因它退出非零。
 - ⚠️ **诚实边界**：这是**离线任务完成度代理**，不是真实转化率/满意度/人工介入率（那些需真实用户流量，属生产级）。实测 dev 集任务成功率约 20%（24 条期望建单/查询、仅 5 条真正成功完成终态）——这正是它暴露的、意图/工具指标看不到的「办没办成」缺口。
 
+## 📁 数据在哪、机制在哪（change `domain-packages`）
+
+**评估数据随领域包走，评估机制留在本目录。**
+
+- 数据：`domains/<domain>/evals/{cases.jsonl,baseline.json}`（预约域即 `domains/appointment/evals/`）
+- 机制：本目录的 `run_evals.py` / `agent_capture.py` / `trace_collect.py` / `triage.py` / 并发 runner —— **全部域无关**，从 `load_domain().evals_dir` 取数据路径
+
+这正是「机制 ≠ 数据」那条分界的落地：OnCall 第 4 期建 oncall 用例集时，只需往 `domains/oncall/evals/` 放两个文件，本目录一行不用改。
+
 ## ⛔ 本用例集已冻结（2026-08-02 决策）
 
 **不再向预约域评测投入新精力**：不扩用例、不重定基线、不恢复 `feat/evals-dataset-scaleup`（184 条扩容版，17/18 完成、卡在重定基线——现已决定放弃，到 OnCall 路线第 4 期正式 close）。

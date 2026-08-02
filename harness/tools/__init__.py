@@ -1,23 +1,10 @@
-"""harness.tools：把 services/ 能力暴露为 LLM 可调用工具。
+"""harness.tools：工具层的**域无关**部分。
 
-每个工具一个文件，导出一个 ``Tool`` 实例；``ToolRegistry`` 负责注册/分发/导出 schema。
+``Tool`` 定义结构 + ``ToolRegistry`` 注册/分发/导出 schema。具体工具**不在这里**——
+它们随领域包走（见 ``domains/``），因为「有哪些工具」是域的属性，不是运行时的属性。
 """
 
-from harness.tools.appointment import create_appointment
-from harness.tools.availability import check_availability
 from harness.tools.base import Tool
-from harness.tools.knowledge import search_knowledge
-from harness.tools.preference import get_user_preferences
-from harness.tools.registry import ToolRegistry, build_default_registry
-from harness.tools.technician import find_technician
+from harness.tools.registry import ToolRegistry
 
-__all__ = [
-    "Tool",
-    "ToolRegistry",
-    "build_default_registry",
-    "search_knowledge",
-    "find_technician",
-    "check_availability",
-    "create_appointment",
-    "get_user_preferences",
-]
+__all__ = ["Tool", "ToolRegistry"]

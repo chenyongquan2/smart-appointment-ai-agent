@@ -18,7 +18,7 @@
     3 = 检测到回归（改造 6：--gate 模式下被守指标低于基线−容差）
 
 回归门禁（改造 6）:
-    --update-baseline  把本次跑分落盘为基线（默认 evals/baseline.json）
+    --update-baseline  把本次跑分落盘为基线（当前域的 evals/baseline.json）
     --gate             跑完比对基线，被守指标回归则以退出码 3 结束
     --tolerance        容差（默认 0.30）吸收 LLM 抖动；门禁只守正确性子集
                        （工具调用-F1 / 槽位完整率），不守延迟与回复质量
@@ -57,11 +57,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv  # noqa: E402  （此 import 必须在上面改完 sys.path「之后」，故压 E402）
+from domains import load_domain
 
 load_dotenv()  # 读 .env 里的 API key / MODEL_PROVIDER 等到环境变量
 
-CASES_FILE = Path(__file__).parent / "cases.jsonl"  # 用例文件与本脚本同目录
-BASELINE_FILE = Path(__file__).parent / "baseline.json"  # 回归门禁基线（改造 6），与本脚本同目录
+# 评估**数据**随领域包走，**机制**（本脚本、采集、triage、并发 runner）留在 evals/ 且域无关。
+# 这正是「机制 ≠ 数据」那条分界的落地：第 4 期建 oncall 用例集时，只需往
+# domains/oncall/evals/ 放两个文件，本脚本一行不用改（见 change domain-packages 的 design D7）。
+_EVALS_DIR = load_domain().evals_dir
+CASES_FILE = _EVALS_DIR / "cases.jsonl"
+BASELINE_FILE = _EVALS_DIR / "baseline.json"  # 回归门禁基线（改造 6）
 
 # 数据集意图标签口径（5 类）——纯数据集元数据（构成约束/按类分析/切分规则），
 # 不对应任何分类器组件。加载用例时据此校验 expected_intent 合法——防手滑写错类名。
@@ -335,8 +340,7 @@ async def run_baseline(
     )
     from evals.agent_capture import run_and_capture, run_and_capture_multiturn
     from evals.judge import judge_response
-    from harness.subagents import build_default_subagent_registry
-    from harness.tools.registry import build_default_registry
+    from domains import build_subagent_registry, build_tool_registry, load_domain
 
     global _EvalResult, _slots_from_tool_calls
     _EvalResult = EvalResult  # 供 _run_once 构造（避免它再触发一次重 import）
@@ -345,8 +349,9 @@ async def run_baseline(
     try:
         llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）；judge 同用
         # 端到端真跑所需：全量工具 + 子 Agent 注册中心（每条用例现场拼带 tracer 的主 loop）。
-        full_registry = build_default_registry()
-        subagents = build_default_subagent_registry()
+        _domain = load_domain()
+        full_registry = build_tool_registry(_domain)
+        subagents = build_subagent_registry(_domain)
     except Exception as exc:  # 配置错误(如不支持的 provider): 报告而非崩溃
         print(f"[ERROR] 创建模型/工具失败: {exc}", file=sys.stderr)
         return 2

@@ -149,8 +149,11 @@ async def test_delegate_tool_declares_exemption():
     这条断言的是接线而非机制：主 registry 只注册 delegate 一个工具，
     若它漏了豁免，主 Agent 的每次派生都会被 60s 缺省截断。
     """
-    from harness.subagents import build_default_subagent_registry, build_delegate_tool
-    from harness.tools.registry import build_default_registry
+    from harness.subagents import build_delegate_tool
+    from tests._domain_helpers import (
+        build_default_registry,
+        build_default_subagent_registry,
+    )
 
     llm = ScriptedChatModel(responses=[AIMessage(content="done")])
     delegate = build_delegate_tool(llm, build_default_registry(),

@@ -130,7 +130,7 @@ async def test_technician_finder_does_not_block_the_event_loop(monkeypatch):
     fake = HangingEmbeddings()
     monkeypatch.setattr(te, "create_embedding_model", lambda **kw: fake)
 
-    from agents.appointment.technician_finder import TechnicianFinder
+    from services.technician_matching import TechnicianFinder
 
     techs = [{"id": i, "name": f"技师{i}", "strength": s} for i, s in enumerate(CANDIDATES)]
     finder = TechnicianFinder()
@@ -243,7 +243,7 @@ async def test_no_preference_skips_embedding_entirely(monkeypatch):
     fake = SlowEmbeddings()
     monkeypatch.setattr(te, "create_embedding_model", lambda **kw: fake)
 
-    from agents.appointment.technician_finder import TechnicianFinder
+    from services.technician_matching import TechnicianFinder
 
     techs = [{"id": i, "name": f"技师{i}", "strength": s} for i, s in enumerate(CANDIDATES)]
     finder = TechnicianFinder()

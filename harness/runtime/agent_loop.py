@@ -37,7 +37,7 @@ from harness.guardrails.retry import (
 )
 from harness.observability.tracer import NoopTracer, Tracer
 from harness.tools.registry import ToolRegistry
-from harness.runtime.system_prompt import build_system_prompt
+from harness.runtime.system_prompt import GENERIC_BASE_PROMPT, build_system_prompt
 
 # 触达步数上限时的安全兜底回复（前端按 [REPLY] 前缀渲染）。
 _FALLBACK_REPLY = "抱歉，本次处理步骤过多，暂时无法完成。请换种说法或稍后再试。"
@@ -83,7 +83,7 @@ class AgentLoop:
             child span，记录 thought / tool_call / observation / latency / tokens。
             缺省为 ``NoopTracer``，行为与接入前完全一致（向后兼容）。
         system_prompt: 可选的系统提示覆盖（Phase 7）；子 Agent 用其专用提示构造
-            ``AgentLoop`` 时传入。缺省为 ``None`` 时走 ``build_system_prompt(registry)``，
+            ``AgentLoop`` 时传入。缺省为 ``None`` 时走域无关的 ``GENERIC_BASE_PROMPT``，
             与既有行为完全一致（向后兼容）。
     """
 
@@ -119,8 +119,10 @@ class AgentLoop:
         self._tracer: Tracer = tracer or NoopTracer()
         # 绑定工具 schema：单一真相源 = 各工具的 Pydantic args_schema → OpenAI 格式。
         self.llm = llm.bind_tools(registry.to_openai_schema())
-        # 子 Agent 可传入专用 system prompt 覆盖默认；缺省走 build_system_prompt（向后兼容）。
-        self.system_prompt = system_prompt or build_system_prompt(registry)
+        # 子 Agent 与生产路径都会传入专用 system prompt（后者来自当前装载的领域包）。
+        # 缺省分支只兜底「没给就 new 了个 loop」的场景，用**域无关**的最小基线——
+        # 此前这里引用的是按摩门店人设，是一处域泄漏（见 change domain-packages）。
+        self.system_prompt = system_prompt or build_system_prompt(GENERIC_BASE_PROMPT, registry)
 
     async def run(
         self,
