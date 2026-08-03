@@ -116,3 +116,106 @@ class LoadReferenceArgs(BaseModel):
             "（OCS5 统一 result_code）。何时该读哪份见系统提示里的分诊表。"
         ),
     )
+
+
+# --------------------------------------------------------------------------- #
+# 源码定位与只读检索（切片 2）
+# --------------------------------------------------------------------------- #
+_ENV_DESC = (
+    "环境：dev / uat / stg / prd。⚠ 与日志查询相反——**日志侧写 prod、代码侧写 prd**；"
+    "本工具两种都收、内部归一，不必纠结。"
+)
+
+
+class LocateServiceCodeArgs(BaseModel):
+    """locate_service_code 入参。"""
+
+    service: str = Field(description="服务名（对应 repos/ 下的仓库目录名）。")
+    env: str = Field(description=_ENV_DESC)
+    sync: bool = Field(
+        default=True,
+        description="是否先同步到分支最新。缺省 True，且短时间内重复调用会自动跳过同步。",
+    )
+
+
+class CodeSearchArgs(BaseModel):
+    """code_search 入参。路径无从指定——检索范围恒为整个已定位工作区。"""
+
+    service: str = Field(description="服务名。")
+    env: str = Field(description=_ENV_DESC)
+    pattern: str = Field(
+        description=(
+            "正则表达式。找错误码/异常/方法名时直接给字面量即可（如 `66302`、"
+            "`throw new BizException`）。"
+        ),
+    )
+    glob: str = Field(
+        default="*",
+        description=(
+            "文件名匹配（如 `*.java`、`*.cpp`）。缺省搜全部。"
+            "命中太多时优先用它收窄，比放宽 pattern 更有效。"
+        ),
+    )
+    context_lines: int = Field(
+        default=3, ge=0, le=20,
+        description="每处命中前后各带几行上下文。缺省 3。",
+    )
+    max_hits: int = Field(
+        default=50, ge=1, le=200,
+        description="最多返回多少处命中。达到上限时结果里 truncated 为真。",
+    )
+
+
+class ReadSourceArgs(BaseModel):
+    """read_source 入参。
+
+    **只接受相对路径**——绝对路径入口一旦存在，这就是个任意文件读取工具，
+    能读到 .env 里的凭据（见 change oncall-domain-code 的 design D3）。
+    """
+
+    service: str = Field(description="服务名。")
+    env: str = Field(description=_ENV_DESC)
+    path: str = Field(
+        description=(
+            "**相对于工作区**的文件路径（如 `src/main/java/com/foo/Bar.java`）。"
+            "绝对路径与越出工作区的路径（`../`）都会被拒绝。"
+        ),
+    )
+    start_line: int = Field(default=1, ge=1, description="起始行号（从 1 开始）。")
+    line_count: int = Field(
+        default=60, ge=1, le=200,
+        description="读多少行，上限 200。不提供「读整个文件」——先 code_search 找到行号，再读它周围。",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# MT 平台文档检索（切片 3）
+# --------------------------------------------------------------------------- #
+class MTPlatform(str, Enum):
+    """MT 平台。**必填、不猜**——两个平台的文档结构与语义都不同，猜错会查出完全
+    无关的结果，而调用方无从察觉。"""
+
+    MT4 = "mt4"
+    MT5 = "mt5"
+
+
+class MTDocsSearchArgs(BaseModel):
+    """mt_docs_search 入参。"""
+
+    platform: MTPlatform = Field(
+        description=(
+            "MT4 还是 MT5。**必填**——从日志判断：见 `CMT4Processor` / `src/ocs/MT4` / "
+            "`detail { mt4 {...} }` 走 mt4；见 `CMT5Processor` / `detail { mt5 {...} }` 走 mt5。"
+            "判不出来就先问用户，**别猜**：猜错会查出无关结果而你不会察觉。"
+        ),
+    )
+    query: str = Field(
+        description=(
+            "检索词：API 名、返回码常量、或一段描述（如 `OrderSend`、`MT_RET_REQUEST_INVALID`、"
+            "`账户余额不足`）。特殊字符会被自动按字面处理，不必转义、也不必担心语法。"
+        ),
+    )
+    limit: int = Field(
+        default=8, ge=1, le=30,
+        description="最多返回几条。缺省 8——文档条目通常较长，多了会淹没重点。",
+    )

@@ -335,3 +335,77 @@ async def test_full_message_is_never_truncated():
 
     assert result.results[0].lines[0]["_msg"] == long_msg
     assert result.results[0].lines[0]["_msg"].endswith("Bar.java:42)")
+
+
+# --------------------------------------------------------------------------- #
+# ⑤ 真实环境冒烟发现的缺陷：把「太重没算完」冒充「没有日志」区分开
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_slow_zero_is_flagged_as_unreliable(monkeypatch):
+    """★ 真实环境冒烟发现的缺陷（2026-08-03）。
+
+    prod 数据量极大（6h 窗内约 50 亿行），宽窗查询有时**返回 200 + 空结果而非报错**
+    ——于是「查询太重没算完」和「真的没有日志」在结果上长得一模一样，模型会自信地
+    告诉用户「prod 没有这个错误」。实测反证：同样的词 6h 窗返回 0、30m 窗有 55 条。
+
+    区分依据是耗时（实测：真 0 秒回、可疑的 0 耗光超时）。
+    """
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.35)                       # 慢
+        return httpx.Response(200, content=json.dumps({"hits": [{"total": 0}]}).encode())
+
+    # 把门槛压到 0.2s，让 0.35s 的响应落进"可疑"区间（真实门槛是超时上限的一半）
+    monkeypatch.setattr(vlog, "_suspect_threshold", lambda: 0.2)
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs("q", env="prod", credentials=CREDS, client=c)
+
+    env = result.results[0]
+    assert env.hits == 0
+    assert env.zero_suspect is True
+    d = env.to_dict()
+    assert "zero_hits_unreliable" in d
+    assert "不是真的没有日志" in d["zero_hits_unreliable"]
+    assert "收窄时间窗" in (result.hint or ""), "可疑的 0 必须提到顶层 hint，模型才看得见"
+
+
+@pytest.mark.asyncio
+async def test_fast_zero_is_trusted(monkeypatch):
+    """秒回的 0 就是真的 0——不能见 0 就喊狼来了，否则提示会被无视。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=json.dumps({"hits": [{"total": 0}]}).encode())
+
+    monkeypatch.setattr(vlog, "_suspect_threshold", lambda: 0.2)
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs("q", env="prod", credentials=CREDS, client=c)
+
+    assert result.results[0].zero_suspect is False
+    assert "zero_hits_unreliable" not in result.results[0].to_dict()
+    assert not result.hint
+
+
+@pytest.mark.asyncio
+async def test_nonzero_hits_never_flagged(monkeypatch):
+    """有命中就不是「没算完」，再慢也不标可疑。"""
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.35)
+        if request.url.path.endswith("/hits"):
+            return httpx.Response(200, content=json.dumps({"hits": [{"total": 7}]}).encode())
+        return httpx.Response(200, content=_ndjson({"_msg": "x"}))
+
+    monkeypatch.setattr(vlog, "_suspect_threshold", lambda: 0.2)
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs("q", env="prod", credentials=CREDS, client=c)
+
+    assert result.results[0].zero_suspect is False
+
+
+def test_tool_description_warns_about_unreliable_zero():
+    """这条警告必须在 description 里——那是模型读结果时唯一的依据。"""
+    from domains.oncall.tools import vlog_query
+
+    desc = vlog_query.description
+    assert "0 命中未必等于没有" in desc
+    assert "zero_hits_unreliable" in desc

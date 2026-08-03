@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 import json
 import urllib.parse
 from dataclasses import dataclass, field
@@ -62,6 +63,11 @@ _REL_TIME_MAP = {
     "2d": "last_2_days", "7d": "last_7_days",
 }
 
+def _suspect_threshold() -> float:
+    """判定"0 命中不可信"的耗时门槛：超时上限的一半。"""
+    return resolve_vlog_timeout(None) * 0.5
+
+
 _HITS_PATH = "/select/logsql/hits"
 _QUERY_PATH = "/select/logsql/query"
 
@@ -86,6 +92,33 @@ class EnvResult:
     vmui_url: str = ""
     error: Optional[str] = None         # 该 env 失败时的（已脱敏）原始错误
     error_kind: Optional[str] = None
+    elapsed_s: float = 0.0              # 本次查询耗时；用来识别"可疑的 0"（见 zero_suspect）
+
+    @property
+    def zero_suspect(self) -> bool:
+        """★ 这个 0 命中可信吗？
+
+        真实环境冒烟发现的缺陷：prod 数据量极大（6h 窗内约 50 亿行），宽窗查询有时
+        **返回 200 + 空结果而非报错**——于是"查询太重没算完"和"真的没有日志"在结果上
+        长得一模一样，模型会自信地告诉用户「prod 没有这个错误」。
+
+        **区分依据是耗时**（实测数据）：
+
+        | 场景 | 耗时 | 结果 |
+        |---|---|---|
+        | prod 5m 窗，真 0 | 1.9s | `{"hits": []}` |
+        | prod 30m 窗，188 条 | 6.2s | 有 bucket |
+        | prod 6h 窗 | 60s 超时 | 多数时候走 error 路径 |
+
+        故：0 命中 + 耗时超过超时上限的一半 = 这个 0 不可信。
+
+        ⚠ **这个启发式覆盖不到全部情形，别当成保证**：验证时试过用响应形状来区分，
+        结果发现**真 0 与可疑的 0 返回的 JSON 完全一样**（都是 `{"hits": []}`）——
+        VL 就是这么表示零结果的。所以若 VL 在重查询下**快速**返回空结果（观测到过一次），
+        service 层无从分辨。那种情形只能靠工具 description 里那条约束兜底：
+        **模型不得凭一次宽窗查询就断定「没有日志」，必须先收窄窗口重查。**
+        """
+        return self.hits == 0 and self.error is None and self.elapsed_s >= _suspect_threshold()
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"env": self.env, "account": self.account, "vmui_url": self.vmui_url}
@@ -95,6 +128,15 @@ class EnvResult:
             return d
         d["hits"] = self.hits
         d["returned"] = len(self.lines)   # 与 hits 分开呈现：hits 是总数、lines 只是样本
+        d["elapsed_s"] = round(self.elapsed_s, 1)
+        if self.zero_suspect:
+            # 显式告诉模型这个 0 不可信——不加这句它会当成"确实没有"。
+            d["zero_hits_unreliable"] = (
+                f"本次 0 命中耗时 {self.elapsed_s:.0f} 秒（接近超时上限），"
+                "极可能是查询太重没算完、而**不是真的没有日志**。"
+                "请收窄时间窗（如 6h→30m）或加更稀有的关键词后重查，"
+                "**不要据此断定该环境没有相关日志**。"
+            )
         if self.lines:
             d["lines"] = self.lines
         return d
@@ -361,6 +403,7 @@ async def _probe_one(
     fields: Optional[list[str]],
 ) -> EnvResult:
     """查一个环境。异常在此吞成 EnvResult.error，**不冒泡**——单个 env 失败不该毁掉整次查询。"""
+    started = time.monotonic()
     range_input = window if start is None else "1h"
     result = EnvResult(
         env=env,
@@ -395,6 +438,7 @@ async def _probe_one(
     except Exception as exc:  # noqa: BLE001 —— 单 env 失败要如实带回，不毁掉其它 env
         result.error_kind = classify_error(exc)
         result.error = redact(str(exc))
+    result.elapsed_s = time.monotonic() - started
     return result
 
 
@@ -451,13 +495,24 @@ async def query_logs(
     ok = any(r.error is None for r in results)
     total = sum(r.hits for r in results if r.error is None)
     first_err = next((r.error_kind for r in results if r.error_kind), None)
+
+    hint = regex_hint(logsql, first_err or "")
+    suspects = [r.env for r in results if r.zero_suspect]
+    if suspects and not hint:
+        # 把"可疑的 0"提到顶层，模型不必自己逐个 env 去看。
+        hint = (
+            f"⚠ {', '.join(suspects)} 的 0 命中耗时接近超时上限，"
+            "极可能是查询太重没算完而非真的没有日志——请收窄时间窗重查，"
+            "**不要据此断定这些环境没有相关日志**。"
+        )
+
     return QueryResult(
         ok=ok,
         logsql=logsql,
         mode=mode,
         results=list(results),
         total_hits=total,
-        hint=regex_hint(logsql, first_err or ""),
+        hint=hint,
     )
 
 
