@@ -1,3 +1,9 @@
+> # ⛔ 已放弃，**这些未勾选的框不是待办**
+>
+> 下面一条都没勾，但**不代表"没开始、可以开工"**——17/18 的实际进度在未合并分支
+> `feat/evals-dataset-scaleup` 上，且该 change 已于 2026-08-02 决定**放弃**。
+> 不要执行本文件的任何一条。理由见 [proposal.md](proposal.md) 顶部的状态说明。
+
 ## 1. 现状盘点（写数据前）
 
 - [ ] 1.1 统计 `evals/cases.jsonl` 现状：dev 各类计数、held-out 计数、带 `expected_outcome` 的条数、多轮 `turns` 条数——确定每类还差多少条到 30、held-out 还差多少到 30。

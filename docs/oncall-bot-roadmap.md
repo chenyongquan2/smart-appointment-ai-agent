@@ -117,7 +117,11 @@ config/              新增飞书凭据、并发与超时参数
 
 顺带**首次把权限闸门接进生产路径**——此前 `ToolRegistry` 从未收到过 policy，实际一直走 `allow_all` 默认。oncall 的只读红线要靠它硬 enforce，故在纯搬迁这期把管道通了并留测试守着。
 
-⚠ **发现三处剩余域泄漏**（记忆层的 `summary_schema.py` / `summary.py` / `long_term.py` 里嵌了预约域的提示词与枚举）。它们不是"放错位置的域内容"，而是"域无关机制里嵌了域特定文本"，要清干净得让这些文本随域可配——属行为变更，越出本期纯搬迁纪律。已写进 `tests/test_domain_loading.py` 的白名单（清掉后测试会提醒删白名单），第 3 期做 oncall 域时按需处理。
+⚠ **发现三处剩余域泄漏**（记忆层的 `summary_schema.py` / `summary.py` / `long_term.py` 里嵌了预约域的提示词与枚举）。它们不是"放错位置的域内容"，而是"域无关机制里嵌了域特定文本"，要清干净得让这些文本随域可配——属行为变更，越出本期纯搬迁纪律。已写进 `tests/test_domain_loading.py` 的白名单（清掉后测试会提醒删白名单）。
+
+> **📌 后续（2026-08-03 更新）**：第 3 期并未处理它——值守域上线时这三处仍在，即 oncall
+> 的会话摘要确实拿着按摩例子在跑。**但结论是"暂不单独立项"**：正解取决于预约域是否退役，
+> 若退役则从"加配置槽位"退化成"直接换文本"。理由与触发条件见文末「处理顺序」。
 
 **目标**：把「域」收敛成可装载的包，为 oncall 域腾出位置。
 
@@ -179,14 +183,31 @@ vmui URL 往返一致」；**「查得对不对」需真实凭据 + 内网手动
 
 **目标**：真正能用的值守能力。大量代码可从 `lark-oncall-bot` 移植。
 
-- `services/vlog.py` ← 移植 `probe.py`（381 行）：VictoriaLogs 查询、env→租户映射、代理绕行、vmui URL 解析、**error 自动下钻**
-- `services/repo.py` ← 移植 `repokit.py`（669 行）：git 只读、per-env 常驻 detached worktree
-- `services/docs_search.py` ← 复用 `mt4docs.db`（479KB）/ `mt5api.db`（12MB）两个 SQLite FTS 库 + 约 2.6 万行 markdown 语料
-- `domains/oncall/tools/`：`vlog_query` / `code_analysis` / `mt_docs_search`（薄封装）
-- `domains/oncall/prompts/`：值守人设与红线
-- `domains/oncall/policy.py`：全工具只读，凭据不进上下文
-- 一并移植它的**领域知识沉淀**（比代码更值钱）：vlog-query SKILL 的 150 行查询经验（MT 错误码分层查、告警时区坑）、服务 profile / 错误码 reference 的按需加载路由表（避免整库塞上下文）
-- 注意 Lark 身份模型坑：读话题历史必须 user 身份，bot 身份读会被拒 230027；user token 约每周需刷新
+> 以下**「落地实际」一列是收尾后对账过的**（2026-08-03）。原设想一列保留，因为差异本身是信息：
+> 工具从设想的 3 个变成 6 个，是因为本项目不给模型文件系统工具（见切片 2 的说明）。
+
+| 原设想 | 落地实际 |
+|---|---|
+| `services/vlog.py` ← 移植 `probe.py`（381 行） | ✅ [services/vlog.py](../services/vlog.py)（623 行）：VictoriaLogs 查询、env→租户映射、代理绕行、vmui URL 解析、error 自动下钻、**宽窗+正则预检闸门**、**单 env 总时长上限** |
+| `services/repo.py` ← 移植 `repokit.py`（669 行） | ✅ [services/repo.py](../services/repo.py)（382 行，只移植只读部分、不含 clone） |
+| `services/docs_search.py` | ✅ 改名 [services/mt_docs.py](../services/mt_docs.py)（157 行）——它只管 MT4/MT5 两个 FTS 库，叫 `docs_search` 会让人以为是通用文档检索 |
+| `domains/oncall/tools/`：`vlog_query` / `code_analysis` / `mt_docs_search`（3 个） | ✅ **6 个**：`vlog_query` · `load_reference` · `locate_service_code` · `code_search` · `read_source` · `mt_docs_search`。`code_analysis` 这个名字从未存在——它在参考系统里是「定位 worktree + agent 自己拿文件系统工具 grep」，本项目不给文件系统工具，故拆成受管束的三个 |
+| `domains/oncall/prompts/` | ✅ 单文件 [domains/oncall/prompt.py](../domains/oncall/prompt.py)（95 行）——一个域一份人设，不需要目录 |
+| `domains/oncall/policy.py` | ✅ 全工具只读，凭据不进上下文，硬 enforce |
+| 移植领域知识沉淀 | ✅ [domains/oncall/references/](../domains/oncall/references/) 4 份、约 1300 行（服务 profile + MT/OCS4/OCS5 错误码），按需加载。⚠ 服务 profile 里 OCS4/OCS5 的**口语别名仍有 2 处 `<待填>`**，需内部知识填写；机制上安全（prompt 与 tool description 都明说标 `<待填>` 者不得当真），代价是"清算4"这类口语匹配不上服务 |
+
+**⏸ 明确暂缓：读 Lark 话题历史（user 身份 / 230027）**
+
+原文这条写成"注意事项"，但它其实是个**未实现的能力**，且本期收尾时没交代——现在明确它的状态：
+`channels/lark/` 里零 history / list_message 调用，bot 的上下文**完全来自自己的 DB session**。
+即：话题里 @bot 之前的对话、以及同事之间没 @bot 的讨论，bot 看不见。
+
+不做的理由：成本大头在**运维不在代码**——user token 约每周需人工刷新（bot 身份读会被拒 230027）。
+为一个尚未证实的问题上一道每周的人工负担，不划算。
+
+**触发判据**（满足任一即立项，不要凭感觉提前做）：
+真实群里出现 ≥3 次"因为看不见上文而答错或反问用户已经说过的信息"，或 trace triage 里
+"用户补述上下文"成为高频模式。届时先评估更便宜的替代（如引导用户 @bot 时带上关键信息）。
 
 ---
 
@@ -194,10 +215,20 @@ vmui URL 往返一致」；**「查得对不对」需真实凭据 + 内网手动
 
 **目标**：把三层 evals 体系搬到 oncall 域，让「Agent 是否变好」可度量。
 
-- 从真实排障对话构建 oncall 用例集（dev / held-out 切分），真值人工标注
-- 定义 oncall 版任务成功率口径（如「根因定位是否正确」），保留诚实边界标注
-- Tracer → trace 落盘 → triage 客观失控信号（guardrail 耗尽 / 打转 / 工具失败 / max_steps）→ 人审回灌 → 重定基线
-- CI 门禁守正确性子集
+**⚠ 前置是真实流量，不是代码。** 数据集要真实排障对话；而**采集是零成本自动进行的**——
+trace 落盘已接在生产路径上（[api/chat_handler.py](../api/chat_handler.py) 的
+`SamplingSpanExporter` 包 `FileSpanExporter`，命中失控信号的 trace 不受采样率影响必留），
+[evals/triage.py](../evals/triage.py) 也已就位。所以第 4 期**不需要先补埋点，需要先有量**。
+
+**建议拆两半做，先做不需要人工标注的那半**：
+
+- **上半（便宜，随流量即可开工）**：对真实 trace 跑 triage，统计客观失控信号
+  （guardrail 耗尽 / 打转 / 工具失败 / max_steps）。零标注成本，产出是"哪里在坏"。
+  它顺带回答几个目前只能猜的问题——比如记忆层三处域泄漏（预约例子污染 oncall 摘要）
+  到底有没有真掉链子，摘要坏了会在 trace 里看得见。
+- **下半（贵，要人工标真值）**：构建 oncall 用例集（dev / held-out 切分）、定义 oncall 版
+  任务成功率口径（如「根因定位是否正确」，保留诚实边界标注）、人审回灌重定基线、
+  CI 门禁守正确性子集。等对话攒够再做。
 
 ---
 
@@ -211,7 +242,38 @@ vmui URL 往返一致」；**「查得对不对」需真实凭据 + 内网手动
 
 ## 新对话如何续上
 
+**当前状态一句话**（2026-08-03 对账）：第 1 / 1.5 / 2 / 3 期全部完成并合并，值守域六个只读工具
+经真实环境冒烟 + 真实群聊验证。`uv run pytest` 578 passed / 1 skipped。**下一步的瓶颈是真实流量，
+不是代码**——见下方"处理顺序"。
+
 1. 读本文档（**尤其是开头的「预约域评测冻结」决策**）+ `openspec/project.md`（黄金准则）
-2. `openspec list` 看有无 active change；第 1 / 1.5 期已归档并合并，当前应从**第 2 期**起步
+2. `openspec list` 会列出 `evals-dataset-scaleup-v2`——**那是已放弃的，不是在做的**
+   （见它 proposal.md 顶部的状态说明）。除它之外无 active change。
 3. 各期：`/opsx:propose` 起新 change，范围照本文档对应小节 → 人审 → `/opsx:apply` → 验证 → `/opsx:archive`
 4. 别做的事：恢复 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例——见「预约域评测冻结」
+
+### 处理顺序（2026-08-03 定）
+
+**核心判断：瓶颈是真实流量。** 剩下的遗留全指向同一个前置——第 4 期数据集要真实对话；
+域泄漏值不值得修，取决于摘要在真实排障里有没有真掉链子（现在纯猜）；读话题历史值不值得
+付"每周刷 token"的运维税，取决于真实群里有没有真失忆。所以是**先上量、让数据决定改哪个**，
+而不是现在挑一个开工。
+
+| 顺序 | 事项 | 状态 |
+|---|---|---|
+| 0 | 清理对账：删已合并分支、roadmap 对账、暂缓项写明判据、放弃项标状态 | ✅ 2026-08-03 完成（本次）。**唯一剩的是需内部知识的 2 处 `<待填>` 口语别名**，见第 3 期表格 |
+| 1 | **上 34 人生产群**（后面全部事情的前置） | ⬜ 待做。已知接受的风险照旧：crash 丢在途任务、单 worker 硬约束 |
+| 2 | 第 4 期上半：真实 trace 跑 triage（零标注） | ⬜ 随流量开工 |
+| 3 | 第 4 期下半：oncall 数据集 + 门禁（要标注） | ⬜ 对话攒够再做 |
+
+**条件触发，不预先排期**（现在动大概率白干）：
+
+- **记忆层三处域泄漏**（[tests/test_domain_loading.py](../tests/test_domain_loading.py) 的
+  `_KNOWN_DOMAIN_LEAKS` 白名单守着）：**正解取决于预约域是否退役**。若退役，正解从"给 `Domain`
+  加配置槽位让文本随域可配"退化成"直接把字符串换成值守域的",工作量差一个量级。且退役预约域时
+  顺手解掉比两次分别做便宜——**故不要单独立项修它**。
+- **读 Lark 话题历史**：等第 3 期表格里写的触发判据。
+- **预约域退役**：本身没有任何 change。它还在跑（缺省域、51 条冻结用例、
+  `services/recommendation_service.py` 一个未实现的 TODO、以及上述域泄漏的另一端）。
+  "要退役"目前是个判断、不是个计划——立项时把域泄漏一起带掉。
+- **任务持久化**：不要预防性地做。等第 1 步上量后，若"丢在途任务"真开始咬人再提前。
