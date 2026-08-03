@@ -1,44 +1,20 @@
-# bad-case-feedback Specification
+## ADDED Requirements
 
-## Purpose
-TBD - created by archiving change phase-6-observability. Update Purpose after archive.
-## Requirements
-### Requirement: 坏 case 落库
+### Requirement: 候选可按时间窗筛选
 
-系统 SHALL 提供一个 `bad_cases` 持久化表与对应 Repository（遵循 `db/repositories/` 既有模式），用于记录失败或用户纠正的 case。每条记录 MUST 含：`kind`（`failure` 或 `correction`）、`user_input`、`expected`（期望，可空）、`actual`（实际，可空）、`created_at`，并 MAY 关联 `trace_id` 与 `session_id`、携带 `extra`（JSON）。该表 MUST 为新增独立表，MUST NOT 改动既有业务表的语义或结构。
+triage 甄别 SHALL 支持按**墙钟时间窗**筛选候选（如「只看某时刻之后的 trace」），使「这一周新增了哪些坏 case」可直接回答，而不必人工翻阅整个 trace 目录。筛选 MUST 基于 span 的墙钟起始时刻；对**不带**墙钟字段的历史 trace 记录，筛选行为 MUST 明确且不静默丢弃——系统 SHALL 或将其一律纳入、或明确报告被跳过的条数，MUST NOT 让它们无声消失。
 
-#### Scenario: 写入一条失败 case
+#### Scenario: 按时间窗筛出新增候选
 
-- **WHEN** 调用 Repository 写入一条 `kind=failure` 的 case（含 user_input 与 actual）
-- **THEN** 该记录被持久化，可经读取接口取回，且含 `created_at`
+- **WHEN** trace 目录同时含指定时刻之前与之后的运行记录，且指定该时刻为下界
+- **THEN** 只有该时刻之后的 trace 参与甄别，之前的不出现在候选清单中
 
-#### Scenario: 关联 trace_id 便于复盘
+#### Scenario: 无墙钟字段的历史 trace 不被静默丢弃
 
-- **WHEN** 写入 case 时提供 `trace_id`
-- **THEN** 该 `trace_id` 随记录持久化，可据以与对应 trace 关联复盘
+- **WHEN** 对同时含带/不带墙钟字段的 trace 目录施加时间窗筛选
+- **THEN** 不带该字段的记录要么被纳入、要么在输出中被明确计数报告，MUST NOT 无提示地消失
 
-### Requirement: 坏 case 读取接口
-
-Repository SHALL 提供最小读取接口：按时间倒序列出最近 N 条、以及按 `kind` 过滤列出。读取 MUST NOT 自动改写 `evals/cases.jsonl`（增补评估集由人审决定，本能力只负责落库与读取）。
-
-#### Scenario: 列出最近坏 case
-
-- **WHEN** 已写入若干 case 后调用"列出最近 N 条"
-- **THEN** 返回按 `created_at` 倒序的至多 N 条记录
-
-#### Scenario: 按 kind 过滤
-
-- **WHEN** 调用按 `kind=correction` 过滤的读取
-- **THEN** 仅返回 `kind=correction` 的记录，不含 `failure`
-
-### Requirement: 落库可离线确定性测试
-
-坏 case 的写入与读取 SHALL 可在不触网的条件下用内存/临时 SQLite 做确定性单元测试（参照 `tests/test_conversation_repository.py` 的既有模式）。
-
-#### Scenario: 用临时库测写读
-
-- **WHEN** 在临时/内存 SQLite 上写入再读取坏 case
-- **THEN** 写读一致、全程不发起网络调用
+## MODIFIED Requirements
 
 ### Requirement: 从持久化 trace 半自动甄别坏 case
 
@@ -46,7 +22,7 @@ Repository SHALL 提供最小读取接口：按时间倒序列出最近 N 条、
 
 读入 trace 记录时，排序与时间筛选 SHALL 优先使用 span 的墙钟起始时刻；该字段缺失时 MUST 回退到文件行序（同一 tracer 按完成顺序追加，与按 start 排序一致）。**已落盘的历史 trace 文件 MUST 仍可被正常加载**——引入墙钟字段 MUST NOT 使既有真实流量记录失效。
 
-> 口径修正（change `fix-trace-triage-blindspots`）：原信号集列有「最终回复带 `[ERROR]` 前缀」。该前缀是遗留 `agents/` 路径的产物，当前生产走的 harness `AgentLoop` 只产 `[THOUGHT]`/`[REPLY]`，故该信号永不命中——原文属规格要求了一个实现刻意不做的信号。此处按真实落点重述。
+> 口径修正：原信号集列有「最终回复带 `[ERROR]` 前缀」。该前缀是遗留 `agents/` 路径的产物，当前生产走的 harness `AgentLoop` 只产 `[THOUGHT]`/`[REPLY]`，故该信号永不命中——原文属规格要求了一个实现刻意不做的信号。此处按真实落点重述。
 
 #### Scenario: 命中失控信号的 trace 被标为候选
 
@@ -62,25 +38,6 @@ Repository SHALL 提供最小读取接口：按时间倒序列出最近 N 条、
 
 - **WHEN** 对不含墙钟字段的既有 trace 文件跑甄别
 - **THEN** 该文件被正常解析，span 顺序回退按文件行序确定，甄别结果与引入墙钟字段前一致
-
-### Requirement: 候选可按时间窗筛选
-
-triage 甄别 SHALL 支持按**墙钟时间窗**筛选候选（如「只看某时刻之后的 trace」），使「这一周新增了哪些坏 case」可直接回答，而不必人工翻阅整个 trace 目录。时间窗入参 MUST 自带时区信息（UTC 或显式偏移），MUST NOT 按本机时区推测裸时间串。筛选 MUST 基于 span 的墙钟起始时刻，并 MUST 按 trace 组而非单个 span 施加（逐 span 筛会在窗口边界丢掉 root span，导致候选的 `input` 丢失）。对**不带**墙钟字段的历史 trace 记录，系统 MUST 将其一律纳入并明确报告其条数，MUST NOT 让它们无声消失。
-
-#### Scenario: 按时间窗筛出新增候选
-
-- **WHEN** trace 目录同时含指定时刻之前与之后的运行记录，且指定该时刻为下界
-- **THEN** 只有该时刻之后的 trace 参与甄别，之前的不出现在候选清单中
-
-#### Scenario: 拒绝无时区的时间串
-
-- **WHEN** 时间窗入参是不带时区的裸时间串
-- **THEN** 系统报错并说明需带时区，MUST NOT 按本机时区推测
-
-#### Scenario: 无墙钟字段的历史 trace 不被静默丢弃
-
-- **WHEN** 对同时含带/不带墙钟字段的 trace 目录施加时间窗筛选
-- **THEN** 不带该字段的记录被纳入，且其条数在输出中被明确计数报告
 
 ### Requirement: 人审标注并回灌 evals/cases.jsonl
 
@@ -107,4 +64,3 @@ triage 甄别 SHALL 支持按**墙钟时间窗**筛选候选（如「只看某�
 
 - **WHEN** 从一条 root span 带 `user_id` 的候选回灌用例
 - **THEN** 追加进 `cases.jsonl` 的用例不含 `user_id` 或任何提交者标识字段
-

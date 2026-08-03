@@ -36,6 +36,7 @@ from harness.guardrails.retry import (
     guarded_invoke,
 )
 from harness.observability.tracer import NoopTracer, Tracer
+from harness.tool_outcome import tool_failure_message, tool_timeout_message
 from harness.tools.registry import ToolRegistry
 from harness.runtime.system_prompt import GENERIC_BASE_PROMPT, build_system_prompt
 
@@ -131,6 +132,7 @@ class AgentLoop:
         history: Optional[list[BaseMessage]] = None,
         system_suffix: Optional[str] = None,
         on_outcome: Optional[Callable[["RunOutcome"], None]] = None,
+        user_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """驱动 TAO 循环，流式产出最终回复。
 
@@ -147,6 +149,11 @@ class AgentLoop:
                 token 流分辨）。**刻意作为每次调用的参数而非构造参数**：``AgentLoop`` 是
                 跨请求共享的模块级单例，构造期回调会在并发会话间串号。缺省 ``None`` 时
                 行为与接入前完全一致（向后兼容）。
+            user_id: 提交者标识，仅写进 root span 的 attributes 供 trace 按人区分
+                （群聊里同一会话由多人共享，历史该共享、但"这句是谁说的"要能分辨）。
+                **不参与任何决策**，缺省 ``None`` 时 span 不含该属性、行为与接入前一致。
+                **同样刻意是每次调用的参数而非构造参数**——理由与上面的 ``on_outcome``
+                完全同源：模块级单例上持有它会在并发会话间串号。
 
         最终回复（含 ``max_steps`` 兜底）以 ``[REPLY]`` 前缀 yield，调用方可据此
         捕获回复文本并回写会话历史（``AgentLoop`` 自身保持无状态、不写 DB）。
@@ -182,6 +189,11 @@ class AgentLoop:
         root_attrs: dict[str, Any] = {"user_input": user_input}
         if session_id:
             root_attrs["session_id"] = session_id
+        if user_id:
+            # 群聊里 34 人共享同一会话：session_id 分不出人，故另记 user_id。
+            # 隐私边界靠**位置**守而非变形：trace 目录已 gitignore，而回灌 cases.jsonl
+            # 的白名单（triage.CANONICAL_KEYS）不含它——那个文件是进版本库的。
+            root_attrs["user_id"] = user_id
         root = self._tracer.start_span("agent_loop.run", attributes=root_attrs)
         try:
             # ════════════════════════════════════════════════════════════════
@@ -319,9 +331,11 @@ class AgentLoop:
         except asyncio.TimeoutError:
             # 单独成一支（而非并进下面的 Exception）：给模型一句能据以决策的明确说明，
             # 让它知道是「太慢被掐断」而非「参数错/服务报错」，下一轮可换更窄的查询。
-            return f"工具执行超时（{name}）：超过 {timeout} 秒未返回，已中断且不会重试。"
+            # ★ 文案由 harness/tool_outcome.py 单一持有——trace_signals 靠认出这句话判
+            #   失控信号，此处曾因「超时支从 Exception 支拆出去」而静默断开过（见该模块）。
+            return tool_timeout_message(name, timeout)
         except Exception as exc:  # noqa: BLE001 —— 故意捕获「全部」异常：工具失败须回灌而非冒泡
-            return f"工具执行失败（{name}）：{exc}"
+            return tool_failure_message(name, exc)
 
 
 def _content_text(content: Any) -> str:
