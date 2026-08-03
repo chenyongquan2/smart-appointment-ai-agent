@@ -344,3 +344,87 @@ def test_oncall_has_no_write_capability():
     for forbidden in ("clone", "commit", "push", "checkout", "patch", "apply", "write"):
         assert not any(forbidden in n for n in names), f"值守域出现了写操作工具：{names}"
     assert all(t.dangerous is False for t in load_domain("oncall").tools)
+
+
+# --------------------------------------------------------------------------- #
+# ⑦ 真实仓库验证发现的三处（2026-08-03）
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def multi_service_repos(tmp_path, monkeypatch):
+    """造一个**多服务同仓**的场景——真实的 mt-tools-v2 就是这样。
+
+    分支：`SvcA/prd`、`SvcB/prd`（两个服务各自的 prd）、以及一个裸 `dev`
+    （属于第三方，不该被任何服务的 dev 回退捡到）。
+    """
+    repos = tmp_path / "repos"
+    (repos / "shared").mkdir(parents=True)
+    monkeypatch.setenv("ONCALL_REPOS_DIR", str(repos))
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git("init", "-q", "-b", "SvcA/prd", cwd=origin)
+    _git("config", "user.email", "t@e.com", cwd=origin)
+    _git("config", "user.name", "t", cwd=origin)
+    (origin / "a.txt").write_text("svcA code\n", encoding="utf-8")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-qm", "a", cwd=origin)
+    _git("branch", "SvcB/prd", cwd=origin)
+    _git("branch", "dev", cwd=origin)
+
+    subprocess.run(["git", "clone", "-q", "--mirror", str(origin),
+                    str(repos / "shared" / ".git-mirror")],
+                   check=True, capture_output=True, text=True, timeout=120)
+    (repos / "registry.json").write_text(json.dumps({
+        "svca": {"repo_dir": "shared", "env_branches": {"prd": "SvcA/prd"}},
+        "svcb": {"repo_dir": "shared", "env_branches": {"prd": "SvcB/prd"}},
+    }), encoding="utf-8")
+    repo._last_sync.clear()
+    return repos
+
+
+@pytest.mark.asyncio
+async def test_per_service_branch_mapping_beats_global_candidates(multi_service_repos):
+    """★ 全局候选列表不够用——真实仓库的环境分支是 `prd-ocs-ha`、`OCS5/prd` 这类。"""
+    result = await repo.locate_service_code("svca", "prd", sync=False)
+
+    assert result.status == "ready"
+    assert result.branch == "SvcA/prd"      # 用了 registry 里声明的，不是全局候选 prd-b/prd
+
+
+@pytest.mark.asyncio
+async def test_multi_service_same_repo_do_not_share_worktree(multi_service_repos):
+    """★ 同仓多服务不得撞车。
+
+    修复前 worktree 是 `env-<env>`，svca 与 svcb 的 prd 会抢同一个目录——后来者把
+    前者 checkout 走，**两个服务读到同一份代码而毫无察觉**。改为按分支命名后天然正确。
+    """
+    a = await repo.locate_service_code("svca", "prd", sync=False)
+    b = await repo.locate_service_code("svcb", "prd", sync=False)
+
+    assert a.worktree_path != b.worktree_path, "两个服务共用了同一个 worktree"
+    assert (Path(a.worktree_path) / "a.txt").is_file()
+    assert (Path(b.worktree_path) / "a.txt").is_file()
+
+
+@pytest.mark.asyncio
+async def test_declared_mapping_does_not_fall_back(multi_service_repos):
+    """★ 声明了映射就以它为准，**不回退**到全局候选。
+
+    修复前：svca 没配 dev → 回退到全局候选 → 捡到仓库里那个属于第三方的裸 `dev`
+    分支，模型拿到错误的源码而毫不知情。比 branch_not_found 糟得多。
+    """
+    result = await repo.locate_service_code("svca", "dev", sync=False)
+
+    assert result.status == "branch_not_found"
+    assert result.branch is None
+    assert "没有声明" in (result.error or ""), "空候选列表对用户没信息量，要说清是配置缺失"
+    assert "prd" in (result.error or ""), "要列出已声明的环境，用户才知道能用什么"
+
+
+@pytest.mark.asyncio
+async def test_no_mapping_still_uses_global_candidates(repos_dir):
+    """没声明映射的服务仍走全局候选——向后兼容，不逼所有仓库都写 registry。"""
+    result = await repo.locate_service_code("demo-svc", "prd", sync=False)
+
+    assert result.status == "ready"
+    assert result.branch == "prd-b"

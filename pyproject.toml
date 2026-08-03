@@ -52,3 +52,8 @@ pythonpath = ["."]
 timeout_method = "thread"
 # 让 @pytest.mark.asyncio 标记的协程测试被真正收集执行（否则是未知 mark）
 asyncio_mode = "auto"
+# 只从 tests/ 收集。**必须限定**：OnCall 值守域会把真实服务仓库 clone 进 repos/，
+# 那里面有它们自己的 test_*.py，pytest 会一路爬进去收集（实测撞到过：
+# repos/ocs4/wt-prd-ocs-ha/src/amqp_agent/test_client.py 直接让收集阶段报错）。
+testpaths = ["tests"]
+norecursedirs = ["repos", ".venv", "*.egg", "build", "dist"]

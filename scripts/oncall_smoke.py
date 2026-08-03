@@ -110,15 +110,30 @@ async def smoke_repo(service: str, env: str, pattern: str) -> bool:
         print(f"        git clone --mirror <git地址> {repos}/<服务名>/.git-mirror")
         return False
 
-    present = [p.name for p in repos.iterdir() if p.is_dir()]
-    print(f"  已就绪的仓库：{present or '（空）'}")
-    if not present:
+    # ⚠ **服务名 ≠ 目录名**：registry.json 把 service 映射到 repo_dir，一个仓库可能
+    #   服务多个 service（真实的 mt-tools-v2 里住着 ocs5 / mttools 两个）。
+    #   早先这里拿目录名当服务名，导致 `--service ocs5` 找不到、静默回退到 `mt-tools`。
+    import json as _json
+
+    registry_path = repos / "registry.json"
+    services: list[str] = []
+    if registry_path.is_file():
+        try:
+            services = sorted(_json.loads(registry_path.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            services = []
+    dirs = [p.name for p in repos.iterdir() if p.is_dir()]
+    # 没进 registry 的目录也能用（service 名 = 目录名，走自动发现）
+    known = services or dirs
+    print(f"  registry 里的服务：{services or '（无 registry.json）'}")
+    print(f"  repos/ 下的目录：  {dirs or '（空）'}")
+    if not known:
         print(NO, "没有任何仓库，跳过。准备方式同上。")
         return False
 
-    if service not in present:
-        print(WARN, f"未指定或找不到 {service!r}，改用第一个：{present[0]}")
-        service = present[0]
+    if service not in known:
+        print(WARN, f"未指定或找不到服务 {service!r}，改用第一个：{known[0]}")
+        service = known[0]
 
     print(f"\n  定位 service={service!r} env={env!r}（会 fetch 同步，TTL 内跳过）…")
     result = await locate_service_code(service, env)

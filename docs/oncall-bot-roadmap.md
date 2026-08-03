@@ -139,7 +139,13 @@ config/              新增飞书凭据、并发与超时参数
 | 2 | `services/repo.py` + `locate_service_code` / `code_search` / `read_source` | ✅ change `oncall-domain-code`（2026-08-02） |
 | 3 | `services/mt_docs.py`（MT4/MT5 FTS）+ `mt_docs_search` | ✅ change `oncall-domain-mtdocs`（2026-08-02） |
 
-> 🔬 **两项真实环境冒烟的执行方式**：`uv run python scripts/oncall_smoke.py`
+> ✅ **两项真实环境冒烟已于 2026-08-03 全部通过**（详见各 change 的 tasks 末节）。
+> 日志查询：三租户并发、uat/dev 各命中数百万条真日志。源码定位：真实 OCS4 与 OCS5
+> 仓库上定位→检索→读片段→jail 四项全过。**两项冒烟共暴露 4 处离线测试发现不了的
+> 缺陷**（prod 宽窗"0 命中"其实是没算完；全局分支候选对真实仓库全不匹配；同仓多服务
+> worktree 撞车；声明映射后仍回退会捡到别的服务的分支），均已修复并补回归测试。
+>
+> 🔬 **重跑方式**：`uv run python scripts/oncall_smoke.py`
 > （只跑一项用 `--only vlog` / `--only repo`）。脚本本身已用合成仓库自测通过，
 > 故跑出来失败即为环境问题、不是脚本 bug。**前置**：`.env` 里填 `VM_LOGS_*`；
 > 把某个服务仓库 `git clone --mirror` 进 `repos/<服务名>/.git-mirror`

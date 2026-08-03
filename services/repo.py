@@ -216,16 +216,52 @@ def _mirror_dir(repo_dir: str) -> Path:
     return resolve_repos_dir() / repo_dir / ".git-mirror"
 
 
-def _env_worktree(repo_dir: str, env: str) -> Path:
-    return resolve_repos_dir() / repo_dir / f"env-{env}"
+def _branch_worktree(repo_dir: str, branch: str) -> Path:
+    """worktree 按**分支**命名，不按 env。
+
+    真实仓库验证时发现的 bug：原来是 ``repos/<repo_dir>/env-<env>``，而
+    ``mt-tools-v2`` 一个仓库里住着 OCS5 与 MTTools 两个服务——它们的 prd 分支不同
+    （``OCS5/prd`` vs ``MTTools/prd``），却会抢同一个 ``env-prd`` 目录，
+    后来者把前者 checkout 走，**两个服务读到同一份代码而毫无察觉**。
+
+    按分支命名则天然正确：不同分支各自一个 worktree；两个服务若真指向同一分支，
+    共用一个也没错（本来就是同一份代码）。
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", branch)
+    return resolve_repos_dir() / repo_dir / f"wt-{safe}"
 
 
 # --------------------------------------------------------------------------- #
 # 分支解析与 worktree
 # --------------------------------------------------------------------------- #
-async def _resolve_env_branch(mirror: Path, env: str) -> tuple[Optional[str], list[str]]:
-    """按候选顺序找第一个存在的分支。返回 ``(branch|None, candidates)``。"""
-    candidates = ENV_BRANCH_CANDIDATES.get(env, [])
+async def _resolve_env_branch(
+    mirror: Path, env: str, entry: Optional[dict] = None
+) -> tuple[Optional[str], list[str]]:
+    """按候选顺序找第一个存在的分支。返回 ``(branch|None, candidates)``。
+
+    候选来源有两级：
+
+    1. **registry 里该服务的 ``env_branches``**（优先）——真实仓库验证时发现，全局候选
+       列表**根本不够用**：OCS4 的环境分支是 ``prd-ocs-ha`` / ``uat-ocs-ha``；OCS5 的是
+       ``OCS5/prd`` 这类**带命名空间前缀**的。更要命的是 ``mt-tools-v2`` **一个仓库里
+       住着多个服务**（OCS5 / MTTools / blackarrow），各有各的分支命名空间——
+       "一份全局候选管所有仓库"这个前提从根上就不成立。
+    2. 全局 ``ENV_BRANCH_CANDIDATES``（回退）——照搬自参考系统，对遵循 ``xxx-b`` /
+       ``xxx`` 约定的仓库仍然有效。
+
+    刻意**不做模糊匹配**（如"找名字里含 dev 的分支"）：OCS4 里 ``dev`` / ``dev-ocs-ha``
+    / ``dev-v4.2.11`` / ``dev-opt-idempotence`` 全都含 dev，猜错就是给出错误的源码，
+    而调用方无从察觉。宁可 ``branch_not_found`` 让人来定，也不猜。
+    """
+    configured = (entry or {}).get("env_branches") or {}
+    if configured:
+        # ★ 声明了映射就**以它为准，不回退**。真实仓库验证时踩到的：`mt-tools-v2` 是
+        # 多服务同仓，ocs5 没配 dev 时回退到全局候选，会捡到仓库里那个**属于别的服务**
+        # 的裸 `dev` 分支——模型拿到错误的源码而毫不知情，比 branch_not_found 糟得多。
+        # 运维既然声明了映射，没列的 env 就是「没配」，不是「猜一个」。
+        candidates = [configured[env]] if env in configured else []
+    else:
+        candidates = ENV_BRANCH_CANDIDATES.get(env, [])
     for cand in candidates:
         rc, _, _ = await _git(["-C", str(mirror), "rev-parse", "--verify", "--quiet",
                                f"refs/heads/{cand}"])
@@ -234,7 +270,9 @@ async def _resolve_env_branch(mirror: Path, env: str) -> tuple[Optional[str], li
     return None, candidates
 
 
-async def _ensure_worktree(repo_dir: str, env: str) -> tuple[str, Optional[Path], Optional[list[str]], Optional[str]]:
+async def _ensure_worktree(
+    repo_dir: str, env: str, entry: Optional[dict] = None
+) -> tuple[str, Optional[Path], Optional[list[str]], Optional[str]]:
     """确保目标 worktree 存在。返回 ``(status, worktree, candidates, branch)``。"""
     mirror = _mirror_dir(repo_dir)
     if not mirror.exists():
@@ -242,11 +280,11 @@ async def _ensure_worktree(repo_dir: str, env: str) -> tuple[str, Optional[Path]
     if env not in ENV_BRANCH_CANDIDATES:
         return ("bad_env", None, None, None)
 
-    branch, candidates = await _resolve_env_branch(mirror, env)
+    branch, candidates = await _resolve_env_branch(mirror, env, entry)
     if branch is None:
         return ("branch_not_found", None, candidates, None)
 
-    wt = _env_worktree(repo_dir, env)
+    wt = _branch_worktree(repo_dir, branch)
     if wt.exists():
         return ("ready", wt, None, branch)
 
@@ -277,7 +315,7 @@ async def _sync(repo_dir: str, env: str, branch: str, wt: Path, ttl: float) -> b
     ``fetch`` 不改远端、不改历史、不产生提交，只更新本地镜像 refs——归类为
     「读远端 + 本地缓存」，故值守域允许。但 TTL 必须有，否则每次分析都拉一次网络。
     """
-    key = f"{repo_dir}/{env}"
+    key = f"{repo_dir}/{branch}"
     now = time.monotonic()
     if now - _last_sync.get(key, 0.0) < ttl:
         return False
@@ -316,10 +354,21 @@ async def locate_service_code(
             error=f"repo_dir 非法（须为 repos/ 下纯目录名）：{repo_dir!r}",
         )
 
-    status, wt, candidates, branch = await _ensure_worktree(repo_dir, normalized)
+    status, wt, candidates, branch = await _ensure_worktree(repo_dir, normalized, entry)
     if status != "ready":
+        note = None
+        if status == "branch_not_found" and not candidates:
+            # 服务声明了 env_branches 但没列这个 env——空候选列表对用户毫无信息量，
+            # 说清是"没配"而不是"找过了没有"。
+            declared = sorted((entry.get("env_branches") or {}))
+            note = (
+                f"服务 {service!r} 的分支映射里没有声明 {normalized!r} 环境"
+                f"（已声明的有：{', '.join(declared) or '无'}）。"
+                "这是配置缺失，不是仓库里没有该分支——请让运维在 registry 里补上，"
+                "或改用已声明的环境。"
+            )
         return LocateResult(status=status, service=service, env=normalized,
-                            candidates_tried=candidates)
+                            candidates_tried=candidates, error=note)
 
     synced = await _sync(repo_dir, normalized, branch, wt, ttl) if sync else False
     return LocateResult(

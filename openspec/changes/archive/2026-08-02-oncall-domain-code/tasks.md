@@ -39,7 +39,9 @@
 
 - [x] 4.1 `uv run pytest` 全绿，通过数差额说清。
 - [x] 4.2 冒烟：`AGENT_DOMAIN=oncall` 起服务，registry 五个工具齐、全只读；缺省仍是预约域。
-- [ ] 4.3 ⚠ **真实仓库人工冒烟**——**未做，挂起等环境**（需内网 git + 已 clone 的真实服务仓库）。与切片 1 的 `VM_LOGS_*` 冒烟同属挂起项。**在此之前不得声称代码分析已可用。**
+- [x] 4.3 ✅ **真实仓库冒烟已通过**（2026-08-03）。用真实的 OCS4（`saas-mt-opencloud-v3`，214M）与 OCS5（`mt-tools-v2`，49M）做 mirror 进 `repos/`：定位 → 检索 → 读片段 → **真实 worktree 上的 jail 越界检查**四项全过。OCS5 那次尤其关键——它验的是命名空间分支（`OCS5/prd`）与多服务同仓。
+
+  ⚠ **同时暴露三处设计缺陷**，都是离线测试不可能发现的，见第 6 组。
 - [x] 4.4 ⚠ **验收表述**：离线测试证明的是「git 逻辑正确、jail 拦得住、异步不阻塞」；**「能不能定位到真实服务的源码」只有 4.3 能证明**。两者分开写。
 - [x] 4.5 更新 `docs/oncall-bot-roadmap.md`：切片 2 完成、切片 3 待做。
 
@@ -50,3 +52,12 @@
 - [x] 5.2 **`to_thread` 在这里是对的，与 `fix-embedding-timeout-blocking` 否决它不矛盾**：那边有原生异步替代（`aembed_query`）且 HTTP 连接会无限期泄漏；这边没有跨平台一致的替代（`create_subprocess_exec` 在 Windows 需 ProactorEventLoop），而 `subprocess.run(timeout=)` 会真正 kill 掉进程，把"取消不掉"的窗口封了顶。**线程池 + 子进程超时缺一不可**——只有前者会挂到子进程自然结束，只有后者会冻住事件循环。两条都有测试守。
 - [x] 5.3 **不做 clone 是让只读策略自己说话**：若做成工具必须标 `dangerous=True`，会被 `policy.py` 直接拒。与其为它开例外或搬一套人工确认闸门，不如让 agent 根本没有这个能力。代价是首次分析某服务需运维介入一次——值守场景可接受，且比"让 bot 自己往磁盘拉代码"安全得多。
 - [x] 5.4 用**真实 git** 跑测试（`git init` 造临时仓库 + 造 `prd-b` / `uat` 两个分支 + `--mirror` clone），不 mock git——要验的正是分支候选解析、worktree detached、TTL 跳过这些 git 行为，mock 掉等于什么也没验。
+
+
+## 6. 真实仓库验证暴露的三处缺陷（2026-08-03）
+
+- [x] 6.1 ★ **全局分支候选列表根本不够用**。照搬自 repokit 的 `ENV_BRANCH_CANDIDATES`（`prd-b`/`prd` 等）对真实仓库**一个都对不上**：OCS4 的环境分支是 `prd-ocs-ha`/`uat-ocs-ha`/`stg-ocs-ha`，OCS5 的是 `OCS5/prd` 这类**带命名空间前缀**的。repokit 自己的注释就写了"不同仓库命名不统一"——它那份候选是按它注册过的仓库调的。**修复**：registry 支持 per-service 的 `env_branches`，全局候选降为回退。
+- [x] 6.2 ★ **同仓多服务会撞车**（更隐蔽）。`mt-tools-v2` 一个仓库里住着 OCS5 / MTTools / blackarrow，各有各的分支命名空间。原来 worktree 命名是 `env-<env>`，于是 ocs5 的 prd 与 mttools 的 prd **会抢同一个目录**——后来者 checkout 走前者，**两个服务读到同一份代码而毫无察觉**。**修复**：worktree 改按**分支**命名（`wt-OCS5-prd`），天然正确。
+- [x] 6.3 ★ **声明了映射还回退，会捡到别的服务的分支**。ocs5 没配 dev 时回退全局候选，捡到了仓库里那个属于第三方的裸 `dev` 分支——模型拿到错误源码而毫不知情，比 `branch_not_found` 糟得多。**修复**：声明了 `env_branches` 就以它为准、不回退；未声明的 env 返回 `branch_not_found` 并说清"是配置缺失、不是仓库里没有"，还列出已声明的环境。
+- [x] 6.4 **顺带修两处工程问题**：① pytest 爬进 `repos/` 收集真实仓库自带的 `test_*.py` 导致收集阶段报错 → `testpaths`/`norecursedirs` 限定；② 冒烟脚本把**目录名当服务名**（服务名在 registry 里、目录名是 repo_dir），`--service ocs5` 找不到时静默回退到 `mt-tools` → 改为按 registry 查。
+- [x] 6.5 **刻意不做模糊匹配**：OCS4 里 `dev` / `dev-ocs-ha` / `dev-v4.2.11` / `dev-opt-idempotence` 全含 "dev"，猜错就是给出错误的源码而调用方无从察觉。宁可 `branch_not_found` 让人来定。
