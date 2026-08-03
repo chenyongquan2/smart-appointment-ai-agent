@@ -25,7 +25,7 @@ from evals.trace_collect import collect_tool_calls, collect_tool_outcomes
 from harness.observability.exporter import InMemoryExporter
 from harness.observability.tracer import Tracer
 from harness.runtime import AgentLoop
-from domains import load_domain
+from domains import build_main_registry, load_domain
 from harness.runtime.system_prompt import build_system_prompt
 from harness.subagents import build_delegate_tool
 from harness.subagents.registry import SubAgentRegistry
@@ -59,9 +59,12 @@ def _build_capture_loop(
     """
     exporter = InMemoryExporter()
     tracer = Tracer(exporter)
-    delegate = build_delegate_tool(llm, full_registry, subagents, tracer=tracer)
-    main_registry = ToolRegistry()
-    main_registry.register(delegate)
+    # 主 registry 的形状随域的结构走（有子 Agent → 只放 delegate；无 → 直接放工具）。
+    # 与生产路径 api/chat_handler 用同一个 build_main_registry，避免两处装配漂移。
+    main_registry = build_main_registry(
+        load_domain(),
+        lambda: build_delegate_tool(llm, full_registry, subagents, tracer=tracer),
+    )
     loop = AgentLoop(
         llm=llm,
         registry=main_registry,

@@ -37,7 +37,12 @@ from harness.runtime.agent_loop import RunOutcome
 from harness.runtime.session import SessionStore
 from harness.runtime.system_prompt import build_system_prompt
 from harness.subagents import build_delegate_tool
-from domains import build_subagent_registry, build_tool_registry, load_domain
+from domains import (
+    build_main_registry,
+    build_subagent_registry,
+    build_tool_registry,
+    load_domain,
+)
 from harness.tools.registry import ToolRegistry
 
 # 模块级单例（Phase 7）：
@@ -68,14 +73,14 @@ _trace_exporter = SamplingSpanExporter(
 )
 _tracer = Tracer(_trace_exporter)
 
-_delegate_tool = build_delegate_tool(_llm, _full_registry, _subagents, tracer=_tracer)
-
-# ★ 关键设计：主 registry 里「只放 delegate 这一个工具」。
-#   于是主 Agent 的唯一动作就是「调 delegate(派给哪个专员)」——它只做路由决策，
-#   真正干活的领域工具都藏在子 Agent 的工具子集里。对比 Phase 7 之前的硬编码 if/else 路由，
-#   这把「派给谁」交还给模型自主判断。
-_main_registry = ToolRegistry()
-_main_registry.register(_delegate_tool)
+# ★ 关键设计：主 Agent 的工具面**由域的结构决定**（见 domains.build_main_registry）。
+#   有子 Agent 的域（预约）：主 registry 只放 delegate，主 Agent 只做「派给谁」的决策，
+#   领域工具藏在子 Agent 的工具子集里——这把路由交还给模型，取代 Phase 7 前的 if/else。
+#   无子 Agent 的域（值守）：主 registry 直接放全部工具，主 Agent 自己调。
+_main_registry = build_main_registry(
+    _domain,
+    lambda: build_delegate_tool(_llm, _full_registry, _subagents, tracer=_tracer),
+)
 
 _agent_loop = AgentLoop(
     llm=_llm,

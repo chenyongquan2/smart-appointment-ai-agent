@@ -13,7 +13,7 @@
 
 ## 核心设计判断（贯穿各期，勿翻案）
 
-1. **换域 = 换四样东西**：工具集 + system prompt + 权限策略 + eval 数据集。运行时（TAO 循环、记忆、护栏、Tracer）一行不动。
+1. **换域 = 换五样东西**：工具集 + **子 Agent 集** + system prompt + 权限策略 + eval 数据集。运行时（TAO 循环、记忆、护栏、Tracer）一行不动。（原写四样，第 2 期落地时发现子 Agent 也是域绑定的——预约域有三个专员、值守域一个都不该有，见 `domains/oncall/subagents/__init__.py` 的理由。）
 2. **Channel 层的判据**：换掉飞书换成钉钉/企微，Agent 层零改动才算分层干净。
 3. **Channel 与 Agent 之间是任务式接口**，不是同步调用。IM 是「秒回 ack + 异步投递」，Web 是它的同步特例。
 4. **不需要外部 hang 看门狗**：`harness/guardrails/retry.py` 的 `asyncio.wait_for(ainvoke, 30s)` + 指数退避已覆盖 LLM 请求级 hang。lark-oncall-bot 需要它是因为 AI 跑在 opencode 子进程里、父进程看不见内部；本项目进程内 await 天然满足。
@@ -130,6 +130,27 @@ config/              新增飞书凭据、并发与超时参数
 ---
 
 ## 第 3 期：OnCall 工具集与服务层
+
+**分三个切片做**（整期一次做完太大，一个审阅闸门扛不住）：
+
+| 切片 | 内容 | 状态 |
+|---|---|---|
+| 1 | oncall 域骨架 + `services/vlog.py` + `vlog_query` + 排查知识按需加载 | ✅ change `oncall-domain-vlog`（2026-08-02） |
+| 2 | `services/repo.py`（`repokit.py` 669 行）+ `code_analysis` | 待做 |
+| 3 | `services/docs_search.py`（MT4/MT5 FTS）+ `mt_docs_search` | 待做 |
+
+**切片 1 已完成**：`AGENT_DOMAIN=oncall` 即切到值守域（2 个只读工具、只读策略硬 enforce、
+4 份排查资料按需加载）。`probe.py` 的传输层从同步 `urllib` 换成 async httpx——**照搬就是
+第三次重演阻塞缺陷**（前两次：知识库检索、技师专长匹配）。
+
+⚠ **切片 1 的冒烟发现并修掉一处第 2 期遗留缺陷**：主 registry 的形状此前写死为「只放
+delegate」，那其实是**预约域的结构**而非运行时不变量。装上无子 Agent 的值守域会得到一个
+「只有 delegate、却无处可派」的主 Agent——域的工具够不着且不报错。已改为
+`domains.build_main_registry` 按 `len(domain.subagents)` 决定形状（判的是结构属性、
+不是域名，运行时对域仍然无知）。
+
+⚠ **切片 1 的验收边界**：离线测试证明的是「请求构造正确、异步不阻塞、失败分类正确、
+vmui URL 往返一致」；**「查得对不对」需真实凭据 + 内网手动冒烟**，CI 做不到。
 
 **目标**：真正能用的值守能力。大量代码可从 `lark-oncall-bot` 移植。
 
