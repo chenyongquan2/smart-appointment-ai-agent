@@ -204,6 +204,10 @@ async def ProcessUserInput_stream(
             history=history_msgs,          # 短期记忆
             system_suffix=preference_hint, # 长期偏好，拼到系统提示末尾
             on_outcome=on_outcome,         # 带外结束方式（供 executor 判定终态）
+            # 传 session.user_id 而非入参 user_id：前者是 session store 归一后的值
+            # （缺省会落成 default_user），与长期偏好读的是同一个身份，故 trace 与
+            # 偏好归属不会出现两套口径。仅写进 span attributes、不参与决策。
+            user_id=session.user_id,
         ):
             # ⑤ 一边把每个 token 透传给前端（保留流式体验），一边「截留」最终回复：
             #    只有 [REPLY] 前缀那条是要回写历史的真正回复；切掉前缀后存进 reply_text。

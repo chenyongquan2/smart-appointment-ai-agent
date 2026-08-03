@@ -16,7 +16,9 @@
 设计要点（design.md D1/D3）：
 - 父子关系由 ``parent`` 显式传入，``trace_id`` 由 root 生成、child 继承——不依赖
   OpenTelemetry 隐式 context，手写 async 循环里不会断树。
-- ``clock`` 与 ``id_factory`` 可注入，使 latency 与 id 在单测中确定性可断言。
+- ``clock`` / ``wall_clock`` / ``id_factory`` 可注入，使 latency、绝对时间与 id 在单测中
+  确定性可断言。``clock`` 是单调时钟（算 latency），``wall_clock`` 是墙钟（定位时间点），
+  两者并存不混用——详见 ``span.py`` 的说明。
 - token 记为近似（``approximate=True``），复用 guardrails 的 ``estimate_tokens`` 口径。
 
 ``NoopTracer`` 实现同样接口但什么都不做，供 ``AgentLoop`` 在未注入 tracer 时退化
@@ -27,6 +29,8 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from harness.observability.exporter import SpanExporter
@@ -41,6 +45,8 @@ class Tracer:
     Args:
         exporter: span 输出后端（实现 ``SpanExporter.export``）。
         clock: 单调时钟，仅用于算 latency；默认 ``time.perf_counter``，测试可注入。
+        wall_clock: 墙钟，用于给 span 盖绝对时间戳；默认 ``datetime.now(timezone.utc)``，
+            测试可注入固定时刻以获得确定性断言。
         id_factory: 生成 trace_id/span_id 的工厂；默认 uuid4 十六进制，测试可注入
             计数器以获得确定性 id。
     """
@@ -50,6 +56,7 @@ class Tracer:
         exporter: SpanExporter,
         clock: Optional[Callable[[], float]] = None,
         id_factory: Optional[Callable[[], str]] = None,
+        wall_clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._exporter = exporter
         # clock 只用于算 latency，故要单调时钟（perf_counter，不受系统时间回拨影响）。
@@ -58,6 +65,10 @@ class Tracer:
         # id_factory 默认产 uuid4 十六进制串（全局唯一）；测试可注入计数器 1、2、3…
         # 让 trace_id / span_id 变可预测，断言 span 树结构时不必匹配随机串。
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
+        # 墙钟另立一个可注入口，不复用 clock：clock 必须单调（算 latency），墙钟必须绝对
+        # （定位时间点），两个需求不可能由同一个时钟同时满足。缺省取带 tz 的 UTC——
+        # 裸 datetime.now() 会产出无时区信息的串，跨机器/跨时区读时无从判断基准。
+        self._wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
 
     def start_span(
         self,
@@ -78,6 +89,9 @@ class Tracer:
             parent_id=parent.span_id if parent is not None else None,  # root 无父 → None
             name=name,
             start=self._clock(),  # 记开始时刻，end_span 时减出 latency
+            # 同时盖一个绝对时间戳：单调 clock 的读数跨进程无意义，落盘后没法回答
+            # 「这条 trace 是什么时候的」。isoformat() 带 tz 偏移，故串本身自带基准。
+            started_at=self._wall_clock().isoformat(),
             # 拷一份再存：避免外部后续改了传入 dict 反过来污染本 span 的属性。
             attributes=dict(attributes or {}),
         )
@@ -110,10 +124,22 @@ class Tracer:
         span.attributes.setdefault("tool_name", name)
 
     def add_observation(self, span: Span, name: str, result: Any) -> None:
-        """记录工具结果。"""
-        # result 先 str() 化再存：工具返回啥类型都有（dict/对象/异常文本），统一成
-        # 字符串，保证事件 payload 始终可 JSON 序列化、可直接进日志。
-        self.add_event(span, "observation", {"name": name, "result": str(result)})
+        """记录工具结果。
+
+        除字符串化的结果外，还会在 ``str()`` 化**之前**窄提取 ``error_kind``——那是
+        service 层自行分类的失败标记（如 ``services/vlog.py`` 的 timeout /
+        connect_failed），此时工具是**正常返回**、loop 层面没有任何异常，故不提取的话
+        ``trace_signals`` 无从判定（见该模块 docstring 记的那次静默漏报）。
+        """
+        payload: dict[str, Any] = {"name": name, "result": str(result)}
+        # ★ 只提 error_kind 这一个键，且必须在 str() 化之前——之后就只剩 str(dict) 的
+        #   排版，而那不是契约（黄金准则：结构化输出 > 字符串解析）。
+        #   刻意不把整个结果对象塞进 payload：vlog 的结果含真实生产日志正文，体积大且
+        #   含业务内容；payload 只该留判定所需的最小结构。
+        error_kind = _extract_error_kind(result)
+        if error_kind is not None:
+            payload["error_kind"] = error_kind
+        self.add_event(span, "observation", payload)
 
     def set_tokens(self, span: Span, tokens: int, approximate: bool = True) -> None:
         """记录该 span 的 token（近似值，标注 approximate）。"""
@@ -148,6 +174,28 @@ class NoopTracer(Tracer):
 
     def set_tokens(self, span: Span, tokens: int, approximate: bool = True) -> None:
         pass  # 不写 token 属性
+
+
+def _extract_error_kind(result: Any) -> Optional[str]:
+    """从工具返回值里取 ``error_kind``（Mapping 取键、否则取属性）；取不到返回 ``None``。
+
+    **自身绝不抛**：工具返回什么类型都有，怪对象的 ``get`` / ``__getattr__`` 都可能炸。
+    可观测是附属能力，沿用 ``end_span`` 吞导出异常的同一取舍——提取失败就当没提取到，
+    绝不能因为埋点把用户的正常请求带崩。
+
+    ⚠ **只认 ``error_kind``，不泛化成「任何错误类字段」**：``services/repo.py`` 用
+    ``status`` 表达结果，其中 ``need_clone`` 等是**显式定义的正常引导状态**
+    （``GUIDE_STATUS``）。把它们当失败会制造误报候选，而 triage 的价值全在信噪比。
+    """
+    try:
+        if isinstance(result, Mapping):
+            value = result.get("error_kind")
+        else:
+            value = getattr(result, "error_kind", None)
+    except Exception:  # noqa: BLE001 —— 见上：埋点绝不拖垮主流程
+        return None
+    # 仅认非空字符串：None（未失败）、以及其它类型的怪值都视为「没有分类」。
+    return value if isinstance(value, str) and value else None
 
 
 class _NullExporter:

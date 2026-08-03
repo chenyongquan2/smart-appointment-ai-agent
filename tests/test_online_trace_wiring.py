@@ -84,3 +84,86 @@ async def test_tracing_does_not_change_streaming_and_writes_trace(tmp_path, monk
     assert roots, "应有 root span"
     assert roots[0]["attributes"].get("user_input") == "你好"
     assert roots[0]["attributes"].get("session_id") == "s1"
+
+
+# ── user_id 落进 trace（change: fix-trace-triage-blindspots）────────────────
+@pytest.mark.asyncio
+async def test_user_id_lands_in_root_span_attributes():
+    """群聊里 34 人共享同一会话：session_id 分不出人，故 root span 另记 user_id。"""
+    from harness.observability.exporter import InMemoryExporter
+
+    exporter = InMemoryExporter()
+    tracer = Tracer(exporter)
+    loop = AgentLoop(llm=_CapturingModel(), registry=ToolRegistry(), tracer=tracer)
+
+    async for _ in loop.run("你好", session_id="s1", user_id="ou_alice"):
+        pass
+    async for _ in loop.run("你好", session_id="s1", user_id="ou_bob"):
+        pass
+
+    roots = [s for s in exporter.spans if s.parent_id is None]
+    assert [s.attributes.get("user_id") for s in roots] == ["ou_alice", "ou_bob"]
+    # 同一会话：session_id 相同、user_id 不同——这正是它存在的理由。
+    assert {s.attributes.get("session_id") for s in roots} == {"s1"}
+
+
+@pytest.mark.asyncio
+async def test_user_id_absent_keeps_previous_behaviour():
+    """不传时 span 不含该属性，行为与接入前完全一致（向后兼容）。"""
+    from harness.observability.exporter import InMemoryExporter
+
+    exporter = InMemoryExporter()
+    loop = AgentLoop(llm=_CapturingModel(), registry=ToolRegistry(), tracer=Tracer(exporter))
+
+    async for _ in loop.run("你好", session_id="s1"):
+        pass
+
+    roots = [s for s in exporter.spans if s.parent_id is None]
+    assert "user_id" not in roots[0].attributes
+
+
+@pytest.mark.asyncio
+async def test_production_handler_passes_user_id_into_trace(tmp_path, monkeypatch):
+    """生产入口把提交者身份接进 trace——第 1 期传的 open_id 此前只进了 DB、没进 trace。"""
+    trace_file = tmp_path / "trace-uid.jsonl"
+    tracer = Tracer(SamplingSpanExporter(FileSpanExporter(path=trace_file)))
+    loop = AgentLoop(llm=_CapturingModel(), registry=ToolRegistry(), tracer=tracer)
+
+    monkeypatch.setattr(ch, "_agent_loop", loop)
+    monkeypatch.setattr(ch, "_session_store", SessionStore(repo=None))
+    monkeypatch.setattr(ch, "_long_term", LongTermMemory(None))
+    monkeypatch.setattr(ch, "_summary", _NoopSummary())
+
+    async for _ in ch.ProcessUserInput_stream("你好", session_id="s1", user_id="ou_carol"):
+        pass
+
+    recs = [json.loads(l) for l in trace_file.read_text(encoding="utf-8").splitlines()]
+    roots = [r for r in recs if r["parent_id"] is None]
+    assert roots[0]["attributes"].get("user_id") == "ou_carol"
+    # 落盘记录同时带绝对时间戳（triage 按日期切窗靠它）。
+    assert roots[0].get("started_at")
+
+
+def test_reinjected_cases_never_carry_user_id(tmp_path):
+    """★ 隐私边界：回灌产物 MUST NOT 带提交者标识——cases.jsonl 进版本库、trace 目录不进。
+
+    `triage.CANONICAL_KEYS` 今天碰巧不含 user_id；这条测试把「碰巧」变成契约，
+    使它不因后续扩字段而意外放行个人标识。
+    """
+    from evals.triage import CANONICAL_KEYS, append_cases
+
+    assert "user_id" not in CANONICAL_KEYS
+
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text('{"input": "已有", "expected_intent": "other"}\n', encoding="utf-8")
+
+    append_cases(cases, [{
+        "input": "值守问题",
+        "expected_intent": "other",
+        "user_id": "ou_carol",          # 即便草稿里混进了它
+        "_trace_id": "t1",
+    }])
+
+    written = cases.read_text(encoding="utf-8")
+    assert "ou_carol" not in written, "提交者标识绝不能进版本库里的用例集"
+    assert "user_id" not in json.loads(written.splitlines()[-1])

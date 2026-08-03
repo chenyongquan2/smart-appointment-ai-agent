@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -53,6 +54,10 @@ def load_trace_spans(path: Path) -> list[Span]:
     文件每行是 FileSpanExporter 落的 ``{"event":"span", **span.to_dict()}``。``to_dict`` 只存
     ``latency`` 不存 start/end，故这里用**文件行序**当 synthetic start——同一 tracer 的 span 按完成
     顺序追加，与按 start 排序一致，足够 `detect_bad_signals` / `collect_tool_calls` 的排序用途。
+
+    ``started_at``（墙钟 ISO 串）用 ``.get()`` 读：change ``fix-trace-triage-blindspots``
+    之前落的 trace 文件没有这个键，而那些是**目前唯一的真实流量原料**，MUST 仍能加载。
+    缺键时该 span 的 ``started_at`` 为 ``None``，时间窗筛选另行处理（见 ``_filter_since``）。
     """
     spans: list[Span] = []
     for idx, raw in enumerate(path.read_text(encoding="utf-8").splitlines()):
@@ -71,11 +76,69 @@ def load_trace_spans(path: Path) -> list[Span]:
                 name=rec.get("name", ""),
                 start=float(idx),  # synthetic：文件行序即完成序，可比较即可
                 end=float(idx),
+                started_at=rec.get("started_at"),  # 旧格式文件无此键 → None，见 docstring
                 attributes=rec.get("attributes") or {},
                 events=events,
             )
         )
     return spans
+
+
+def parse_since(text: str) -> datetime:
+    """解析 ``--since`` 的 ISO 时间串；**MUST 自带时区信息**（``Z`` 或显式偏移）。
+
+    刻意不接受裸时间串、也不按本机时区补全：参考系统在告警时区上栽过坑，而"猜时区"
+    的错会安静地把筛选窗整体挪几小时，比直接报错难查得多。
+    """
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        raise ValueError(
+            f"--since 必须带时区（如 2026-08-03T00:00:00Z 或 2026-08-03T08:00:00+08:00），"
+            f"收到裸时间串：{text!r}。不猜时区是刻意的——猜错会安静地把窗口挪掉几小时。"
+        )
+    return dt
+
+
+def filter_traces_since(spans: Iterable[Span], since: datetime) -> tuple[list[Span], int]:
+    """按墙钟起始时刻筛出 ``since`` 之后的 trace；返回 ``(筛后 spans, 无墙钟的 trace 组数)``。
+
+    **按 trace 组而非单个 span 筛**：root span 起得最早，逐 span 筛会在窗口边界上把 root
+    丢掉却留下它的 child——那样 ``_root_input`` 就取不到用户原话了，草稿的 ``input`` 会变空。
+
+    **无 ``started_at`` 的历史 trace 一律纳入**，并把组数返回给调用方去报告。绝不静默丢弃：
+    那几个文件是 change ``fix-trace-triage-blindspots`` 之前落的**真实 oncall 流量**，是目前
+    唯一的真实原料；而静默排除会让"0 个候选"这个结论第二次骗人。
+    """
+    kept: list[Span] = []
+    legacy_groups = 0
+    for _trace_id, group in sorted(_group_by_trace(spans).items()):
+        stamps = [s.started_at for s in group if s.started_at]
+        if not stamps:
+            legacy_groups += 1
+            kept.extend(group)  # 无从判断时间 → 纳入，不猜
+            continue
+        # 取组内最早的墙钟（即 root 的）作为这条 trace 的发生时刻。
+        try:
+            earliest = min(datetime.fromisoformat(s) for s in stamps)
+        except ValueError:
+            legacy_groups += 1  # 串坏了同样按"无从判断"处理，纳入并计数
+            kept.extend(group)
+            continue
+        if earliest >= since:
+            kept.extend(group)
+    return kept, legacy_groups
+
+
+def signal_counts(candidates: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """按信号标签统计候选数（一个候选可命中多个信号，故各标签计数之和可大于候选数）。
+
+    攒量之后需要的是"这周超时 12 次、打转 3 次"这种视图，而不只是候选总数。
+    """
+    counts: dict[str, int] = {}
+    for c in candidates:
+        for sig in c.get("_signals") or []:
+            counts[str(sig)] = counts.get(str(sig), 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _group_by_trace(spans: Iterable[Span]) -> dict[str, list[Span]]:
@@ -229,14 +292,40 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     files = sorted(traces_dir.glob("*.jsonl"))
     for f in files:
         all_spans.extend(load_trace_spans(f))
+
+    legacy_groups = 0
+    if args.since:
+        try:
+            since = parse_since(args.since)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1
+        all_spans, legacy_groups = filter_traces_since(all_spans, since)
+
     candidates = triage_traces(all_spans)
     out = json.dumps(candidates, ensure_ascii=False, indent=2)
     if args.out:
         Path(args.out).write_text(out + "\n", encoding="utf-8")
         print(f"扫描 {len(files)} 个 trace 文件，得 {len(candidates)} 个疑似坏候选 → 草稿已写入 {args.out}")
-        print("请人工编辑草稿、填好 expected_*（删去 _ 前缀辅助字段可选），再用 `append --from` 回灌。")
     else:
         print(out)
+
+    # 信号分类摘要打到 stderr：stdout 在缺省模式下是草稿 JSON 本身，摘要混进去会破坏
+    # `triage scan > draft.json` 这种用法。
+    counts = signal_counts(candidates)
+    if counts:
+        detail = "、".join(f"{sig} {n} 次" for sig, n in counts.items())
+        print(f"信号分布：{detail}", file=sys.stderr)
+    if legacy_groups:
+        # 绝不静默：这几条是本 change 之前落的真实流量，无墙钟字段故无从按时间筛，
+        # 已**一律纳入**——把条数说出来，免得「筛过了」被读成「筛干净了」。
+        print(
+            f"⚠ 另有 {legacy_groups} 条 trace 没有墙钟时间戳（本 change 之前落的），"
+            f"无从按 --since 判断，已全部纳入。",
+            file=sys.stderr,
+        )
+    if args.out:
+        print("请人工编辑草稿、填好 expected_*（删去 _ 前缀辅助字段可选），再用 `append --from` 回灌。")
     return 0
 
 
@@ -265,6 +354,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_scan = sub.add_parser("scan", help="扫描 trace 目录，甄别疑似坏候选并产出标注草稿")
     p_scan.add_argument("--traces-dir", default=str(_TRACES_DIR), help=f"trace 目录；默认 {_TRACES_DIR}")
     p_scan.add_argument("--out", default=None, help="草稿输出文件（JSON 列表）；缺省打到 stdout")
+    p_scan.add_argument(
+        "--since",
+        default=None,
+        help="只看该时刻之后的 trace；ISO 串且**必须带时区**（如 2026-08-03T00:00:00Z）。"
+        "无墙钟时间戳的历史 trace 一律纳入并在 stderr 报数。",
+    )
     p_scan.set_defaults(func=_cmd_scan)
 
     p_app = sub.add_parser("append", help="把人审通过的草稿去重后回灌进 cases.jsonl")
