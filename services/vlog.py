@@ -449,6 +449,37 @@ def _parse_ndjson(raw: bytes) -> list[dict[str, Any]]:
     return out
 
 
+async def _probe_one_bounded(*args, **kwargs) -> EnvResult:
+    """给单个 env 的查询套一个**总时长**上限。
+
+    ★ 实测发现的缺口（2026-08-03）：`httpx` 的 `timeout=60` 里 read 那一项是
+    **每次读取**的上限，不是整次请求的总时长。流式响应分多次读、每次都不超 60 秒，
+    总时长就能跑到 **111 秒**（实测：同一个 traceId 在 prod 3d 窗 19 秒、7d 窗 111 秒）。
+
+    生产路径上这一步被 agent loop 的 `Tool.timeout`（缺省 60s）截住了，所以没出事；
+    但 service 自己无界是不对的——冒烟脚本、评估、任何非 loop 调用方都没有那层保护，
+    而 `zero_suspect` 的门槛（超时上限的一半）也是按"有总时长上限"校准的。
+
+    这里用 `asyncio.wait_for` 是**成立**的：httpx 是原生异步、在 await 点让得出控制权，
+    取消是真取消。（与 `services/repo.py` 的 git 子进程不同——那边是同步阻塞，
+    `wait_for` 掐不断，只能靠线程池 + 子进程自身 timeout。同一个判据、不同的手段。）
+    """
+    env, account = kwargs.get("env") or args[2], kwargs.get("account") or args[3]
+    total = resolve_vlog_timeout(kwargs.pop("_total_timeout", None))
+    try:
+        return await asyncio.wait_for(_probe_one(*args, **kwargs), timeout=total)
+    except asyncio.TimeoutError:
+        creds = kwargs.get("creds") or args[1]
+        result = EnvResult(env=env, account=account)
+        result.error_kind = "timeout"
+        result.error = (
+            f"查询总时长超过 {total:.0f} 秒被中断（read 超时只管每次读取、兜不住总时长，"
+            "故这里另加了总时长上限）。"
+        )
+        result.elapsed_s = total
+        return result
+
+
 async def _probe_one(
     client: httpx.AsyncClient,
     creds: VLogCredentials,
@@ -550,8 +581,9 @@ async def query_logs(
     try:
         # 并发探查：串行会把延迟叠成 N × RTT，而日志查询单次就是秒级到分钟级。
         results = await asyncio.gather(*(
-            _probe_one(http, creds, e, a, logsql,
-                       window=window, start=start, end=end, limit=limit, fields=fields)
+            _probe_one_bounded(http, creds, e, a, logsql,
+                               window=window, start=start, end=end,
+                               limit=limit, fields=fields, _total_timeout=timeout)
             for e, a in targets
         ))
     finally:

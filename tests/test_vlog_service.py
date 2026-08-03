@@ -495,3 +495,37 @@ def test_description_warns_against_fabricated_env_filter():
     assert "env 参数指定" in desc
     assert "宽窗 + 正则会被工具直接拒绝" in desc
     assert "超时了要收窄" in desc
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.asyncio
+async def test_total_elapsed_is_bounded_not_just_per_read():
+    """★ 实测发现的缺口（2026-08-03）：httpx 的 `timeout=60` 里 read 那项是**每次读取**
+    的上限，不是整次请求的总时长。
+
+    实证：同一个 traceId 在 prod 3d 窗 19 秒、**7d 窗 111 秒**——流式响应分多次读、
+    每次都不超 60 秒，总时长就能翻倍。生产路径被 agent loop 的 Tool.timeout 截住了所以
+    没出事，但 service 自己无界是不对的：冒烟脚本、评估、任何非 loop 调用方都没那层保护，
+    而 zero_suspect 的门槛也是按「有总时长上限」校准的。
+
+    这里用 asyncio.wait_for 是**成立**的——httpx 原生异步、在 await 点让得出控制权。
+    （对比 services/repo.py 的 git 子进程：同步阻塞，wait_for 掐不断，只能线程池 +
+    子进程自身 timeout。同一个判据、不同的手段。）
+    """
+    reads = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        # 每次「读」都很快，但总时长拖长——模拟流式慢响应
+        for _ in range(20):
+            reads["n"] += 1
+            await asyncio.sleep(0.05)
+        return httpx.Response(200, content=json.dumps({"hits": [{"total": 1}]}).encode())
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs("q", env="prod", credentials=CREDS, client=c,
+                                       timeout=0.3)   # 总时长上限 0.3s
+
+    env = result.results[0]
+    assert env.error_kind == "timeout"
+    assert "总时长" in (env.error or ""), "要说清是总时长被切断，而不是 read 超时"
+    assert reads["n"] < 20, "总时长上限没生效，请求跑完了"
