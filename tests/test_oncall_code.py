@@ -428,3 +428,209 @@ async def test_no_mapping_still_uses_global_candidates(repos_dir):
 
     assert result.status == "ready"
     assert result.branch == "prd-b"
+
+
+# --------------------------------------------------------------------------- #
+# ⑧ mirror 来源守卫（change: guard-mirror-provenance）
+#
+# 2026-08-03 实测踩坑：mirror 从**工作副本**而非正规远端 clone，`--mirror` 的
+# `+refs/*:refs/*` 把上游的 refs/remotes/origin/* 一并搬来，而 refs/heads/* 只反映
+# "上游开发者本地拉到哪"。ocs5 因此静默落后 279 个 commit。
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def worktree_cloned_repos(tmp_path, monkeypatch):
+    """造「origin → 工作副本 → mirror 那份工作副本」三级，复现四种实况。
+
+    产出的 mirror 里：
+
+    | env | 分支 | refs/heads | refs/remotes/origin | 期望 |
+    |---|---|---|---|---|
+    | prd | `prd-b` | 旧 commit | 新 commit | 落后 2 |
+    | uat | `uat`   | 与远端一致 | 一致 | 落后 0 |
+    | dev | `dev-b` | 有（纯本地） | **无** | 落后 None |
+    | stg | `stg-b` | **无** | 有 | branch_not_found + 说明原因 |
+    """
+    repos = tmp_path / "repos"
+    (repos / "wc-svc").mkdir(parents=True)
+    monkeypatch.setenv("ONCALL_REPOS_DIR", str(repos))
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git("init", "-q", "-b", "prd-b", cwd=origin)
+    _git("config", "user.email", "t@e.com", cwd=origin)
+    _git("config", "user.name", "t", cwd=origin)
+    (origin / "app.txt").write_text("v1\n", encoding="utf-8")
+    _git("add", "-A", cwd=origin)
+    _git("commit", "-qm", "c1", cwd=origin)
+    _git("branch", "uat", cwd=origin)
+    _git("branch", "stg-b", cwd=origin)     # 工作副本永远不会为它建本地 ref
+
+    # 工作副本：clone 只为 HEAD（prd-b）建 refs/heads，其余都只在 refs/remotes/origin 下
+    workcopy = tmp_path / "workcopy"
+    subprocess.run(["git", "clone", "-q", str(origin), str(workcopy)],
+                   check=True, capture_output=True, text=True, timeout=120)
+    _git("config", "user.email", "t@e.com", cwd=workcopy)
+    _git("config", "user.name", "t", cwd=workcopy)
+    _git("checkout", "-q", "-b", "uat", "origin/uat", cwd=workcopy)   # 本地 ref，与远端一致
+    _git("checkout", "-q", "-b", "dev-b", cwd=workcopy)               # 纯本地，从没推过
+    _git("checkout", "-q", "prd-b", cwd=workcopy)
+
+    # origin 上 prd-b 往前走两步；工作副本只 fetch（更新 refs/remotes/origin/prd-b），
+    # 不 pull——于是它的 refs/heads/prd-b 停在 c1。这正是真实 ocs5 的形态。
+    for n in ("c2", "c3"):
+        (origin / "app.txt").write_text(f"{n}\n", encoding="utf-8")
+        _git("commit", "-qam", n, cwd=origin)
+    _git("fetch", "-q", "origin", cwd=workcopy)
+
+    subprocess.run(["git", "clone", "-q", "--mirror", str(workcopy),
+                    str(repos / "wc-svc" / ".git-mirror")],
+                   check=True, capture_output=True, text=True, timeout=120)
+
+    # ★ 夹具自证：不先确认 mirror 里两个 ref 真的不同，后面的断言绿了也说明不了问题。
+    mirror = repos / "wc-svc" / ".git-mirror"
+    def _rev(ref: str) -> str:
+        p = subprocess.run(["git", "-C", str(mirror), "rev-parse", ref],
+                           capture_output=True, text=True, timeout=60)
+        return p.stdout.strip() if p.returncode == 0 else ""
+    assert _rev("refs/remotes/origin/prd-b"), "夹具没造出 refs/remotes/——本组测试全部失效"
+    assert _rev("refs/heads/prd-b") != _rev("refs/remotes/origin/prd-b"), "夹具没造出落后"
+    assert _rev("refs/heads/uat") == _rev("refs/remotes/origin/uat"), "uat 应恰好同步"
+    assert _rev("refs/heads/dev-b") and not _rev("refs/remotes/origin/dev-b")
+    assert _rev("refs/remotes/origin/stg-b") and not _rev("refs/heads/stg-b")
+
+    repo._last_sync.clear()
+    repo._provenance_cache.clear()
+    return repos
+
+
+@pytest.mark.asyncio
+async def test_regular_mirror_carries_no_provenance_fields(repos_dir):
+    """★ 回归保护：正规远端建的 mirror 上，返回**一个来源字段都不加**。
+
+    守卫最容易造成的附带损害就是给所有正常结果都糊上一层警示，然后大家学会无视它。
+    """
+    result = await repo.locate_service_code("demo-svc", "prd", sync=False)
+
+    assert result.status == "ready"
+    assert result.mirror_from_worktree is False
+    assert result.mirror_warning is None
+    d = result.to_dict()
+    assert "mirror_from_worktree" not in d
+    assert "mirror_warning" not in d
+    assert "behind_commits" not in d
+
+
+@pytest.mark.asyncio
+async def test_behind_count_is_reported_with_the_actual_number(worktree_cloned_repos):
+    """★ 核心：落后要报**具体数字**。
+
+    "可能不是最新"读起来像免责声明，"落后 2 个 commit"没法无视——真实那次是 279。
+    """
+    result = await repo.locate_service_code("wc-svc", "prd", sync=False)
+
+    assert result.status == "ready", "来源可疑不阻断定位（design D4）"
+    assert result.mirror_from_worktree is True
+    assert result.behind_commits == 2, "要断言具体数字，不是 truthy"
+    assert "落后 2 个 commit" in (result.mirror_warning or "")
+    assert "refs/remotes/" in (result.mirror_warning or ""), "要写明判据，让人能自己核实"
+    assert result.to_dict()["behind_commits"] == 2
+
+
+@pytest.mark.asyncio
+async def test_in_sync_still_flags_provenance_but_softer(worktree_cloned_repos):
+    """★ 落后 0 仍标来源——那是巧合不是配置正确（真实的 ocs4 就是运气好）。
+
+    但文案要软一档：落后 0 也打惊叹号就是狼来了，下次真落后 279 个就没人当回事。
+    """
+    result = await repo.locate_service_code("wc-svc", "uat", sync=False)
+
+    assert result.status == "ready"
+    assert result.mirror_from_worktree is True
+    assert result.behind_commits == 0
+    assert "巧合" in (result.mirror_warning or "")
+    assert not (result.mirror_warning or "").startswith("⚠"), "落后 0 不该用告警语气"
+
+
+@pytest.mark.asyncio
+async def test_missing_tracking_ref_reports_none_not_a_made_up_number(worktree_cloned_repos):
+    """★ 没有远端跟踪引用时落后量是 None——**不编数字**。"""
+    result = await repo.locate_service_code("wc-svc", "dev", sync=False)
+
+    assert result.status == "ready"
+    assert result.branch == "dev-b"
+    assert result.mirror_from_worktree is True
+    assert result.behind_commits is None
+    assert "无法判断" in (result.mirror_warning or "")
+    assert "behind_commits" not in result.to_dict(), "查不到就不要输出这个键"
+
+
+@pytest.mark.asyncio
+async def test_branch_only_under_remotes_explains_the_real_reason(worktree_cloned_repos):
+    """★ 真实的 mttools：refs/heads/MTTools/* 不存在、只在 refs/remotes/origin 下。
+
+    原先只报一句 branch_not_found，用户会以为仓库里压根没这个分支，从而去查错方向。
+    """
+    result = await repo.locate_service_code("wc-svc", "stg", sync=False)
+
+    assert result.status == "branch_not_found"
+    assert result.mirror_from_worktree is True
+    assert "只存在于远端跟踪引用下" in (result.error or "")
+    assert "stg-b" in (result.error or ""), "要指名是哪个分支"
+
+
+@pytest.mark.asyncio
+async def test_guard_does_not_silently_switch_to_remote_ref(worktree_cloned_repos):
+    """★ 守 design D3：**MUST NOT 绕行**。
+
+    技术上把 checkout 目标换成 refs/remotes/origin/* 就"修好"了，但那会把错误配置
+    藏起来，运维永远不知道该重做 mirror。没有这条测试，日后有人"顺手修好"就没人拦得住。
+    """
+    result = await repo.locate_service_code("wc-svc", "prd", sync=False)
+    mirror = worktree_cloned_repos / "wc-svc" / ".git-mirror"
+
+    def _rev(ref: str) -> str:
+        p = subprocess.run(["git", "-C", str(mirror), "rev-parse", ref],
+                           capture_output=True, text=True, timeout=60)
+        return p.stdout.strip()
+
+    head = subprocess.run(["git", "-C", result.worktree_path, "rev-parse", "HEAD"],
+                          capture_output=True, text=True, timeout=60).stdout.strip()
+    assert head == _rev("refs/heads/prd-b"), "worktree 必须仍是 refs/heads 那份（哪怕它旧）"
+    assert head != _rev("refs/remotes/origin/prd-b"), "绕行到远端引用 = 把错误配置藏起来"
+
+
+@pytest.mark.asyncio
+async def test_detection_failure_degrades_to_no_warning(worktree_cloned_repos, monkeypatch):
+    """★ 降级方向要保守：探测不出时**不报警示**，别把 git 抽风渲染成"你的 mirror 有问题"。"""
+    repo._provenance_cache.clear()
+    real = repo._git
+
+    async def flaky(args, cwd=None, timeout=None):
+        if "for-each-ref" in args:
+            return (128, "", "fatal: boom")
+        return await real(args, cwd=cwd, timeout=timeout) if timeout else await real(args, cwd=cwd)
+
+    monkeypatch.setattr(repo, "_git", flaky)
+    result = await repo.locate_service_code("wc-svc", "prd", sync=False)
+
+    assert result.status == "ready", "探测失败不该连累定位本身"
+    assert result.mirror_from_worktree is False
+    assert result.mirror_warning is None
+
+
+@pytest.mark.asyncio
+async def test_warning_reaches_model_on_every_path(worktree_cloned_repos):
+    """★ 守 design D5：模型可以不调 locate 直接 search/read——那条路径也必须带警示。
+
+    只改 locate 会得到一个"看起来做了、半数路径仍静默"的守卫，正是本变更要消灭的缺陷。
+    """
+    from domains.oncall.tools.code import _read_handler, _search_handler
+    from domains.oncall.tools.schemas import CodeSearchArgs, ReadSourceArgs
+
+    s = await _search_handler(CodeSearchArgs(service="wc-svc", env="prd", pattern="v1"))
+    assert "落后 2 个 commit" in s.get("mirror_warning", ""), "code_search 路径静默了"
+
+    r = await _read_handler(
+        ReadSourceArgs(service="wc-svc", env="prd", path="app.txt", start_line=1, line_count=5)
+    )
+    assert "落后 2 个 commit" in r.get("mirror_warning", ""), "read_source 路径静默了"

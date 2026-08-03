@@ -22,6 +22,13 @@ per-env 常驻 detached worktree、TTL 内跳过的 fetch、`repo_dir` 合法性
 会真正 kill 掉进程，把"取消不掉"的窗口封了顶。
 
 ⚠ `Tool.timeout` 在此**不构成保护**：它靠 asyncio 取消，中断不了同步阻塞调用。
+
+**mirror 来源守卫**（change `guard-mirror-provenance`）：本模块读 `refs/heads/{branch}`，
+这对正规远端 clone 的 mirror 是对的（服务端只有 `refs/heads/*`）。但 `--mirror` 的
+refspec 是 `+refs/*:refs/*`——从**工作副本** clone 会把上游的 `refs/remotes/origin/*`
+一并搬来，此时 `refs/heads/*` 只是"上游开发者本地拉到哪"。2026-08-03 实测：`ocs5` 的
+`refs/heads/OCS5/prd` 落后 279 个 commit 而**静默返回旧代码**。故本模块探测来源并如实
+带回，但**不绕行、不阻断**（design D3/D4）。
 """
 
 from __future__ import annotations
@@ -84,6 +91,11 @@ class LocateResult:
     synced: bool = False
     candidates_tried: Optional[list[str]] = None
     error: Optional[str] = None
+    # ↓ mirror 来源守卫。正规远端建的 mirror 上三者恒为 None/False，
+    #   `to_dict()` 也就一个字节都不多输出——正常路径完全不受影响。
+    mirror_from_worktree: bool = False
+    behind_commits: Optional[int] = None
+    mirror_warning: Optional[str] = None
 
     @property
     def ok(self) -> bool:
@@ -97,6 +109,11 @@ class LocateResult:
                 d[k] = v
         if self.status == "ready":
             d["synced"] = self.synced
+        if self.mirror_from_worktree:
+            d["mirror_from_worktree"] = True
+            d["mirror_warning"] = self.mirror_warning
+            if self.behind_commits is not None:
+                d["behind_commits"] = self.behind_commits
         return d
 
 
@@ -270,6 +287,83 @@ async def _resolve_env_branch(
     return None, candidates
 
 
+# --------------------------------------------------------------------------- #
+# mirror 来源守卫（change guard-mirror-provenance）
+# --------------------------------------------------------------------------- #
+_provenance_cache: dict[str, bool] = {}
+
+
+async def _mirror_from_worktree(mirror: Path) -> bool:
+    """mirror 是否来自**工作副本**（而非正规远端）。
+
+    判据是 refs 命名空间里有没有 ``refs/remotes/``——正规远端（GitLab 服务端）根本没有
+    这个命名空间，`--mirror` 也就搬不来；有，就说明上游是个 clone 过的工作副本。
+
+    **刻意不查 git config**（design D1）：``remote.origin.mirror=true`` 在两种 mirror 上
+    都是 true（都是 `--mirror` 建的），区分不了；``remote.origin.url`` 虽然能看出来，但
+    它可被 `set-url` 事后改掉。判据要选「被污染的证据」，不是「声明的意图」。
+
+    探测失败（git 抽风 / 超时）**返回假**：降级方向必须保守，否则会把一次 git 故障
+    渲染成"你的 mirror 有问题"，那是另一种形式的谎报。
+    """
+    # 缓存键用**解析后的 mirror 路径**而非 repo_dir：`ONCALL_REPOS_DIR` 是可配的，
+    # 同名 repo_dir 在不同 repos 根下是不同仓库（测试里尤其如此，每个 tmp_path 一份）。
+    key = str(mirror)
+    cached = _provenance_cache.get(key)
+    if cached is not None:
+        return cached
+    rc, out, _ = await _git(["-C", str(mirror), "for-each-ref", "--count=1", "refs/remotes/"])
+    verdict = rc == 0 and bool(out.strip())
+    _provenance_cache[key] = verdict
+    return verdict
+
+
+async def _behind_commits(mirror: Path, branch: str) -> Optional[int]:
+    """``refs/heads/{branch}`` 落后其远端跟踪引用多少个 commit；查不到返回 ``None``。
+
+    只数落后、不数领先：``A..B`` 只算 B 独有的提交。工作副本可能有未推送的本地提交
+    （`refs/heads` 反而领先），那不构成"拿到旧代码"的风险。
+
+    远端跟踪引用不存在（本地建的分支从没推过）时返回 ``None``——**不编数字**。
+    """
+    rc, _, _ = await _git(["-C", str(mirror), "rev-parse", "--verify", "--quiet",
+                           f"refs/remotes/origin/{branch}"])
+    if rc != 0:
+        return None
+    rc, out, _ = await _git(["-C", str(mirror), "rev-list", "--count",
+                             f"refs/heads/{branch}..refs/remotes/origin/{branch}"])
+    if rc != 0 or not out.strip().isdigit():
+        return None
+    return int(out.strip())
+
+
+def _provenance_warning(behind: Optional[int]) -> str:
+    """按落后量分档的人话警示。
+
+    分两档是刻意的：落后 0 时用同样的惊叹号会变成狼来了，下次真落后 279 个 commit
+    就没人当回事了。两档都写明判据，让人能自己核实而不是盲信。
+    """
+    basis = "判据：该 mirror 下存在 refs/remotes/ 引用，说明它是从某个工作副本 clone 的"
+    if behind is None:
+        return (
+            f"⚠ 该 mirror 疑似来自工作副本而非正规远端（{basis}）。"
+            "本分支没有对应的远端跟踪引用，**无法判断它是否落后**——"
+            "请让运维从正规远端重做 mirror 后再据此下判断。"
+        )
+    if behind > 0:
+        return (
+            f"⚠ 该 mirror 疑似来自工作副本而非正规远端（{basis}）。"
+            f"当前分支比它记录的远端状态**落后 {behind} 个 commit**——"
+            "你看到的很可能是旧代码。请在据此下判断前让运维从正规远端重做 mirror，"
+            "或明确说明该结论基于可能过期的源码。"
+        )
+    return (
+        f"该 mirror 疑似来自工作副本而非正规远端（{basis}）。"
+        "当前分支恰好与它记录的远端状态一致（落后 0），**但这是巧合不是配置正确**："
+        "上游那份工作副本一落后，这里就跟着落后且不会有任何提示。建议让运维重做 mirror。"
+    )
+
+
 async def _ensure_worktree(
     repo_dir: str, env: str, entry: Optional[dict] = None
 ) -> tuple[str, Optional[Path], Optional[list[str]], Optional[str]]:
@@ -354,9 +448,30 @@ async def locate_service_code(
             error=f"repo_dir 非法（须为 repos/ 下纯目录名）：{repo_dir!r}",
         )
 
+    mirror = _mirror_dir(repo_dir)
+    suspect = await _mirror_from_worktree(mirror) if mirror.exists() else False
+
     status, wt, candidates, branch = await _ensure_worktree(repo_dir, normalized, entry)
     if status != "ready":
         note = None
+        if status == "branch_not_found" and suspect and candidates:
+            # D7：来源可疑时才查这一趟。分支在 refs/heads/ 找不到、却在
+            # refs/remotes/origin/ 下躺着——真实的 mttools 就是这样，原先只报一句
+            # branch_not_found，用户会以为仓库里压根没这个分支，从而去查错方向。
+            only_remote = []
+            for cand in candidates:
+                rc, _, _ = await _git(["-C", str(mirror), "rev-parse", "--verify", "--quiet",
+                                       f"refs/remotes/origin/{cand}"])
+                if rc == 0:
+                    only_remote.append(cand)
+            if only_remote:
+                note = (
+                    f"分支 {', '.join(only_remote)} **只存在于远端跟踪引用下**"
+                    f"（refs/remotes/origin/），refs/heads/ 下没有。"
+                    "这不是仓库里没有这个分支，而是该 mirror 是从工作副本 clone 的——"
+                    "工作副本只为它本地检出过的分支建 refs/heads/。"
+                    "请让运维从正规远端重做 mirror。"
+                )
         if status == "branch_not_found" and not candidates:
             # 服务声明了 env_branches 但没列这个 env——空候选列表对用户毫无信息量，
             # 说清是"没配"而不是"找过了没有"。
@@ -368,9 +483,14 @@ async def locate_service_code(
                 "或改用已声明的环境。"
             )
         return LocateResult(status=status, service=service, env=normalized,
-                            candidates_tried=candidates, error=note)
+                            candidates_tried=candidates, error=note,
+                            mirror_from_worktree=suspect)
 
     synced = await _sync(repo_dir, normalized, branch, wt, ttl) if sync else False
+    # ★ 落后量在 _sync 之后算：正规 mirror 的 fetch 会更新 refs/heads/，先算就会
+    #   拿到同步前的旧数。可疑 mirror 上 fetch 更新的是 refs/remotes/（"同步的地方和
+    #   代码读的地方不是同一个"），先后无所谓——但按后者写才是两种情形都对。
+    behind = await _behind_commits(mirror, branch) if suspect else None
     return LocateResult(
         status="ready",
         service=service,
@@ -379,4 +499,7 @@ async def locate_service_code(
         branch=branch,
         head_sha=await _head_sha(wt),
         synced=synced,
+        mirror_from_worktree=suspect,
+        behind_commits=behind,
+        mirror_warning=_provenance_warning(behind) if suspect else None,
     )

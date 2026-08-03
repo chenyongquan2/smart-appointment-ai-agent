@@ -191,8 +191,24 @@ config/              新增飞书凭据、并发与超时参数
 > `repos/<服务>/.git-mirror/config`。`repos/` 已 gitignore 故不会进版本库，但**容器化时若把
 > `repos/` 打进镜像就会带进去**。用 credential helper。
 >
-> **建议的后续守卫**（未做）：mirror 里若存在 `refs/remotes/origin/*`，即说明它来自工作副本，
-> `locate_service_code` 应当**明确报出来**而非静默返回旧代码。属独立小 change。
+> **后续守卫**：✅ **已做** → change `guard-mirror-provenance`（2026-08-03）。
+> mirror 里若存在 `refs/remotes/*` 即判定来自工作副本，`locate_service_code` 明确报出来，
+> 并带上**落后的具体 commit 数**；`branch_not_found` 也会区分"仓库里真没这个分支"与
+> "分支只在远端跟踪引用下"（后者正是 mttools 那次的实况）。
+>
+> 三条设计判断值得记：
+> - **判据用 refs 命名空间、不查 git config**——`remote.origin.mirror=true` 在两种 mirror
+>   上都是 true，区分不了；`remote.origin.url` 可被 `set-url` 事后改掉。要选"被污染的
+>   证据"而不是"声明的意图"。
+> - **不绕行**：技术上改读 `refs/remotes/origin/*` 就"修好"了，但那会把错配藏起来，
+>   运维永远不知道该重做 mirror。守卫的职责是让人知道该重做了，不是替它兜底。
+>   有一条专门的测试钉住这点，防日后有人"顺手修好"。
+> - **警示必须覆盖全部三个工具**：`code_search` / `read_source` 走 `_require_worktree`，
+>   它原先只取 `Path`、丢掉整个 `LocateResult`——模型完全可以不调 locate 直接 search。
+>   只改 locate 会得到"看起来做了、半数路径仍静默"的守卫。
+>
+> ⚠ **离线测试证明不了的**：真实 `repos/` 下那两个 mirror 是否已按上文从正规远端重做，
+> 本 change 不查证。要确认跑 `uv run python scripts/oncall_smoke.py --only repo`。
 
 **第 3 期三片全部完成。** 值守域现有**六个只读工具**：日志查询 · 资料加载 · 源码定位 · 源码检索 · 源码阅读 · MT 文档检索。
 
