@@ -487,6 +487,20 @@ def test_window_seconds_parses_or_refuses_to_guess():
     assert vlog.window_seconds("nonsense") is None      # 不猜
 
 
+def test_description_requires_explaining_approach_substitution():
+    """用户明确要求用正则、bot 换成精确匹配时，要交代为什么。
+
+    实测观察（2026-08-03）：用户说「用正则找一下…」，bot 直接用了 term 精确匹配——
+    技术上换对了（稀有词走索引更快更准），但回复里只在括号里写了「精确匹配」、
+    没说为何不照用户说的做。用户提了具体做法，换做法就该说明。
+    """
+    from domains.oncall.tools import vlog_query
+
+    desc = vlog_query.description
+    assert "用户明确要求用正则" in desc
+    assert "交代" in desc or "说明" in desc
+
+
 def test_description_warns_against_fabricated_env_filter():
     """模型编造了 `env:PRD` 字段过滤——日志里没这个字段，env 是工具参数。"""
     from domains.oncall.tools import vlog_query
