@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from domains.oncall.tools.schemas import (
     CodeSearchArgs,
@@ -32,11 +32,16 @@ _SKIP_DIRS = {".git", "node_modules", "target", "build", "dist", "__pycache__", 
 _MAX_FILE_BYTES = 2_000_000     # 超过即跳过：多半是二进制或生成物
 
 
-async def _require_worktree(service: str, env: str) -> Path:
+async def _require_worktree(service: str, env: str) -> tuple[Path, Optional[str]]:
     """定位工作区；未就绪时抛出**带引导信息**的错误。
 
     错误会经 agent loop 吞成「工具执行失败」回灌给模型——那正是我们要的：模型看到
     「仓库还没准备好」就该去告诉用户找运维，而不是在别处乱找。
+
+    返回 ``(worktree, mirror_warning)``。**第二个值不能省**（change
+    `guard-mirror-provenance` 的 design D5）：模型完全可以跳过 `locate_service_code`
+    直接 `code_search`，若警示只挂在 locate 上，这条路径就仍然静默返回旧代码——
+    那正是本守卫要消灭的缺陷，只修一半等于没修。
     """
     from services.repo import locate_service_code
 
@@ -45,10 +50,11 @@ async def _require_worktree(service: str, env: str) -> Path:
         raise RuntimeError(
             f"源码工作区未就绪（status={result.status}，service={service}，env={env}）。"
             + (f" 已尝试的分支：{result.candidates_tried}。" if result.candidates_tried else "")
+            + (f" {result.error}" if result.error else "")
             + " 请如实告知用户：仓库尚未在本地准备好或分支名不符，"
             "需要运维先把仓库 clone 到 repos/ 下——**不要在本机其他目录寻找源码**。"
         )
-    return Path(result.worktree_path or "")
+    return Path(result.worktree_path or ""), result.mirror_warning
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +79,11 @@ locate_service_code_tool = Tool(
         "**绝不去本机其他目录找 checkout**。\n"
         "- `branch_not_found`：该环境的候选分支都不存在，结果里带回已试候选名——"
         "把它列给用户，问是不是分支叫别的。\n"
+        "\n"
+        "⚠ 结果里出现 `mirror_warning` 时**必须原样转达给用户**，不得自行忽略或淡化："
+        "它说明本地 mirror 是从工作副本 clone 的，你看到的代码可能落后真实远端很多个 "
+        "commit（实测出现过落后 279 个）。基于过期源码下的结论会把人带偏，"
+        "而用户无从察觉——所以宁可啰嗦也要说。\n"
         "定位成功后用 code_search / read_source 在工作区内检索与阅读。"
     ),
     args_schema=LocateServiceCodeArgs,
@@ -116,12 +127,12 @@ def _search_sync(worktree: Path, pattern: str, glob: str, context: int, max_hits
 
 
 async def _search_handler(args: CodeSearchArgs) -> dict[str, Any]:
-    worktree = await _require_worktree(args.service, args.env)
+    worktree, mirror_warning = await _require_worktree(args.service, args.env)
     # 逐文件读是阻塞 IO，与 git 子进程同理下沉线程池——工作区可能有上万个文件。
     hits = await asyncio.to_thread(
         _search_sync, worktree, args.pattern, args.glob, args.context_lines, args.max_hits
     )
-    return {
+    out: dict[str, Any] = {
         "service": args.service,
         "env": args.env,
         "pattern": args.pattern,
@@ -129,6 +140,9 @@ async def _search_handler(args: CodeSearchArgs) -> dict[str, Any]:
         "truncated": len(hits) >= args.max_hits,
         "results": hits,
     }
+    if mirror_warning:
+        out["mirror_warning"] = mirror_warning
+    return out
 
 
 code_search = Tool(
@@ -173,10 +187,13 @@ def _read_sync(worktree: Path, rel_path: str, start: int, count: int) -> dict[st
 
 
 async def _read_handler(args: ReadSourceArgs) -> dict[str, Any]:
-    worktree = await _require_worktree(args.service, args.env)
-    return await asyncio.to_thread(
+    worktree, mirror_warning = await _require_worktree(args.service, args.env)
+    out = await asyncio.to_thread(
         _read_sync, worktree, args.path, args.start_line, args.line_count
     )
+    if mirror_warning:
+        out["mirror_warning"] = mirror_warning
+    return out
 
 
 read_source = Tool(
