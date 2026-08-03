@@ -45,7 +45,7 @@ config/              新增飞书凭据、并发与超时参数
 
 具体三条：
 
-1. **不恢复 `evals-dataset-scaleup-v2`**（分支 `feat/evals-dataset-scaleup`，17/18 完成、卡在重定基线）。它剩的活是一次约 64 分钟、数百次真实 LLM 调用的跑批，产出是"184 条**按摩预约**用例的更紧置信区间"。原先卡在"等独立 RAG 接入"，现在的答案不是等，是**放弃**。**已于 2026-08-03 close** → `openspec/changes/archive/2026-08-03-evals-dataset-scaleup-v2-abandoned/`（目录名带 `-abandoned`，与"做完了归档"区分；其 delta spec 从未 sync 进主 specs，也不应该）。分支 `feat/evals-dataset-scaleup` **保留不删**（那 184 条句子的唯一副本），但已结构性合不进来——它改的 `evals/cases.jsonl` 在第 2 期领域包化时搬到了 `domains/appointment/evals/cases.jsonl`。数据集扩容的方法论已写进 `evals/README.md` 与 `docs/agent-eval-fieldguide.md`，知识留下了，只是那 184 条句子不进主干。
+1. **不恢复 `evals-dataset-scaleup-v2`**（分支 `feat/evals-dataset-scaleup`，17/18 完成、卡在重定基线）。它剩的活是一次约 64 分钟、数百次真实 LLM 调用的跑批，产出是"184 条**按摩预约**用例的更紧置信区间"。原先卡在"等独立 RAG 接入"，现在的答案不是等，是**放弃**。**已于 2026-08-03 close** → `openspec/changes/archive/2026-08-03-evals-dataset-scaleup-v2-abandoned/`（目录名带 `-abandoned`，与"做完了归档"区分；其 delta spec 从未 sync 进主 specs，也不应该）。分支 `feat/evals-dataset-scaleup` **同日删除**（本地 + 远端），对象存于轻量 tag **`abandoned/evals-dataset-scaleup-v2`**。删前确认它已结构性合不进来——它改的 `evals/cases.jsonl` 在第 2 期领域包化时搬到了 `domains/appointment/evals/cases.jsonl`。⚠ 删前**摘回了两处域无关的认识**（原以为"知识已在主干"，查证下来对 design.md 不成立：归档的那份是提案期 35 行 stub）：归档 design.md 的两节实测回填、fieldguide 的「指标对类别构成敏感」一行。未摘的只剩 133 条按摩用例与 `tests/test_eval_cases_schema.py`（198 行，钉死「每类 ≥30」，冻结集不满足）。
 2. **不重定基线、不扩数据集、不补预约域用例**。现有 51 条与 `baseline.json` 原样冻结。
 3. **预约域 evals 在第 2、3 期的定位降级为"零成本的运行时回归网"**——它衡量的是域无关运行时（TAO 循环 / ToolRegistry / 记忆 / 护栏）有没有被改坏，**不是**衡量 oncall 能力（它衡量不了：工具名都不同，`工具调用-F1` 与 oncall 不可比）。留着只因为不删的成本是零；一旦需要为它花时间，直接跳过。
 
@@ -233,7 +233,7 @@ vmui URL 往返一致」；**「查得对不对」需真实凭据 + 内网手动
 | `domains/oncall/tools/`：`vlog_query` / `code_analysis` / `mt_docs_search`（3 个） | ✅ **6 个**：`vlog_query` · `load_reference` · `locate_service_code` · `code_search` · `read_source` · `mt_docs_search`。`code_analysis` 这个名字从未存在——它在参考系统里是「定位 worktree + agent 自己拿文件系统工具 grep」，本项目不给文件系统工具，故拆成受管束的三个 |
 | `domains/oncall/prompts/` | ✅ 单文件 [domains/oncall/prompt.py](../domains/oncall/prompt.py)（95 行）——一个域一份人设，不需要目录 |
 | `domains/oncall/policy.py` | ✅ 全工具只读，凭据不进上下文，硬 enforce |
-| 移植领域知识沉淀 | ✅ [domains/oncall/references/](../domains/oncall/references/) 4 份、约 1300 行（服务 profile + MT/OCS4/OCS5 错误码），按需加载。⚠ 服务 profile 里 OCS4/OCS5 的**口语别名仍有 2 处 `<待填>`**，需内部知识填写；机制上安全（prompt 与 tool description 都明说标 `<待填>` 者不得当真），代价是"清算4"这类口语匹配不上服务 |
+| 移植领域知识沉淀 | ✅ [domains/oncall/references/](../domains/oncall/references/) 4 份、约 1300 行（服务 profile + MT/OCS4/OCS5 错误码），按需加载。✅ OCS4/OCS5 的**口语别名 2 处 `<待填>` 已由用户填毕**（commit `3b76cbe`）——答案是**没有"清算4"这类中文口语**，实际只补了大小写变体（`ocs4` / `ocs5`）。即当初担心的"口语匹配不上服务"是个不存在的问题。`<待填>` 机制本身保留（prompt 与 tool description 都明说标它者不得当真），供后续新增服务档案用 |
 
 **⏸ 明确暂缓：读 Lark 话题历史（user 身份 / 230027）**
 
@@ -289,7 +289,7 @@ trace 落盘已接在生产路径上（[api/chat_handler.py](../api/chat_handler
 2. **当前零 active change**（`evals-dataset-scaleup-v2` 已于 2026-08-03 close，见「预约域评测冻结」）。
    即 `openspec list` 应当是空的——若列出了什么，那是新起的，不是历史遗留。
 3. 各期：`/opsx:propose` 起新 change，范围照本文档对应小节 → 人审 → `/opsx:apply` → 验证 → `/opsx:archive`
-4. 别做的事：恢复 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例——见「预约域评测冻结」
+4. 别做的事：从 tag `abandoned/evals-dataset-scaleup-v2` 恢复那 184 条用例、重定 `evals/baseline.json`、给预约域补用例——见「预约域评测冻结」（分支已删，但 tag 还能取回，别当成"可以捡起来接着做"）
 
 ### 处理顺序（2026-08-03 定）
 
@@ -300,7 +300,7 @@ trace 落盘已接在生产路径上（[api/chat_handler.py](../api/chat_handler
 
 | 顺序 | 事项 | 状态 |
 |---|---|---|
-| 0 | 清理对账：删已合并分支、roadmap 对账、暂缓项写明判据、放弃项标状态 | ✅ 2026-08-03 完成。**唯一剩的是需内部知识的 2 处 `<待填>` 口语别名**，见第 3 期表格 |
+| 0 | 清理对账：删已合并分支、roadmap 对账、暂缓项写明判据、放弃项标状态 | ✅ 2026-08-03 完成，**已无剩项**。2 处 `<待填>` 口语别名当日填毕（见第 3 期表格）；同日 close 了 `evals-dataset-scaleup-v2` 并删除 `feat/evals-dataset-scaleup`（内容摘回主干，对象存于 tag `abandoned/evals-dataset-scaleup-v2`） |
 | 0.5 | 修 trace 三处缺口（超时纳入失控信号 / 墙钟时间戳 / user_id） | ✅ change `fix-trace-triage-blindspots`（2026-08-03）。**它是第 2 步的前置**——修前 triage 对真实 trace 报 0 个候选 |
 | 1 | **试点群攒量**（当前形态能做的上限） | 🔄 已接入飞书群，正在攒量（5 天 50 轮 / 12 session）。当前形态 = 开发机手起 `uvicorn --reload`、绑 127.0.0.1、状态全在本地 |
 | 1.5 | **上 34 人生产群** | ⏸ **暂缓，与容器化同一道闸门**（2026-08-03 决定，见下方「部署形态」） |

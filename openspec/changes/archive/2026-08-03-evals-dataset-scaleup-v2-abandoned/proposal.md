@@ -15,8 +15,9 @@
 > - **剩余工作量**（不要执行）：分支 `feat/evals-dataset-scaleup` 上 17/18 已完成，只剩
 >   一次约 64 分钟、数百次真实 LLM 调用的重定基线跑批。⚠ 主干这份 `tasks.md` 一条没勾，
 >   **别把它读成"这活没开始、可以开工"**——进度在分支上。
-> - **MUST NOT**：合并 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例。
->   合了会让 CI 门禁退化成拦不住回归。
+> - **MUST NOT**：把 tag `abandoned/evals-dataset-scaleup-v2` 上的 184 条用例捡回主干（原文写的是
+>   "合并 `feat/evals-dataset-scaleup`"，分支已删、约束照旧）、重定 `evals/baseline.json`、
+>   给预约域补用例。合了会让 CI 门禁退化成拦不住回归。
 > - **分支 `feat/evals-dataset-scaleup` 已于 2026-08-03 删除**（本地 + 远端），对象保留在
 >   轻量 tag `abandoned/evals-dataset-scaleup-v2` 上，需要时 `git show` / `git checkout` 即可。
 >   删之前查证了两件事：
