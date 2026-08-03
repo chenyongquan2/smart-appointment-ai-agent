@@ -1,8 +1,14 @@
-> # ⛔ 状态：已放弃（ABANDONED），不是"在做"
+> # ⛔ 状态：已放弃（ABANDONED），**已 close**
 >
-> **2026-08-02 决策，2026-08-03 复核。** 这个 change 虽然还在 `openspec/changes/` 下（故
-> `openspec list` 会列出它），但**没有人在推进它，也不要推进它**。它留在 active 目录只是
-> 因为按流程它要到第 4 期才正式 close。
+> **2026-08-02 决策，2026-08-03 close。** 目录名带 `-abandoned` 后缀，与其余归档 change 区分：
+> 它**不是"做完了归档"，而是"放弃了 close"**——一行代码都没落到主干。
+>
+> ⚠ **`specs/` 下的 delta spec 从未 sync 进主干 specs，也不应该 sync**（它描述的能力没实现）。
+> 别看到归档目录里有 delta 就以为它已经进了主 spec。
+>
+> 原先说"留在 active 目录、到第 4 期才正式 close"，2026-08-03 提前 close 了。理由：
+> 第 4 期是**用 oncall 真实对话重建数据**，与这个 change 没有承接关系，等它没有意义；
+> 而挂在 `openspec list` 里每个新对话都要被解释一次"那个是放弃的"，是持续的噪声。
 >
 > - **为什么放弃**：它的产出是"184 条**按摩预约**用例的更紧置信区间"。预约域是要退役的域，
 >   为它打磨评估数据没有回报。原先卡在"等独立 RAG 接入"，现在的答案不是等、是放弃。
@@ -11,10 +17,14 @@
 >   **别把它读成"这活没开始、可以开工"**——进度在分支上。
 > - **MUST NOT**：合并 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例。
 >   合了会让 CI 门禁退化成拦不住回归。
-> - **知识没丢**：数据集扩容的方法论已写进 [evals/README.md](../../../evals/README.md) 与
->   [docs/agent-eval-fieldguide.md](../../../docs/agent-eval-fieldguide.md)，只是那 184 条句子不进主干。
+> - **分支保留、不删**（close 时确认）：它是那 184 条句子的唯一副本，一个 ref 不占成本。
+>   但 close 时查证了一件事——它**已经结构性合不进来了**：最后提交 2026-08-01，落后 master
+>   37 个 commit，而它改的 `evals/cases.jsonl` 在第 2 期领域包化时已搬到
+>   `domains/appointment/evals/cases.jsonl`。"不要合"从一条纪律变成了一个事实。
+> - **知识没丢**：数据集扩容的方法论已写进 [evals/README.md](../../../../evals/README.md) 与
+>   [docs/agent-eval-fieldguide.md](../../../../docs/agent-eval-fieldguide.md)，只是那 184 条句子不进主干。
 > - **什么时候才重新谈评测**：第 4 期，用 oncall 真实排障对话**重建数据、复用机制**。
->   见 [docs/oncall-bot-roadmap.md](../../../docs/oncall-bot-roadmap.md) 的「预约域评测冻结」。
+>   见 [docs/oncall-bot-roadmap.md](../../../../docs/oncall-bot-roadmap.md) 的「预约域评测冻结」。
 >
 > 以下正文是 2026-07-08 提案时的原文，保留作记录。
 

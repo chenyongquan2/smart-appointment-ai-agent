@@ -45,7 +45,7 @@ config/              新增飞书凭据、并发与超时参数
 
 具体三条：
 
-1. **不恢复 `evals-dataset-scaleup-v2`**（分支 `feat/evals-dataset-scaleup`，17/18 完成、卡在重定基线）。它剩的活是一次约 64 分钟、数百次真实 LLM 调用的跑批，产出是"184 条**按摩预约**用例的更紧置信区间"。原先卡在"等独立 RAG 接入"，现在的答案不是等，是**放弃**。分支保持不合并，到第 4 期正式 close。数据集扩容的方法论已写进 `evals/README.md` 与 `docs/agent-eval-fieldguide.md`，知识留下了，只是那 184 条句子不进主干。
+1. **不恢复 `evals-dataset-scaleup-v2`**（分支 `feat/evals-dataset-scaleup`，17/18 完成、卡在重定基线）。它剩的活是一次约 64 分钟、数百次真实 LLM 调用的跑批，产出是"184 条**按摩预约**用例的更紧置信区间"。原先卡在"等独立 RAG 接入"，现在的答案不是等，是**放弃**。**已于 2026-08-03 close** → `openspec/changes/archive/2026-08-03-evals-dataset-scaleup-v2-abandoned/`（目录名带 `-abandoned`，与"做完了归档"区分；其 delta spec 从未 sync 进主 specs，也不应该）。分支 `feat/evals-dataset-scaleup` **保留不删**（那 184 条句子的唯一副本），但已结构性合不进来——它改的 `evals/cases.jsonl` 在第 2 期领域包化时搬到了 `domains/appointment/evals/cases.jsonl`。数据集扩容的方法论已写进 `evals/README.md` 与 `docs/agent-eval-fieldguide.md`，知识留下了，只是那 184 条句子不进主干。
 2. **不重定基线、不扩数据集、不补预约域用例**。现有 51 条与 `baseline.json` 原样冻结。
 3. **预约域 evals 在第 2、3 期的定位降级为"零成本的运行时回归网"**——它衡量的是域无关运行时（TAO 循环 / ToolRegistry / 记忆 / 护栏）有没有被改坏，**不是**衡量 oncall 能力（它衡量不了：工具名都不同，`工具调用-F1` 与 oncall 不可比）。留着只因为不删的成本是零；一旦需要为它花时间，直接跳过。
 
@@ -286,8 +286,8 @@ trace 落盘已接在生产路径上（[api/chat_handler.py](../api/chat_handler
 不是代码**——见下方"处理顺序"。
 
 1. 读本文档（**尤其是开头的「预约域评测冻结」决策**）+ `openspec/project.md`（黄金准则）
-2. `openspec list` 会列出 `evals-dataset-scaleup-v2`——**那是已放弃的，不是在做的**
-   （见它 proposal.md 顶部的状态说明）。除它之外无 active change。
+2. **当前零 active change**（`evals-dataset-scaleup-v2` 已于 2026-08-03 close，见「预约域评测冻结」）。
+   即 `openspec list` 应当是空的——若列出了什么，那是新起的，不是历史遗留。
 3. 各期：`/opsx:propose` 起新 change，范围照本文档对应小节 → 人审 → `/opsx:apply` → 验证 → `/opsx:archive`
 4. 别做的事：恢复 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例——见「预约域评测冻结」
 

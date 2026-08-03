@@ -73,7 +73,7 @@
 
 ## ⛔ 本用例集已冻结（2026-08-02 决策）
 
-**不再向预约域评测投入新精力**：不扩用例、不重定基线、不恢复 `feat/evals-dataset-scaleup`（184 条扩容版，17/18 完成、卡在重定基线——现已决定放弃，到 OnCall 路线第 4 期正式 close）。
+**不再向预约域评测投入新精力**：不扩用例、不重定基线、不恢复 `feat/evals-dataset-scaleup`（184 条扩容版，17/18 完成、卡在重定基线——已放弃，change 于 2026-08-03 close 进 `openspec/changes/archive/2026-08-03-evals-dataset-scaleup-v2-abandoned/`；分支保留但已合不进来，它改的 `evals/cases.jsonl` 现在的路径是 `domains/appointment/evals/cases.jsonl`）。
 
 原因：项目正按 [../docs/oncall-bot-roadmap.md](../docs/oncall-bot-roadmap.md) 换域到 OnCall 值守，**预约域是要退役的**。为一个将退役的域打磨评估数据没有回报，且 `工具调用-F1 = 56.2%` 这类数字对 oncall **零参考意义**（工具名都不同，不可比）——谁拿它当 oncall 的目标都是误用。
 
