@@ -44,4 +44,8 @@ search_knowledge = Tool(
     args_schema=SearchKnowledgeArgs,
     handler=_handler,
     # 未传 dangerous → 取默认 False：纯只读检索，分发时跳过权限闸门。
+    # 宽度类参数：top_k 只决定「返回几条」，不改变「在检索什么」。
+    # ⚠ query 与 category 刻意不算：改写 query 是换了检索内容（属另一种失控模式
+    #   「改写漂移」，本 change 明确不覆盖），把它当宽度会把两类问题混在一起。
+    breadth_args=frozenset({"top_k"}),
 )

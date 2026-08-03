@@ -14,6 +14,10 @@
   层面完全没有异常）。
 - ``max_steps_reached``：跑满步数（或预算耗尽）而未产出终态回复——结构化判定：最后一个 step
   仍含 ``tool_call`` 事件（正常终态回复的那一步无工具调用），且全程无 error 事件。
+- ``repeated_tool_identity``：同一 ``(工具, 身份参数)`` 组合出现在 ≥N 个步骤中（缺省 3）——
+  即「同一个动作被反复执行，只有宽度旋钮在变」。⚠ **纯观测信号：它不终止循环**，与护栏
+  产生的 ``spin_detected`` 是两回事（后者会终止）。身份参数由 ``AgentLoop`` 在记录时按
+  ``Tool.breadth_args`` 算好，本模块只读结构、**不含任何参数名白名单**。
 
 > ⚠ 曾经的失真，记下来免得重演：
 > 1. 本模块的 docstring 原写「**严格**对齐真实落点」，实际只对齐了两个落点里的一个——
@@ -38,7 +42,8 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+import json
+from typing import Any, Iterable, Optional
 
 from harness.observability.span import Span
 
@@ -52,15 +57,66 @@ __all__ = [
     "TOOL_FAILURE_PREFIX",
     "TOOL_TIMEOUT_PREFIX",
     "TIMEOUT_ERROR_KIND",
+    "DEFAULT_REPEAT_IDENTITY_STEPS",
 ]
 
 # service 层自行分类出的「超时」取值（``services/vlog.py`` 的 ``classify_error`` 口径）。
 # 其它非空取值（connect_failed / http_error / other）同属真失败，归 ``tool_failure``。
 TIMEOUT_ERROR_KIND = "timeout"
 
+# 同一 (工具, 身份参数) 组合出现在多少个**步骤**中即判「换参重复」。
+# 缺省 3：真实数据上 3 命中 2/3 病态且对三种正当模式 0 误报；调到 4 会漏掉那条只有
+# 3 步的真实坏 case（term 固定、window 2d→30m→7d）。攒到更多真实流量后按误报率复核。
+DEFAULT_REPEAT_IDENTITY_STEPS = 3
 
-def detect_bad_signals(spans: Iterable[Span]) -> list[str]:
+
+def _identity_key(event_payload: dict[str, Any]) -> Optional[tuple[str, str]]:
+    """从 tool_call 事件取 ``(工具名, 身份参数)`` 键；无 ``identity`` 字段时返回 ``None``。
+
+    ``identity`` 由 ``AgentLoop`` 在记录时算好（见 ``Tracer.add_tool_call``）。本函数
+    **绝不自行推断哪些参数属宽度类**——那需要参数名白名单，等于把域内容嵌进域无关运行时。
+    故本 change 之前落的 trace（payload 无该字段）不会命中此信号，如实接受。
+    """
+    identity = event_payload.get("identity")
+    if not isinstance(identity, dict):
+        return None
+    name = str(event_payload.get("name") or "")
+    # sort_keys 让键序不影响相等性（与 guardrails._signature 同口径）。
+    return (name, json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str))
+
+
+def _repeated_identity_steps(steps: list[Span], threshold: int) -> bool:
+    """同一 ``(工具名, 身份参数)`` 是否出现在 ≥threshold 个**步骤**中。
+
+    两条口径都是被真实数据逼出来的（见 change ``detect-repeated-tool-identity`` design D1）：
+
+    - **按步骤去重计数**（同一步内并行调多次同一工具只计 1）：否则「多意图并行检索」
+      一步就能顶到阈值，正当模式直接变误报。
+    - **不要求连续**：真实的病态模式中间会夹别的工具（``load_reference`` 插在两次
+      ``vlog_query`` 之间），要求连续就漏。这也是为什么本判定不是改 ``_signature``
+      能解决的——「连续整步签名相同」那个形状在真实数据上抓到病态 0/3。
+    """
+    per_identity: dict[tuple[str, str], int] = {}
+    for s in steps:
+        seen_in_step = set()
+        for e in s.events:
+            if e.kind != "tool_call":
+                continue
+            key = _identity_key(e.payload)
+            if key is not None:
+                seen_in_step.add(key)
+        for key in seen_in_step:  # 一步内同一身份只累加一次
+            per_identity[key] = per_identity.get(key, 0) + 1
+    return any(n >= threshold for n in per_identity.values())
+
+
+def detect_bad_signals(
+    spans: Iterable[Span], repeat_identity_steps: int = DEFAULT_REPEAT_IDENTITY_STEPS
+) -> list[str]:
     """从一组 span（通常是同一 trace_id 的一次运行）检出命中的「疑似坏」信号标签。
+
+    Args:
+        repeat_identity_steps: 判 ``repeated_tool_identity`` 的步骤数阈值（见该常量说明）。
 
     Returns:
         去重且有序的信号标签列表；无任何信号时为空列表（即「看起来正常」）。
@@ -100,6 +156,11 @@ def detect_bad_signals(spans: Iterable[Span]) -> list[str]:
         signals.append("tool_failure")
     if tool_timeout:
         signals.append("tool_timeout")
+    # 「同一动作被反复执行」。★ 刻意不叫 spin_*：``spin_detected`` 是**护栏**产生的 error
+    #   事件（它会终止循环），本信号只做观测、循环行为一行不变。名字混起来会让人误以为
+    #   护栏已经拦住了。
+    if _repeated_identity_steps(steps, repeat_identity_steps):
+        signals.append("repeated_tool_identity")
 
     # 跑满步数/预算耗尽：仅在「无 error 事件」时才据结构判（有 error 已被上面捕获，避免重复归因）。
     if not error_types and steps:
