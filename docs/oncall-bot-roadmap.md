@@ -282,7 +282,7 @@ trace 落盘已接在生产路径上（[api/chat_handler.py](../api/chat_handler
 ## 新对话如何续上
 
 **当前状态一句话**（2026-08-03 对账）：第 1 / 1.5 / 2 / 3 期全部完成并合并，值守域六个只读工具
-经真实环境冒烟 + 真实群聊验证。`uv run pytest` 578 passed / 1 skipped。**下一步的瓶颈是真实流量，
+经真实环境冒烟 + 真实群聊验证。`uv run pytest` 625 passed / 1 skipped（2026-08-03 复测；578 是 `fix-trace-triage-blindspots` 与 `detect-repeated-tool-identity` 两个 change 落地前的数）。**下一步的瓶颈是真实流量，
 不是代码**——见下方"处理顺序"。
 
 1. 读本文档（**尤其是开头的「预约域评测冻结」决策**）+ `openspec/project.md`（黄金准则）
