@@ -155,6 +155,45 @@ config/              新增飞书凭据、并发与超时参数
 > 把某个服务仓库 `git clone --mirror` 进 `repos/<服务名>/.git-mirror`
 > （agent 没有 clone 能力，那是写操作——见切片 2 的 design D2）。
 
+> ### ⚠ mirror **必须从正规远端 clone，MUST NOT 从本地工作副本**
+>
+> 上面那句前置条件原先没写"从哪 clone"，2026-08-03 因此踩了一次坑，记下来：
+>
+> 当时两个 mirror 都是从本机开发副本 clone 的（`repos/mt-tools` ← `C:/workspace/mt-tools-v2`，
+> `repos/ocs4` ← `C:/workspace/saas-mt-opencloud-v3`）。`--mirror` 的 refspec 是
+> `+refs/*:refs/*`，它会把**上游整个 refs 命名空间原样搬过来，包括上游自己的
+> `refs/remotes/origin/*`**。而工作副本的 `refs/heads/*` 只反映"你本地那个分支拉到哪"，
+> `refs/remotes/origin/*` 才是它上次 fetch 到的真实远端状态。
+>
+> `services/repo.py` 读 `refs/heads/{branch}`（`:266` 校验、`:295`/`:327` checkout），
+> 于是实测出两种后果：
+>
+> | 服务 | 现象 |
+> |---|---|
+> | `ocs5`（mt-tools） | `refs/heads/OCS5/prd` 落后 **279** 个 commit（uat 306、stg 325）——**静默返回旧代码，不提示** |
+> | `mttools` | `refs/heads/MTTools/*` 根本不存在（只在 `refs/remotes/origin/` 下）→ `branch_not_found` |
+> | `ocs4` | 恰好同步（落后 0）——**不是正确，是运气好**；开发副本一落后它就跟着落后 |
+>
+> **静默那个比报错危险得多**：同事问"这段逻辑在哪"，拿到约 300 个 commit 前的代码而毫无提示，
+> 会基于错的代码下判断。这是「沉默不是中立」在本项目的第四次出现（前三次在工具层 / 可观测层 / 护栏层）。
+> 顺带解释了为什么"TTL 内 fetch 同步"没起作用：fetch 写的是 `refs/remotes/origin/*`，
+> **同步的地方和代码读的地方不是同一个**。
+>
+> **正解（零代码）**：从正规远端重做。GitLab 服务端分支都在 `refs/heads/*` 下、没有
+> `refs/remotes/*`，故 `repo.py` 现在的读法本来就对。重做时连 `wt-*` 一起删干净，
+> 免得留下失效的 worktree 注册。
+>
+> **重做不影响开发仓**（已查证）：bot 的 worktree 全在 `repos/<服务>/wt-*` 下、不在开发目录里；
+> 开发仓的 remote 没被加过 bot 相关项、无 alternates；两边对象库独立（本地 clone 的硬链接
+> 不构成风险——git 对象内容寻址、只追加不修改）。
+>
+> ⚠ **凭据**：别用内嵌 token 的 URL（如 `https://user:glpat-xxx@...`）去 clone——token 会明文落进
+> `repos/<服务>/.git-mirror/config`。`repos/` 已 gitignore 故不会进版本库，但**容器化时若把
+> `repos/` 打进镜像就会带进去**。用 credential helper。
+>
+> **建议的后续守卫**（未做）：mirror 里若存在 `refs/remotes/origin/*`，即说明它来自工作副本，
+> `locate_service_code` 应当**明确报出来**而非静默返回旧代码。属独立小 change。
+
 **第 3 期三片全部完成。** 值守域现有**六个只读工具**：日志查询 · 资料加载 · 源码定位 · 源码检索 · 源码阅读 · MT 文档检索。
 
 **切片 3 已完成**：复用参考系统现成的两个 FTS 库（`mt4docs.db` 468K / `mt5api.db` 12M），**不重建语料**。三点值得记：
