@@ -139,6 +139,12 @@ config/              新增飞书凭据、并发与超时参数
 | 2 | `services/repo.py` + `locate_service_code` / `code_search` / `read_source` | ✅ change `oncall-domain-code`（2026-08-02） |
 | 3 | `services/mt_docs.py`（MT4/MT5 FTS）+ `mt_docs_search` | ✅ change `oncall-domain-mtdocs`（2026-08-02） |
 
+> 🔬 **两项真实环境冒烟的执行方式**：`uv run python scripts/oncall_smoke.py`
+> （只跑一项用 `--only vlog` / `--only repo`）。脚本本身已用合成仓库自测通过，
+> 故跑出来失败即为环境问题、不是脚本 bug。**前置**：`.env` 里填 `VM_LOGS_*`；
+> 把某个服务仓库 `git clone --mirror` 进 `repos/<服务名>/.git-mirror`
+> （agent 没有 clone 能力，那是写操作——见切片 2 的 design D2）。
+
 **第 3 期三片全部完成。** 值守域现有**六个只读工具**：日志查询 · 资料加载 · 源码定位 · 源码检索 · 源码阅读 · MT 文档检索。
 
 **切片 3 已完成**：复用参考系统现成的两个 FTS 库（`mt4docs.db` 468K / `mt5api.db` 12M），**不重建语料**。三点值得记：
