@@ -32,7 +32,7 @@
 
 ## ocs4（ocs-v4.* 版本）
 
-- **别名 / 口语叫法**：`OCS4` / `ocs-v4` / `<待填：其它口语，如"清算4"等>`
+- **别名 / 口语叫法**：`OCS4` / `ocs-v4` / `ocs4`
 - **语言**：C++
 - **作用简述**：交易系统中间层——接收上游请求（`message_type`：`trading_system` 或 `CRM`；`cmd` 如 `get_history_deal` / `select_account`），经 TaskCoordinator 调度 + Redis 请求去重，**按 cmd 路由到 MT4（`CMT4Processor`，`src\ocs\MT4`）或 MT5（`CMT5Processor`，`src\ocs\MT5`）** 处理后回 response。每个请求有端到端 `request_id`。
 - **两种部署方式（影响日志路径）**：
@@ -145,7 +145,7 @@
 
 ## ocs5（ocs-v5.* 版本）
 
-- **别名 / 口语叫法**：`OCS5` / `ocs-v5` / `<待填：其它口语>`
+- **别名 / 口语叫法**：`OCS5` / `ocs-v5` / `ocs5`
 - **语言**：C++（gRPC 服务）
 - **作用简述**：gRPC 查询服务 `saastoolscoreapi::SaasToolsCoreApiImpl`，对外提供 `GroupQuery` 等接口，bridge 到 MT4/MT5 查配置（如 group 设置、账户等）。每请求有 `request_uid`。
 - **⚠️ 与 OCS4 关键差异（别套 OCS4 字段）**：
