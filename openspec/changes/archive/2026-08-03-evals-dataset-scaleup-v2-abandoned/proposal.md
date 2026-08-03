@@ -17,10 +17,17 @@
 >   **别把它读成"这活没开始、可以开工"**——进度在分支上。
 > - **MUST NOT**：合并 `feat/evals-dataset-scaleup`、重定 `evals/baseline.json`、给预约域补用例。
 >   合了会让 CI 门禁退化成拦不住回归。
-> - **分支保留、不删**（close 时确认）：它是那 184 条句子的唯一副本，一个 ref 不占成本。
->   但 close 时查证了一件事——它**已经结构性合不进来了**：最后提交 2026-08-01，落后 master
->   37 个 commit，而它改的 `evals/cases.jsonl` 在第 2 期领域包化时已搬到
->   `domains/appointment/evals/cases.jsonl`。"不要合"从一条纪律变成了一个事实。
+> - **分支 `feat/evals-dataset-scaleup` 已于 2026-08-03 删除**（本地 + 远端），对象保留在
+>   轻量 tag `abandoned/evals-dataset-scaleup-v2` 上，需要时 `git show` / `git checkout` 即可。
+>   删之前查证了两件事：
+>   1. 它**已经结构性合不进来**——最后提交 2026-08-01、落后 master 37 个 commit，而它改的
+>      `evals/cases.jsonl` 在第 2 期领域包化时已搬到 `domains/appointment/evals/cases.jsonl`。
+>      "不要合"从一条纪律变成了一个事实。
+>   2. 上面**两节实测回填当时只在分支上**，主干这份 design.md 归档时还是 35 行的提案期 stub。
+>      已摘回（连同 fieldguide 的「指标对类别构成敏感」一行）。
+>   仍留在 tag 上未摘的：133 条按摩用例（冻结域，无回报）、`tests/test_eval_cases_schema.py`
+>   （198 行域无关 schema 测试，**有价值但钉死「每类 ≥30」**，冻结的 51 条集不满足，直接
+>   cherry-pick 会红——要用须先放宽下限，属代码改动，得走 change）。
 > - **知识没丢**：数据集扩容的方法论已写进 [evals/README.md](../../../../evals/README.md) 与
 >   [docs/agent-eval-fieldguide.md](../../../../docs/agent-eval-fieldguide.md)，只是那 184 条句子不进主干。
 > - **什么时候才重新谈评测**：第 4 期，用 oncall 真实排障对话**重建数据、复用机制**。
