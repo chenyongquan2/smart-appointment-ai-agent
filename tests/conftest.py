@@ -11,9 +11,27 @@
   会 try/except 优雅返回 []，不联网、不崩)。
 """
 
+import os
 from typing import Any, List, Optional
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_domain(monkeypatch):
+    """把 ``AGENT_DOMAIN`` 从环境里摘掉，让测试结果不受开发机 `.env` 影响。
+
+    ★ **部署时实测撞到的**（2026-08-03）：把 `AGENT_DOMAIN=oncall` 写进 `.env` 后，
+    9 条预约域的测试当场变红——它们经 `load_domain()`（无参）读环境变量，于是拿到了
+    值守域的工具与子 Agent。
+
+    这不是那些测试的错，是**套件不自洽**：一个部署配置项不该改变测试结论。
+    autouse 摘掉它之后，缺省域恒为 `appointment`，与 CI（没有 .env）行为一致。
+
+    需要验证环境变量切换的测试（`test_domain_loading.py` / `test_oncall_domain.py`）
+    自己用 `monkeypatch.setenv` 设——那发生在本夹具之后，故不受影响。
+    """
+    monkeypatch.delenv("AGENT_DOMAIN", raising=False)
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage

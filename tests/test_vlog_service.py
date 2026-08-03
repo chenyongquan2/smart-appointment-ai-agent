@@ -189,7 +189,10 @@ async def test_timeout_is_classified_and_query_conditions_kept():
         raise httpx.ReadTimeout("timed out", request=request)
 
     async with _client(handler) as c:
-        result = await vlog.query_logs('_msg:~"a"', env="prod", credentials=CREDS, client=c)
+        # ⚠ window 用 30m：宽窗 + 正则现在会被**预检拒掉、根本不发请求**
+        #   （见 ⑥ 组，2026-08-03 实测催生）。这里要验的是传输层超时，故用窄窗放行。
+        result = await vlog.query_logs('_msg:~"a"', env="prod", window="30m",
+                                       credentials=CREDS, client=c)
 
     assert result.ok is False
     assert result.results[0].error_kind == "timeout"
@@ -267,10 +270,15 @@ async def test_error_result_is_redacted_end_to_end():
     assert "leak_pw" not in result.results[0].error
 
 
-def test_regex_hint_only_fires_on_timeout_with_regex():
-    assert vlog.regex_hint('_msg:~"a"', "timeout") is not None
-    assert vlog.regex_hint('"a" AND "b"', "timeout") is None      # 无正则不提示
-    assert vlog.regex_hint('_msg:~"a"', "http_error") is None     # 非超时不提示
+def test_timeout_always_gets_actionable_advice():
+    """超时**一律**给可操作建议——含正则给「改精确 AND」，不含正则给「收窄别加宽」。
+
+    行为在 2026-08-03 改过：原来不含正则的超时什么都不说，于是模型继续加宽窗口、
+    连吃三次 60 秒超时。沉默不是中立，它等于默许错误的下一步。
+    """
+    assert "正则" in (vlog.regex_hint('_msg:~"a"', "timeout") or "")
+    assert "收窄" in (vlog.regex_hint('"a" AND "b"', "timeout") or "")   # 曾经是 None
+    assert vlog.regex_hint('_msg:~"a"', "http_error") is None            # 非超时仍不提示
 
 
 # --------------------------------------------------------------------------- #
@@ -409,3 +417,81 @@ def test_tool_description_warns_about_unreliable_zero():
     desc = vlog_query.description
     assert "0 命中未必等于没有" in desc
     assert "zero_hits_unreliable" in desc
+
+
+# --------------------------------------------------------------------------- #
+# ⑥ 首次真实群聊暴露的三处（2026-08-03）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("logsql,window,start,rejected", [
+    ('_msg:~"abc"',      "7d",  None, True),   # ★ 宽窗 + 正则 = 必然超时，拒
+    ('_msg:~"abc"',      "6h",  None, True),
+    ('_msg:~"abc"',      "30m", None, False),  # 窄窗放行——正则本身不是罪
+    ('_msg:~"abc"',      "1h",  None, False),  # 恰好在门槛上
+    ('_msg:~"abc"',      "7d",  "2m", False),  # 精确窗模式：调用方已知目标
+    ('"abc" AND "def"',  "7d",  None, False),  # 无正则，宽窗也放行
+    ('_msg:~"abc"',      "怪窗", None, True),   # 窗口解析不出来 → 保守拒（不猜）
+])
+def test_preflight_rejects_wide_window_regex(logsql, window, start, rejected):
+    """★ 首次真实群聊的教训：description 里明写「别上 ~ 正则」，模型照样写了。
+
+    实况：它发了 `{_msg:~"<traceId>"} and env:PRD` → VL 回 400
+    （`unsupported operation "~" inside {...}`）；去掉花括号保留 `~` → **耗光 60 秒超时**。
+    光靠 description 劝不住，故把这个必然超时的组合在发请求前就拒掉。
+    """
+    assert bool(vlog.preflight_reject(logsql, window, start)) is rejected
+
+
+@pytest.mark.asyncio
+async def test_rejected_query_sends_no_request():
+    """被预检拒掉的查询**一个请求都不发**——省掉那 60 秒。"""
+    called = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        called["n"] += 1
+        return httpx.Response(200, content=b"{}")
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs('_msg:~"x"', env="prod", window="7d",
+                                       credentials=CREDS, client=c)
+
+    assert called["n"] == 0, "预检没拦住，请求发出去了"
+    assert result.ok is False
+    assert result.results == []
+    assert "拒绝执行" in (result.hint or "")
+    assert "term" in (result.hint or ""), "拒绝理由必须给出可操作的改法"
+
+
+@pytest.mark.asyncio
+async def test_timeout_hint_says_narrow_not_widen():
+    """★ 超时的正确反应是收窄。
+
+    实况：模型追 traceId 时把窗口 6h→2d→7d 一路拓宽，连续三次 60 秒超时、白等 3 分钟。
+    原来的 hint 只在含正则时才给建议，不含正则的超时什么都不说——于是它继续加宽。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async with _client(handler) as c:
+        result = await vlog.query_logs('"rare-token"', env="prod", window="7d",
+                                       credentials=CREDS, client=c)
+
+    hint = result.hint or ""
+    assert "收窄" in hint
+    assert "不是加宽" in hint or "别拓窗" in hint or "继续加宽" in hint
+
+
+def test_window_seconds_parses_or_refuses_to_guess():
+    assert vlog.window_seconds("30m") == 1800
+    assert vlog.window_seconds("6h") == 21600
+    assert vlog.window_seconds("2d") == 172800
+    assert vlog.window_seconds("nonsense") is None      # 不猜
+
+
+def test_description_warns_against_fabricated_env_filter():
+    """模型编造了 `env:PRD` 字段过滤——日志里没这个字段，env 是工具参数。"""
+    from domains.oncall.tools import vlog_query
+
+    desc = vlog_query.description
+    assert "env 参数指定" in desc
+    assert "宽窗 + 正则会被工具直接拒绝" in desc
+    assert "超时了要收窄" in desc

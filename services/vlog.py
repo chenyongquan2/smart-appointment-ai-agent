@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import time
 import json
 import urllib.parse
@@ -310,18 +311,77 @@ def classify_error(exc: BaseException) -> str:
     return "other"
 
 
+# 正则只在窄窗里允许。门槛 1h：实测 prod 6h 窗的精确词查询就要 60 秒超时，
+# 加上正则的全表逐行扫描必然更久。参考系统的 SKILL 也是这个口径——
+# "只有确实要模式/部分匹配时才用，且务必先用引号精确缩小范围、收紧时间窗"。
+_WIDE_WINDOW_RE = re.compile(r"^(\d+)\s*([mhd])$", re.I)
+_WINDOW_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+_REGEX_WINDOW_LIMIT = 3600.0    # 秒
+
+
+def window_seconds(window: str) -> Optional[float]:
+    """把 `30m` / `6h` / `2d` 解析成秒；解析不了返回 None（不猜）。"""
+    m = _WIDE_WINDOW_RE.match((window or "").strip())
+    if not m:
+        return None
+    return float(m.group(1)) * _WINDOW_SECONDS[m.group(2).lower()]
+
+
+def preflight_reject(logsql: str, window: str, start: Optional[str]) -> Optional[str]:
+    """发请求**之前**拦掉必然超时的组合，返回拒绝理由（None = 放行）。
+
+    ★ **实测催生的这道闸门**（2026-08-03 首次真实群聊）：工具 description 里明写了
+    「别上 ``~`` 正则」，模型照样写了 ``{_msg:~"<traceId>"} and env:PRD``——先得 400，
+    去掉花括号保留 ``~`` 后**耗光 60 秒超时**。同一轮里它还把窗口从 6h 拓到 7d，
+    连续三次 60 秒超时、白等 3 分钟。
+
+    结论：**光靠 description 劝不住**。这与本项目一贯的判断一致——红线靠机制 enforce、
+    不靠自觉。故把「宽窗 + 正则」这个必然超时的组合在发请求前就拒掉，并把该怎么改
+    直接写进拒绝理由（模型能在同一个 loop 里立刻纠正，不必等 60 秒）。
+
+    刻意**不禁止正则本身**：窄窗（≤1h）或精确窗模式下正则是合理手段，参考系统的
+    经验也只说"先用引号精确缩小范围、收紧时间窗"，没说不许用。
+    """
+    if "~" not in (logsql or ""):
+        return None
+    if start is not None:           # 精确窗模式：调用方已知目标，放行
+        return None
+    seconds = window_seconds(window)
+    if seconds is not None and seconds <= _REGEX_WINDOW_LIMIT:
+        return None                 # 窄窗放行
+    return (
+        f"拒绝执行：查询含正则过滤器（~），而时间窗 {window!r} 过宽。"
+        "正则是全文逐行扫描，宽窗下必然超时（实测 prod 6h 窗连精确词查询都要 60 秒）。\n"
+        "改法（择一）：\n"
+        "① 改用 term 传关键词（自动拼引号精确 AND、走倒排索引）——**多数情况下这就够了**，"
+        "traceId / 订单号这类稀有词用精确匹配比正则又快又准；\n"
+        "② 确实需要模式匹配时，把 window 收到 1h 以内，或用 start 指定精确窗；\n"
+        "③ 先用精确词定位到时间点，再用正则在窄窗里细筛。\n"
+        "**不要靠加宽时间窗来找不到的东西**——越宽越查不动。"
+    )
+
+
 def regex_hint(logsql: str, kind: str) -> Optional[str]:
     """超时且查询用了正则过滤器（``~``）时给确定性建议——只提示、不替用户改写。
 
     踩过的坑（真实事故）：``_msg:~"A" AND _msg:~"B"`` 双正则在 prod 大数据量下连缩窗都
     超时，72h/24h/6h 连超 3 次、累计浪费 300+ 秒顶穿总超时。
     """
-    if kind == "timeout" and logsql and "~" in logsql:
+    if kind != "timeout":
+        return None
+    if logsql and "~" in logsql:
         return (
             "查询含正则过滤器（~），大数据量下触发全文逐行扫描、极易超时；"
             "多关键词组合请改引号精确 AND（如 \"A\" AND \"B\"，走倒排索引、量级更快）。"
         )
-    return None
+    # ★ 实测教训（2026-08-03）：模型追 traceId 时把窗口从 6h 一路拓到 7d，
+    #   连续三次 60 秒超时、白等 3 分钟。超时的正确反应是**收窄**，不是加宽。
+    return (
+        "查询超时——这个时间窗对当前数据量太重了。**正确反应是收窄，不是加宽**："
+        "把 window 减小（如 7d→1d→6h）、给上 env 缩小到单个环境、"
+        "或换更稀有的关键词（traceId / 订单号 / 账号比 ERROR 这类高频词快几个量级）。"
+        "继续加宽只会更查不动。"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -473,6 +533,12 @@ async def query_logs(
     creds = credentials or load_vlog_credentials()
     targets = resolve_targets(env)
     mode = "range" if start is not None else "discovery"
+
+    # 预检：必然超时的组合在发请求前就拒掉，把该怎么改写进理由（见 preflight_reject）。
+    rejection = preflight_reject(logsql, window, start)
+    if rejection:
+        return QueryResult(ok=False, logsql=logsql, mode=mode, results=[], total_hits=0,
+                           hint=rejection)
 
     # trust_env=False：内网 host 走不通公司外网代理（参考实现是清空 *_PROXY 并设 no_proxy=*，
     # httpx 用这个开关等价且更干净——它同时忽略环境里的代理与 CA 配置）。
