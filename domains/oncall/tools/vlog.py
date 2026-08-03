@@ -112,4 +112,9 @@ vlog_query = Tool(
     args_schema=VlogQueryArgs,
     handler=_handler,
     # 只读查询：不设 dangerous → 默认 False。值守域的只读策略会拒绝任何 dangerous 工具。
+    # 宽度类参数：window / limit 只决定「捞多大范围、取多少条」，不改变「在查什么」。
+    # 剔掉它们后剩下的（term / logsql / url / env）才是这次查询的身份。
+    # ⚠ env 刻意**不算**宽度参数：真实排障里「同一个 traceId 逐个租户查一遍」
+    #   （prod→uat→stg→dev）是正当枚举，把 env 当宽度会把它误判成打转。
+    breadth_args=frozenset({"window", "limit"}),
 )

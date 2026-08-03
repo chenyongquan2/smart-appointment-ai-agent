@@ -131,7 +131,12 @@ async def test_tracer_records_replayable_trace_with_tool_step():
     assert "thought" in kinds and "tool_call" in kinds and "observation" in kinds
     assert step1.attributes["tool_name"] == "echo"
     tool_event = next(e for e in step1.events if e.kind == "tool_call")
-    assert tool_event.payload == {"name": "echo", "args": {"value": "hi"}}
+    # payload 除 name/args 外还带 identity（change: detect-repeated-tool-identity）——
+    # `echo` 未声明 breadth_args，故身份参数等于全部参数，这也正是「未声明时行为不变」
+    # 的向后兼容口径。断言改为逐字段而非整体相等，免得下次加字段又红一次。
+    assert tool_event.payload["name"] == "echo"
+    assert tool_event.payload["args"] == {"value": "hi"}
+    assert tool_event.payload["identity"] == {"value": "hi"}
     obs_event = next(e for e in step1.events if e.kind == "observation")
     assert obs_event.payload["result"] == "echo<hi>"
     assert step1.latency is not None and step1.latency > 0

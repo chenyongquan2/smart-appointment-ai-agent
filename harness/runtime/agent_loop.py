@@ -250,8 +250,14 @@ class AgentLoop:
                     # 同一轮模型可能要求调多个工具，这里全部执行、全部喂回。
                     for call in tool_calls:
                         self._on_tool_call(call)  # 轻量回调钩子（默认 no-op，可注入做埋点/审计）
+                        raw_args = call.get("args") or {}
                         self._tracer.add_tool_call(
-                            step, call.get("name", ""), call.get("args") or {}
+                            step,
+                            call.get("name", ""),
+                            raw_args,
+                            # 身份参数只能在这里算：本方法是唯一同时知道「调了什么」与
+                            # 「该工具怎么声明宽度参数」的地方（判定侧拿不到 registry）。
+                            identity=self._identity_args(call.get("name", ""), raw_args),
                         )
                         # _dispatch「绝不重试」、且吞掉一切异常变成错误字符串（见下方方法）。
                         result = await self._dispatch(call)
@@ -304,6 +310,19 @@ class AgentLoop:
         if effective is None or math.isinf(effective):
             return None
         return effective
+
+    def _identity_args(self, name: str, raw_args: dict[str, Any]) -> dict[str, Any]:
+        """算出本次调用的「身份参数」——原始参数剔除该工具声明的宽度类参数。
+
+        **本方法绝不抛**：工具名可能是模型幻觉出来的（registry 里查不到），此时退化为
+        「全部参数皆身份」。埋点不得拖垮主流程——与 ``end_span`` 吞导出异常、
+        ``_extract_error_kind`` 吞探测异常是同一取舍。退化方向也是**安全侧**：身份更细
+        → 判定更保守 → 不误报。
+        """
+        try:
+            return self.registry.get(name).identity_args(raw_args)
+        except Exception:  # noqa: BLE001 —— 见 docstring：埋点绝不影响主流程
+            return dict(raw_args)
 
     async def _dispatch(self, call: dict[str, Any]) -> Any:
         """分发单个工具调用；超时与异常都被捕获并作为错误结果回灌（不崩循环）。

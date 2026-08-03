@@ -43,6 +43,11 @@ class Tool:
             只读查询工具保持默认 ``False``。
         timeout: 本工具单次调用的超时秒数。``None``（默认）= 采用运行时的全局缺省；
             具体数值 = 覆盖全局缺省；``NO_TIMEOUT`` = 豁免超时。
+        breadth_args: **宽度类参数**名集合（默认空）——那些只影响"检索范围有多大"、
+            **不改变"在找什么"**的旋钮（典型：时间窗、结果条数上限、``top_k``）。
+            剔掉它们后剩下的参数即一次调用的**身份**，供可观测层判定「同一个动作被
+            反复执行」（见 ``harness/observability/trace_signals``）。默认空集时全部
+            参数皆计入身份，行为与引入本字段前完全一致。
 
     超时的适用边界（重要，写工具时必读）：
         超时依赖 ``asyncio`` 的取消机制，**只能中断在 await 点让出控制权的 handler**。
@@ -59,6 +64,22 @@ class Tool:
     handler: Callable[[BaseModel], Awaitable[Any]]         # 收「已校验的 args 实例」，返回 awaitable（统一 async）
     dangerous: bool = False                                # 默认只读安全；写库类工具显式置 True，触发权限判定
     timeout: Optional[float] = None                        # None=取全局缺省；数值=覆盖；NO_TIMEOUT=豁免（见类 docstring 的适用边界）
+    # 宽度类参数：剔掉它们后剩下的即"调用身份"。
+    # ★ 为何声明在 Tool 上、而不做成运行时的全局参数名集合：**一个工具的宽度旋钮可能
+    #   是另一个工具的身份维度**。`limit` 对 `vlog_query` 是宽度（查多少条日志），但对
+    #   一个"取第 N 条"的工具就是身份。全局集合必然误伤——这与 `timeout` 拒绝全局常量
+    #   是同一个判据（见类 docstring 与 roadmap 第 1 期的九处修正）。
+    # 缺省空集是**安全侧**：全部参数计入身份 → 判定更保守、不误报。
+    breadth_args: frozenset[str] = frozenset()
+
+    def identity_args(self, raw_args: dict[str, Any]) -> dict[str, Any]:
+        """从原始参数里剔除宽度类参数，得到本次调用的「身份」。
+
+        未声明 ``breadth_args`` 时原样返回（的拷贝）——即全部参数皆身份。
+        """
+        if not self.breadth_args:
+            return dict(raw_args)
+        return {k: v for k, v in raw_args.items() if k not in self.breadth_args}
 
     async def run(self, raw_args: dict[str, Any]) -> Any:
         """校验原始参数并执行 handler。"""

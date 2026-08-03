@@ -115,9 +115,26 @@ class Tracer:
         """记录该步 LLM 产出的文本/决策。"""
         self.add_event(span, "thought", {"text": text})
 
-    def add_tool_call(self, span: Span, name: str, args: Any) -> None:
-        """记录一次工具调用（名称 + 参数）。"""
-        self.add_event(span, "tool_call", {"name": name, "args": args})
+    def add_tool_call(
+        self, span: Span, name: str, args: Any, identity: Optional[dict[str, Any]] = None
+    ) -> None:
+        """记录一次工具调用（名称 + 参数），可带该次调用的**身份参数**。
+
+        Args:
+            identity: 原始参数剔除该工具声明的宽度类参数后剩下的部分
+                （见 ``harness/tools/base.Tool.identity_args``）。缺省 ``None`` 时
+                payload 与引入本参数前完全一致（向后兼容）。
+
+        **为何身份参数在记录时传入、而不由判定侧自己剔**：``trace_signals`` 是只看 span 的
+        纯函数、拿不到 ``ToolRegistry``，唯一的自行实现方式是硬编码 ``{"window","limit",
+        "top_k"}`` 这类参数名白名单——那等于把**域内容嵌进域无关运行时**（与记忆层那三处
+        已知泄漏同类）。故由持有 registry 的 ``AgentLoop`` 算好传进来，判定侧只读结构。
+        与 ``add_observation`` 提取 ``error_kind`` 是同一手法。
+        """
+        payload: dict[str, Any] = {"name": name, "args": args}
+        if identity is not None:
+            payload["identity"] = identity
+        self.add_event(span, "tool_call", payload)
         # 同时挂到 attributes 便于检索/给 OTel span 当属性。
         # 用 setdefault：一步若调多个工具，只认「第一个」做该 span 的代表工具名，
         # 不被后续调用覆盖（attributes 是给人按工具名快速筛 span 用的索引字段）。

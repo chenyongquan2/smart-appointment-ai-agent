@@ -93,9 +93,11 @@ TBD - created by archiving change phase-6-observability. Update Purpose after ar
 
 ### Requirement: 生产 AgentLoop 接入 trace 采样
 
-生产请求入口（`api/chat_handler.py` 的主 `AgentLoop`）SHALL 注入一个 `Tracer` 与落盘 exporter，使真实对话产出可检索的持久化 trace；tracer MUST 同样透传进经 `delegate` 派生的子 Agent（复用既有「Tracer 透传进子 Agent」要求），以采到领域工具调用。采样口径为 **全量落盘 + 错误优先**：默认保留全部 trace；命中失控信号的 trace MUST 必留。失控信号集 MUST 为：护栏耗尽、打转、工具调用异常、**工具超时（loop 级与 service 级结构化两条路径）**、跑满 `max_steps` 而未产出终态回复。系统 SHALL 提供一个 `sample_rate` 旋钮（默认 `1.0`），当配置为 `<1.0` 时按比例对「非错误」trace 采样，但**错误 trace 不受采样率影响、始终保留**。接入 tracer MUST NOT 改变既有流式回复语义（`[THOUGHT]`/`[REPLY]`/`[ERROR]` 前缀不变）。
+生产请求入口（`api/chat_handler.py` 的主 `AgentLoop`）SHALL 注入一个 `Tracer` 与落盘 exporter，使真实对话产出可检索的持久化 trace；tracer MUST 同样透传进经 `delegate` 派生的子 Agent（复用既有「Tracer 透传进子 Agent」要求），以采到领域工具调用。采样口径为 **全量落盘 + 错误优先**：默认保留全部 trace；命中失控信号的 trace MUST 必留。失控信号集 MUST 为：护栏耗尽、打转、工具调用异常、**工具超时（loop 级与 service 级结构化两条路径）**、**同一工具换参重复调用**、跑满 `max_steps` 而未产出终态回复。系统 SHALL 提供一个 `sample_rate` 旋钮（默认 `1.0`），当配置为 `<1.0` 时按比例对「非错误」trace 采样，但**错误 trace 不受采样率影响、始终保留**。接入 tracer MUST NOT 改变既有流式回复语义（`[THOUGHT]`/`[REPLY]`/`[ERROR]` 前缀不变）。
 
 > 口径修正（change `fix-trace-triage-blindspots`）：原信号集列有「回复带 `[ERROR]`」。该前缀是**遗留 `agents/` 路径**的产物，当前生产走的 harness `AgentLoop` 只产 `[THOUGHT]`/`[REPLY]`（含兜底回复），故该信号在现实中永不命中——原文属**规格要求了一个实现刻意不做的信号**。此处按真实落点重述，不臆造信号。
+
+> 口径补充（change `detect-repeated-tool-identity`）：新增「同一工具换参重复调用」。⚠ 该信号**只用于观测**——它 MUST NOT 使循环提前终止；护栏（`SpinDetector`）行为不变，故该模式造成的多余耗时仍会发生。先让机制看得见，再依据攒到的真实数据决定是否拦。
 
 #### Scenario: 真实对话留下可检索 trace
 
@@ -106,6 +108,11 @@ TBD - created by archiving change phase-6-observability. Update Purpose after ar
 
 - **WHEN** `sample_rate` 配为小于 1.0，且某次运行命中失控信号（如达到 `max_steps`、工具异常或工具超时）
 - **THEN** 该次 trace 仍被完整保留落盘，不因采样率被丢弃
+
+#### Scenario: 新增信号不改变循环行为
+
+- **WHEN** 某次运行命中「同一工具换参重复调用」信号
+- **THEN** 循环 MUST NOT 因此提前终止，运行行为与引入该信号前完全一致；该信号仅体现在导出的 trace 与 triage 候选中
 
 ### Requirement: 工具超时纳入失控信号
 
@@ -178,3 +185,59 @@ root span 的 attributes SHALL 可携带 `user_id`，使多人共享同一会话
 - **WHEN** 调用方不传 `user_id`
 - **THEN** 运行行为与接入前完全一致，span 不含该属性
 
+### Requirement: tool_call 事件携带调用身份参数
+
+记录 `tool_call` 事件时，系统 SHALL 一并记录该次调用的**身份参数**——即原始参数中剔除该工具所声明的宽度类参数后剩下的部分（见 `tool-layer` 的「工具声明宽度类参数」）。
+
+身份参数 MUST 在**记录时**由持有工具注册表的一方（`AgentLoop`）算出并传入，MUST NOT 由失控信号判定侧自行推断：信号判定是只看 span 的纯函数、拿不到注册表，若让它按参数名硬编码推断即构成域内容泄漏进域无关运行时。这与「service 级失败分类在字符串化之前提取进 observation payload」是同一手法——**结构化信息在记录时提取，判定侧只读结构**。
+
+取工具声明失败时（如工具名不存在于注册表）MUST 退化为「全部参数皆身份」且 MUST NOT 抛出——埋点不得拖垮主流程。工具未声明宽度类参数时，身份参数等于全部参数（行为与引入前一致）。
+
+#### Scenario: 身份参数剔除宽度旋钮
+
+- **WHEN** 某次工具调用带检索词与时间窗，且该工具声明时间窗为宽度类参数
+- **THEN** 该 `tool_call` 事件记录的身份参数含检索词、不含时间窗
+
+#### Scenario: 判定侧不含参数名白名单
+
+- **WHEN** 检查失控信号判定模块
+- **THEN** 它只读事件里已记录的身份参数，MUST NOT 含任何具体参数名的白名单
+
+### Requirement: 同一工具换参重复调用纳入失控信号
+
+失控信号判定 SHALL 覆盖「**同一 (工具, 身份参数) 组合在同一次运行的 ≥N 个步骤中出现**」这一模式（N 为可配阈值，缺省 3），标注为独立信号。判定 **MUST NOT 要求这些步骤连续**，也 MUST NOT 要求整步的工具调用集合完全相同；计数 MUST 按**步骤**去重（同一步内并行调多次同一工具只计一次）。
+
+信号名 MUST 与护栏产生的「打转」信号明确区分，避免读者误以为循环已被拦停。
+
+理由来自真实数据：既有的「连续整步签名完全相同」判据在 7 条真实 trace 上抓到病态 0/3——真实的一步里常含多个工具调用，"整步签名相同"一遇多调用就散；而把宽度参数从签名剔除后仍只有 1/3。只有「同身份跨步出现」这一形状能在同一批数据上做到 2/3 命中且对正当模式 0 误报。
+
+该判定 MUST 放过以下正当模式（它们在真实数据中出现且不应被标记）：**逐维度枚举**（身份参数中某一维如环境/租户逐个变化、其余固定）、**换检索策略**（检索方式本身改变）、**多意图并行检索**（同一步内针对不同检索词并行调用）。
+
+该信号 MUST 参与既有「错误优先留存」判定，使命中它的 trace 在采样率 `<1.0` 时同样必留。
+
+⚠ 本要求是**观测**要求：命中该信号 MUST NOT 使循环提前终止。是否据其收紧护栏属独立决策，需另有数据支撑。
+
+#### Scenario: 同身份换宽度参数重复被判为失控
+
+- **WHEN** 同一工具在三个步骤中以相同检索词、不同时间窗被调用
+- **THEN** 该 trace 的信号清单含「同工具换参重复」标签
+
+#### Scenario: 逐维度枚举不被误报
+
+- **WHEN** 同一工具以相同检索词与相同时间窗、但逐个不同的环境/租户被调用四次
+- **THEN** 该 trace MUST NOT 因本信号进入候选
+
+#### Scenario: 多意图并行检索不被误报
+
+- **WHEN** 同一步内针对不同检索词并行调用同一工具
+- **THEN** 该 trace MUST NOT 因本信号进入候选
+
+#### Scenario: 不连续也能命中
+
+- **WHEN** 同一 (工具, 身份参数) 组合出现在第 1、3、5 步，中间夹着其它工具调用
+- **THEN** 该 trace 的信号清单含「同工具换参重复」标签（判定不要求连续）
+
+#### Scenario: 命中该信号的 trace 在低采样率下必留
+
+- **WHEN** `sample_rate` 配为小于 1.0，且某次运行仅命中本信号
+- **THEN** 该次 trace 仍被完整保留落盘
