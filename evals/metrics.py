@@ -31,6 +31,11 @@ __all__ = [
     "judge_human_agreement",
     "slots_from_tool_calls",
     "task_success_rate",
+    # 工具调用 F1 的正/负样本分档（change evals-f1-polarity-breakdown）
+    "tool_call_f1_by_polarity",
+    "F1_POSITIVE",
+    "F1_NEGATIVE",
+    "POLARITY_METRICS",
     # 回归门禁（改造 6）
     "GATED_METRICS",
     "BASELINE_SCHEMA_VERSION",
@@ -124,6 +129,24 @@ def _args_match(expected_args: dict[str, Any], actual_args: dict[str, Any]) -> b
     return True
 
 
+def _case_rpf(r: EvalResult) -> tuple[float, float, float]:
+    """单条用例的工具名级 (recall, precision, F1)。
+
+    总 F1 与分档 F1 **共用这一个函数**，不是各写一份——两边一旦分叉，
+    「总 F1 = 两档按占比加权」这个关系就不成立，而那个关系正是分档要传达的东西
+    （也是 `test_polarity_split_is_weight_consistent` 守的东西）。
+    """
+    expected = set(r.expected_tools or [])
+    actual = set(_actual_names(r))
+    hit = len(expected & actual)
+    # 空集边界：期望为空时召回记 1（无所需即满足）；实际为空时精确记 1（没乱调）。
+    # ★ 这一行就是「免费满分」的入口，也是分档要隔离的那批样本的判据。
+    recall = hit / len(expected) if expected else 1.0
+    precision = hit / len(actual) if actual else 1.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    return recall, precision, f1
+
+
 def tool_call_recall_precision_f1(results: list[EvalResult]) -> list[Metric]:
     """颗粒度·部分给分：per-tool 的召回率/精确率/F1（name 级，按用例宏平均）。
 
@@ -142,13 +165,7 @@ def tool_call_recall_precision_f1(results: list[EvalResult]) -> list[Metric]:
     precisions: list[float] = []
     f1s: list[float] = []
     for r in eligible:
-        expected = set(r.expected_tools or [])
-        actual = set(_actual_names(r))
-        hit = len(expected & actual)
-        # 空集边界：期望为空时召回记 1（无所需即满足）；实际为空时精确记 1（没乱调）。
-        recall = hit / len(expected) if expected else 1.0
-        precision = hit / len(actual) if actual else 1.0
-        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+        recall, precision, f1 = _case_rpf(r)   # 与分档共用，见 _case_rpf 的说明
         recalls.append(recall)
         precisions.append(precision)
         f1s.append(f1)
@@ -158,6 +175,49 @@ def tool_call_recall_precision_f1(results: list[EvalResult]) -> list[Metric]:
         Metric("工具调用-精确率", value=sum(precisions) / n, denominator=n),
         Metric("工具调用-F1", value=sum(f1s) / n, denominator=n),
     ]
+
+
+#: 分档指标名（模块级常量：报告渲染要认它们、门禁守护测试要断言它们不在 GATED_METRICS，
+#: 三处散着写字符串迟早对不上）。
+F1_POSITIVE = "工具调用-F1(正样本)"
+F1_NEGATIVE = "工具调用-F1(负样本)"
+POLARITY_METRICS: tuple[str, ...] = (F1_POSITIVE, F1_NEGATIVE)
+
+
+def tool_call_f1_by_polarity(results: list[EvalResult]) -> list[Metric]:
+    """`工具调用-F1` 按**正/负样本**分档（change `evals-f1-polarity-breakdown`）。
+
+    为什么要分：宏平均对空期望集给免费满分（`if expected else 1.0`），故总 F1 是
+    **按正/负构成比例加权的平均数**，不是能力指标。实测过一次——负样本占比 37%→58%
+    时 F1 从 56.2% 机械升到 78.5%，同期难例占比反而从 65% 掉到 38%，模型能力毫无变化。
+
+    切分依据是 **`expected_tools` 是否为空**，不是意图类别（design D1）：意图是域绑定的，
+    换到 oncall 就没有 `pay`/`statistics`；而免费满分的入口恰恰就是"期望集为空"这件事。
+
+    每档带 ``extra["share"]``（占可评估集的比例）。**占比不能省**：只给两个 F1 值，
+    读者仍无法判断总数为何是这个数；给了占比，加权关系自明。
+    """
+    eligible = _tool_eligible(results)
+    if not eligible:
+        note = "本次运行未捕获实际工具调用（需端到端执行 AgentLoop）"
+        return [Metric(F1_POSITIVE, na=True, note=note), Metric(F1_NEGATIVE, na=True, note=note)]
+
+    total = len(eligible)
+    positive = [r for r in eligible if r.expected_tools]
+    negative = [r for r in eligible if not r.expected_tools]
+
+    def _bucket(name: str, rows: list[EvalResult], label: str) -> Metric:
+        if not rows:
+            # 记 0 会被读成「这档全错」——与「没有样本」意思相反，故标 N/A（design D6）。
+            return Metric(name, na=True, note=f"本次可评估集中无{label}样本")
+        return Metric(
+            name,
+            value=sum(_case_rpf(r)[2] for r in rows) / len(rows),
+            denominator=len(rows),
+            extra={"share": len(rows) / total},
+        )
+
+    return [_bucket(F1_POSITIVE, positive, "正"), _bucket(F1_NEGATIVE, negative, "负")]
 
 
 def tool_call_exact_match(results: list[EvalResult]) -> Metric:
@@ -434,6 +494,9 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
     # → 完全匹配率（全有或全无对照），与宽松召回并列，一眼看出差距。
     metrics = [
         *tool_call_recall_precision_f1(results),
+        # 紧跟总 F1：分档要和它挨着才看得出「总 F1 = 两档按占比加权」
+        # （change evals-f1-polarity-breakdown 的 design D3）。
+        *tool_call_f1_by_polarity(results),
         tool_call_param_f1(results),
         tool_call_sequence_correctness(results),
         tool_call_exact_match(results),
@@ -447,6 +510,20 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
 
 def _fmt_metric(m: Metric) -> str:
     # 单个指标渲染成一行文本（{m.name:12} 是左对齐补空格到 12 宽，让各行列对齐）。
+    if m.name in POLARITY_METRICS:
+        # 分档是特例：缩进 + 树线挂在总 F1 下，视觉上是**一组三行**而不是"多了两个指标"。
+        # **N/A 也走这一支**——否则空档会跳出缩进、看起来像个不相干的指标。
+        tee = "├" if m.name == F1_POSITIVE else "└"
+        label = m.name.split("(")[1].rstrip(")")     # "正样本" / "负样本"
+        if m.na:
+            return f"    {tee} {label:9} N/A（{m.note}）"
+        # 占比必须打出来——它是「总 F1 是两档按占比加权」这个结论的全部依据（design D3）。
+        share = m.extra.get("share")
+        share_txt = f"，占 {share * 100:.0f}%" if share is not None else ""
+        return (
+            f"    {tee} {label:9} {(m.value or 0.0) * 100:.1f}%"
+            f"（n={m.denominator}{share_txt}）"
+        )
     if m.na:
         # N/A 显式打出来并附原因，不悄悄省略——读者一眼知道「不是 0 分，是没测」。
         return f"  {m.name:12} N/A（{m.note}）"
@@ -537,6 +614,10 @@ class AggregatedMetric:
     n: int = 0                     # 纳入的非 N/A 观测数
     na: bool = False               # True=N 次全 N/A
     is_latency: bool = False       # 延迟指标渲染为秒而非百分比
+    # 正/负样本分档的构成占比（N 次的均值；非分档指标为 None）。
+    # 它是 run 级量而非跨 run 统计量，故取均值即可——同一数据集各次跑的构成本应相同，
+    # 只在某次跑有用例异常导致落出 `_tool_eligible` 时才会微动。
+    share: Optional[float] = None
 
 
 def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
@@ -552,11 +633,14 @@ def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
     out: list[AggregatedMetric] = []
     for name in ordered_names:
         values: list[float] = []
+        shares: list[float] = []
         is_latency = name == "端到端延迟"
         for rep in reports:
             for m in rep["metrics"]:
                 if m.name == name and not m.na and m.value is not None:
                     values.append(m.value)
+                    if "share" in m.extra:
+                        shares.append(m.extra["share"])
                     break
         if not values:
             out.append(AggregatedMetric(name=name, na=True, is_latency=is_latency))
@@ -569,6 +653,9 @@ def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
                 half_width=student_t_halfwidth(values),
                 n=len(values),
                 is_latency=is_latency,
+                # 分档占比要一路带到多采样视图——`--samples 3` 才是推荐跑法，
+                # 占比在那里丢了等于本变更的主张在主视图上不成立（design D3）。
+                share=(sum(shares) / len(shares)) if shares else None,
             )
         )
     return out
@@ -584,6 +671,20 @@ def format_multisample_report(
         "不含数据集大小的不确定性——后者需更大用例集）",
     ]
     for a in aggregated:
+        if a.name in POLARITY_METRICS:
+            # 与单采样视图同构：缩进 + 树线挂在总 F1 下，并保留占比。
+            tee = "├" if a.name == F1_POSITIVE else "└"
+            label = a.name.split("(")[1].rstrip(")")
+            if a.na:
+                lines.append(f"    {tee} {label:11} N/A（{n_runs} 次均无可评估样本）")
+                continue
+            share_txt = f"，占 {a.share * 100:.0f}%" if a.share is not None else ""
+            stable = "（稳定，零方差）" if a.half_width == 0.0 else ""
+            lines.append(
+                f"    {tee} {label:11} {a.mean * 100:.1f}% ± {a.half_width * 100:.1f}%"
+                f"（n={a.n} 次{share_txt}）{stable}"
+            )
+            continue
         if a.na:
             lines.append(f"  {a.name:14} N/A（{n_runs} 次均无可评估样本）")
             continue
