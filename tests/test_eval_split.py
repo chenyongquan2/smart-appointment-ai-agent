@@ -10,7 +10,12 @@
 import pytest
 
 from evals.metrics import EvalResult, build_report, report_to_baseline
+from domains import load_domain
 from evals.run_evals import _filter_by_split, _split_results, load_cases
+
+# 标签白名单随域声明（change oncall-evals-bootstrap）。显式取预约域的那份：本文件的用例
+# 字面量用的是预约域标签，而 load_cases 缺省取当前 AGENT_DOMAIN 装的域，会跟着 .env 飘。
+_LABELS = load_domain("appointment").eval_profile.labels
 
 
 def _write_cases(tmp_path, lines: list[str]):
@@ -25,7 +30,7 @@ def test_load_case_with_explicit_dev_split(tmp_path):
     path = _write_cases(
         tmp_path, ['{"input": "你好", "expected_intent": "other", "split": "dev"}']
     )
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert cases[0]["split"] == "dev"
 
 
@@ -33,14 +38,14 @@ def test_load_case_with_explicit_heldout_split(tmp_path):
     path = _write_cases(
         tmp_path, ['{"input": "你好", "expected_intent": "other", "split": "held-out"}']
     )
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert cases[0]["split"] == "held-out"
 
 
 def test_load_case_without_split_defaults_to_dev(tmp_path):
     """未标 split 字段的既有用例默认归 dev（向后兼容——不改一字即属 dev）。"""
     path = _write_cases(tmp_path, ['{"input": "你好", "expected_intent": "other"}'])
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert cases[0]["split"] == "dev"
 
 
@@ -49,7 +54,7 @@ def test_load_case_with_illegal_split_raises(tmp_path):
         tmp_path, ['{"input": "你好", "expected_intent": "other", "split": "prod"}']
     )
     with pytest.raises(SystemExit) as exc:
-        load_cases(path)
+        load_cases(path, _LABELS)
     assert exc.value.code == 2
 
 
@@ -62,7 +67,7 @@ def test_load_multiturn_case_with_split_still_normalizes_turns(tmp_path):
             '"expected_intent": "appointment", "split": "held-out"}'
         ],
     )
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert cases[0]["split"] == "held-out"
     assert cases[0]["turns"] == ["我想约个按摩", "明天下午2点"]
 

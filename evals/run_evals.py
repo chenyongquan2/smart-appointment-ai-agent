@@ -20,8 +20,10 @@
 回归门禁（改造 6）:
     --update-baseline  把本次跑分落盘为基线（当前域的 evals/baseline.json）
     --gate             跑完比对基线，被守指标回归则以退出码 3 结束
-    --tolerance        容差（默认 0.30）吸收 LLM 抖动；门禁只守正确性子集
-                       （工具调用-F1 / 槽位完整率），不守延迟与回复质量
+    --tolerance        容差（默认 0.30）吸收 LLM 抖动；门禁只守正确性子集，
+                       **守哪几项由领域包声明**（Domain.eval_profile.gated_metrics，
+                       change oncall-evals-bootstrap）：预约域守 工具调用-F1 / 槽位完整率，
+                       值守域守 工具调用-F1 / 参数级F1。延迟与回复质量任何域都不准守。
 
 容差 0.30 的依据（change retire-legacy-intent-classifier 重定基线时实测）：当前模型
 (deepseek-v4-flash)工具触发 run-to-run 抖动实测 t-CI 半宽——工具 F1 ±5.7pp、
@@ -43,7 +45,9 @@ import asyncio
 import json
 import os
 import sys
+from functools import partial
 from pathlib import Path
+from typing import Collection
 
 # Windows 中文环境控制台默认 gbk，统一转 UTF-8（与 app.py 一致）
 # 不转的话，打印中文用例/报告可能抛 UnicodeEncodeError。
@@ -61,16 +65,21 @@ from domains import load_domain
 
 load_dotenv()  # 读 .env 里的 API key / MODEL_PROVIDER 等到环境变量
 
-# 评估**数据**随领域包走，**机制**（本脚本、采集、triage、并发 runner）留在 evals/ 且域无关。
-# 这正是「机制 ≠ 数据」那条分界的落地：第 4 期建 oncall 用例集时，只需往
-# domains/oncall/evals/ 放两个文件，本脚本一行不用改（见 change domain-packages 的 design D7）。
-_EVALS_DIR = load_domain().evals_dir
+# 评估**数据与标注口径**随领域包走，**机制**（本脚本、采集、triage、并发 runner、指标
+# 算法、门禁比对）留在 evals/ 且域无关。
+# ⚠ 修正一条曾经的乐观说法：domain-packages 的 design D7 说「建 oncall 用例集时本脚本
+# 一行不用改」——实际不成立。彼时本模块与 metrics 里还硬编码着 5 类预约意图、预约槽位名
+# 与门禁指标组合，装上另一个域的数据会直接加载失败或让门禁**静默**少守一项。
+# change oncall-evals-bootstrap 把这三项收进 Domain.eval_profile 后，分界才真正成立。
+_DOMAIN = load_domain()
+_EVALS_DIR = _DOMAIN.evals_dir
 CASES_FILE = _EVALS_DIR / "cases.jsonl"
 BASELINE_FILE = _EVALS_DIR / "baseline.json"  # 回归门禁基线（改造 6）
 
-# 数据集意图标签口径（5 类）——纯数据集元数据（构成约束/按类分析/切分规则），
-# 不对应任何分类器组件。加载用例时据此校验 expected_intent 合法——防手滑写错类名。
-VALID_INTENTS = {"appointment", "query", "pay", "statistics", "other"}
+# 评估标注口径（标签白名单 / 槽位键映射 / 门禁指标集）**随域声明**
+# （change oncall-evals-bootstrap）。此前这三项写死在本模块与 metrics 里，装上另一个域
+# 的数据要么直接加载失败（标签白名单），要么门禁静默退化成守更少的项。
+_EVAL_PROFILE = _DOMAIN.eval_profile
 
 # 用例并发度默认值（change evals-concurrent-runner D2）：保守取 5——每条用例内部还会派生
 # 子 Agent，实际在途请求是并发数的数倍；网关限流阈值未知（重定基线时实测到过 503 与连接错误）。
@@ -83,8 +92,15 @@ DEFAULT_CONCURRENCY = 5
 VALID_SPLITS = {"dev", "held-out"}
 
 
-def load_cases(path: Path) -> list[dict]:
-    """读取 jsonl 用例; 跳过空行与 // 注释行; 校验 expected_intent 合法。"""
+def load_cases(path: Path, labels: Collection[str] | None = None) -> list[dict]:
+    """读取 jsonl 用例; 跳过空行与 // 注释行; 校验 expected_intent 合法。
+
+    Args:
+        path: 用例文件。
+        labels: 合法标签白名单，由当前领域包声明（``eval_profile.labels``）。缺省取
+            装载域的声明——本模块不再内置任何具体领域的标签名。
+    """
+    valid = set(labels) if labels is not None else set(_EVAL_PROFILE.labels)
     # jsonl = 「每行一个独立 JSON 对象」的格式（不是整个文件一个 JSON 数组），故逐行解析。
     cases: list[dict] = []
     # enumerate(..., 1)：行号从 1 起，报错时给出的行号与编辑器一致，便于定位。
@@ -99,10 +115,10 @@ def load_cases(path: Path) -> list[dict]:
             print(f"[ERROR] 第 {lineno} 行 JSON 解析失败: {exc}", file=sys.stderr)
             raise
         intent = case.get("expected_intent")
-        if intent not in VALID_INTENTS:  # 类名写错（如 typo）直接判非法
+        if intent not in valid:  # 类名写错（如 typo）直接判非法
             print(
                 f"[ERROR] 第 {lineno} 行 expected_intent={intent!r} 非法; "
-                f"必须是 {sorted(VALID_INTENTS)} 之一",
+                f"必须是 {sorted(valid)} 之一",
                 file=sys.stderr,
             )
             raise SystemExit(2)  # 退出码 2：约定的「用例/配置错误」码（见 main 的各处 return 2）
@@ -337,6 +353,7 @@ async def run_baseline(
         compare_to_baseline,
         format_gate_report,
         slots_from_tool_calls,
+        validate_gated_metrics,
     )
     from evals.agent_capture import run_and_capture, run_and_capture_multiturn
     from evals.judge import judge_response
@@ -344,7 +361,12 @@ async def run_baseline(
 
     global _EvalResult, _slots_from_tool_calls
     _EvalResult = EvalResult  # 供 _run_once 构造（避免它再触发一次重 import）
-    _slots_from_tool_calls = slots_from_tool_calls  # 同上：供 _run_once 从工具调用还原槽位
+    # 槽位键映射随域声明，故这里绑定成 partial 再交给 _run_once——沿用既有「模块级占位」
+    # 的形状，不必把映射一路穿过 _run_once/_run_case 的签名。空映射=本域不度量，
+    # slots_from_tool_calls 内部会直接返回 None（指标恒 N/A）。
+    _slots_from_tool_calls = partial(
+        slots_from_tool_calls, slot_key_map=_EVAL_PROFILE.slot_key_map
+    )
 
     try:
         llm = create_chat_model(temperature=0)  # temperature=0：贴生产 + 量残余抖动（改造 3）；judge 同用
@@ -370,10 +392,11 @@ async def run_baseline(
 
     baseline_path = baseline_path or BASELINE_FILE
 
-    def _finish(baseline_dict: dict, current_view: dict) -> int:
+    def _finish(baseline_dict: dict, current_view: dict, known_names: set[str]) -> int:
         """改造 6 收尾：按 --update-baseline / --gate 写或比对基线，返回退出码。
 
         ``current_view``：``{指标名: (value, is_latency)}``，只含非 N/A 指标。
+        ``known_names``：本次报告产出的**全部**指标名（含 N/A 项），供门禁声明的语义校验。
         既不开门禁也不写基线时返回 0（默认行为不变）。
         """
         if update_baseline:
@@ -389,8 +412,16 @@ async def run_baseline(
                 print(f"[ERROR] --gate 需要基线文件，但 {baseline_path} 不存在；"
                       f"请先跑 `--update-baseline` 建立基线。", file=sys.stderr)
                 return 1  # 1 = 文件缺失
+            gated = _EVAL_PROFILE.gated_metrics
+            try:
+                # 声明里的名字拼错/声明了不准守的指标，在这里炸而不是静默少守一项。
+                validate_gated_metrics(gated, known_names)
+            except ValueError as exc:
+                print(f"[ERROR] 域 {_DOMAIN.name!r} 的门禁声明非法: {exc}", file=sys.stderr)
+                return 2  # 2 = 用例/配置错误
+            print(f"[门禁] 域 {_DOMAIN.name!r} 声明被守指标：{', '.join(gated)}")
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-            gate_report = compare_to_baseline(current_view, baseline, tolerance)
+            gate_report = compare_to_baseline(current_view, baseline, tolerance, gated=gated)
             print(format_gate_report(gate_report))
             return 0 if gate_report.passed else 3  # 3 = 检测到回归
         return 0
@@ -421,11 +452,11 @@ async def run_baseline(
                                   judge_fn, run_and_capture_multiturn, concurrency=concurrency)
         dev_results, heldout_results = _split_results(cases, results)
 
-        rep = build_report(dev_results)
+        rep = build_report(dev_results, measures_slots=_EVAL_PROFILE.measures_slots)
         if dev_results:
             print(format_report(rep))
         if heldout_results:
-            heldout_rep = build_report(heldout_results)
+            heldout_rep = build_report(heldout_results, measures_slots=_EVAL_PROFILE.measures_slots)
             _print_heldout_section(heldout_results, f"用例数: {len(heldout_results)}")
             print(format_report(heldout_rep))
 
@@ -436,7 +467,7 @@ async def run_baseline(
             for m in rep["metrics"] if not m.na and m.value is not None
         }
         baseline_dict = report_to_baseline(rep, total_cases=len(dev_results), samples=1)
-        return _finish(baseline_dict, current_view)
+        return _finish(baseline_dict, current_view, {m.name for m in rep["metrics"]})
 
     # ── 多采样（改造 3）：整套重跑 N 次 → 聚合 mean ± t-CI ────────────────────
     dev_reports = []
@@ -447,9 +478,9 @@ async def run_baseline(
         results = await _run_once(cases, llm, full_registry, subagents, run_and_capture,
                                   judge_fn, run_and_capture_multiturn, concurrency=concurrency)
         dev_results, heldout_results = _split_results(cases, results)
-        dev_reports.append(build_report(dev_results))  # 每次跑的聚合指标快照（dev 侧）
+        dev_reports.append(build_report(dev_results, measures_slots=_EVAL_PROFILE.measures_slots))  # 每次跑的聚合指标快照（dev 侧）
         if heldout_results:
-            heldout_reports.append(build_report(heldout_results))
+            heldout_reports.append(build_report(heldout_results, measures_slots=_EVAL_PROFILE.measures_slots))
     # aggregate_runs/format_multisample_report 是纯函数（吃 N 份报告 → mean±CI），与采样循环解耦。
     aggregated = aggregate_runs(dev_reports) if n_dev else []
     if n_dev:
@@ -466,7 +497,8 @@ async def run_baseline(
         for a in aggregated if not a.na and a.mean is not None
     }
     baseline_dict = aggregated_to_baseline(aggregated, total_cases=n_dev, samples=samples)
-    return _finish(baseline_dict, current_view)  # 0/1/3 据门禁；无门禁则 0
+    # 0/1/2/3 据门禁；无门禁则 0
+    return _finish(baseline_dict, current_view, {a.name for a in aggregated})
 
 
 def main() -> int:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 __all__ = [
     "EvalResult",
@@ -36,8 +36,8 @@ __all__ = [
     "F1_POSITIVE",
     "F1_NEGATIVE",
     "POLARITY_METRICS",
-    # 回归门禁（改造 6）
-    "GATED_METRICS",
+    # 回归门禁（改造 6）；被守指标集随域声明（change oncall-evals-bootstrap）
+    "validate_gated_metrics",
     "BASELINE_SCHEMA_VERSION",
     "GateVerdict",
     "GateReport",
@@ -345,33 +345,32 @@ def judge_human_agreement(
     return {"n": float(n), "agreement": po, "kappa": kappa}
 
 
-# 工具 schema 字段名 → 统一槽位口径键的映射（change evals-wire-slot-completeness D3）。
-# technician_name 归一为 technician（对齐 Phase 1 AppointmentSlots / README 命名）；
-# create_appointment 的 technician_id/session_id 不是「抽取槽位」（ID/会话基建），故不在此。
-_SLOT_ARG_KEYS: dict[str, str] = {
-    "start_time": "start_time",
-    "duration": "duration",
-    "project": "project",
-    "preference": "preference",
-    "gender": "gender",
-    "technician_name": "technician",
-}
 # 工具 schema 的可选槽位默认占位串（见 harness/tools/schemas.py 的 FindTechnicianArgs）——
 # 表示「模型没填、工具兜底」，不算模型抽到的槽位，还原时跳过以免完整率被默认值虚高。
+# 这条是**域无关**的：任何域的「默认值不是模型的抽取成果」都成立，故留在机制侧。
 _SLOT_SENTINELS: frozenset[str] = frozenset({"未知", "无"})
 
 
 def slots_from_tool_calls(
     tool_calls: Optional[list[dict[str, Any]]],
+    slot_key_map: Mapping[str, str],
 ) -> Optional[dict[str, Any]]:
     """从有序工具调用序列还原扁平的实际槽位 dict（纯函数，不触网）。
 
-    槽位分散在 find_technician / create_appointment / check_availability 的 args 里，
-    本函数把它们合并进一份扁平 dict，作 ``slot_completeness`` 的 ``actual_slots`` 输入。
+    槽位分散在多个工具的 args 里（预约域即 find_technician / create_appointment /
+    check_availability），本函数把它们合并进一份扁平 dict，作 ``slot_completeness``
+    的 ``actual_slots`` 输入。
+
+    Args:
+        tool_calls: 有序工具调用 ``[{name, args}]``。
+        slot_key_map: **工具入参名 → 槽位键**的归一映射，由当前领域包声明
+            （``Domain.eval_profile.slot_key_map``，change oncall-evals-bootstrap）。
+            本模块不再内置任何具体领域的槽位名——那会让「机制域无关」名不副实。
+            **空映射**表示本域不度量槽位完整率，直接返回 ``None``（指标恒 N/A）。
 
     规则（change evals-wire-slot-completeness 的 spec）：
-    - **跨工具合并**：各工具 args 中的槽位字段并入同一 dict；``technician_name`` 归一为
-      槽位键 ``technician``。
+    - **跨工具合并**：各工具 args 中的槽位字段并入同一 dict；映射里声明的别名
+      （如 ``technician_name``）归一为其槽位键（``technician``）。
     - **同名冲突 last-write-wins**：按 ``tool_calls`` 顺序，后出现的工具调用覆盖先出现的
       同名槽位（确定性，不依赖 dict 遍历顺序）。
     - **哨兵默认值不计入**：``未知`` / ``无`` 视为「未抽取」，跳过（既不写入，也不覆盖已有真值）。
@@ -379,12 +378,14 @@ def slots_from_tool_calls(
       槽位指标标 N/A，不伪造空 dict 当作「抽取了 0 个槽位」。有工具调用但无槽位字段则返回 ``{}``
       （区别于 None：表示「跑了但没抽到」，计 0 分而非 N/A）。
     """
+    if not slot_key_map:  # 本域不度量槽位（显式声明），与「跑失败」同样标 N/A
+        return None
     if not tool_calls:
         return None
     slots: dict[str, Any] = {}
     for call in tool_calls:
         args = call.get("args") or {}
-        for arg_key, slot_key in _SLOT_ARG_KEYS.items():
+        for arg_key, slot_key in slot_key_map.items():
             if arg_key not in args:
                 continue
             val = args[arg_key]
@@ -394,7 +395,7 @@ def slots_from_tool_calls(
     return slots
 
 
-def slot_completeness(results: list[EvalResult]) -> Metric:
+def slot_completeness(results: list[EvalResult], *, measured: bool = True) -> Metric:
     """槽位抽取完整率（**存在性口径**）：期望槽位中「被抽出」的比例，跨用例宏平均。
 
     存在性口径（change evals-wire-slot-completeness D8）：命中 = 期望槽位的**键存在**于
@@ -406,7 +407,17 @@ def slot_completeness(results: list[EvalResult]) -> Metric:
 
     仅统计同时含 ``expected_slots`` 与 ``actual_slots`` 的用例；否则 N/A。``expected_slots``
     的**值仅作人类可读说明、不参与判定**——只用其键集合。
+
+    ``measured=False``（域声明了空 ``slot_key_map``）时直接标 N/A 并给出**不同的 note**：
+    「本域不度量」是设计，「本次未捕获」是抖动，两者混为一谈会让人误以为指标坏了、
+    或反过来误以为一切正常（change oncall-evals-bootstrap）。
     """
+    if not measured:
+        return Metric(
+            "槽位抽取完整率",
+            na=True,
+            note="本域不度量该项（域声明的 slot_key_map 为空）",
+        )
     eligible = [
         r for r in results if r.expected_slots and r.actual_slots is not None
     ]
@@ -487,8 +498,12 @@ def latency_summary(results: list[EvalResult]) -> Metric:
     )
 
 
-def build_report(results: list[EvalResult]) -> dict[str, Any]:
-    """汇总全部指标 + 判错/异常用例清单。"""
+def build_report(results: list[EvalResult], *, measures_slots: bool = True) -> dict[str, Any]:
+    """汇总全部指标 + 判错/异常用例清单。
+
+    ``measures_slots``：本次运行的域是否度量槽位完整率（取自 ``eval_profile``）。这是个
+    **布尔开关而非域概念**——报告层不认识"哪个域"，只认识"这次量不量它"。
+    """
     # 一次性算齐各指标；每个指标各自决定要不要标 N/A（见上面各函数）。
     # 工具调用分档（改造 2）：召回/精确/F1（颗粒度）→ 参数级F1、序列正确率（严格度）
     # → 完全匹配率（全有或全无对照），与宽松召回并列，一眼看出差距。
@@ -501,7 +516,7 @@ def build_report(results: list[EvalResult]) -> dict[str, Any]:
         tool_call_sequence_correctness(results),
         tool_call_exact_match(results),
         response_quality(results),  # 回复质量（LLM-judge，改造 4）；未开 --judge 时 N/A
-        slot_completeness(results),
+        slot_completeness(results, measured=measures_slots),
         task_success_rate(results),  # 任务成功率（系统级/业务级，change evals-task-success-rate）
         latency_summary(results),
     ]
@@ -618,6 +633,9 @@ class AggregatedMetric:
     # 它是 run 级量而非跨 run 统计量，故取均值即可——同一数据集各次跑的构成本应相同，
     # 只在某次跑有用例异常导致落出 `_tool_eligible` 时才会微动。
     share: Optional[float] = None
+    # 全 N/A 时沿用单次报告的原因说明。**必须带过来**：「本域不度量该项」（设计）与
+    # 「本次未捕获」（抖动）是两回事，只报一句「N 次均无可评估样本」会把二者抹平。
+    note: Optional[str] = None
 
 
 def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
@@ -643,7 +661,12 @@ def aggregate_runs(reports: list[dict[str, Any]]) -> list[AggregatedMetric]:
                         shares.append(m.extra["share"])
                     break
         if not values:
-            out.append(AggregatedMetric(name=name, na=True, is_latency=is_latency))
+            # 取第一次跑该指标的 note 作为原因（N 次全 N/A，原因必然同一个）。
+            note = next(
+                (m.note for rep in reports for m in rep["metrics"] if m.name == name and m.note),
+                None,
+            )
+            out.append(AggregatedMetric(name=name, na=True, is_latency=is_latency, note=note))
             continue
         mean = sum(values) / len(values)
         out.append(
@@ -676,7 +699,7 @@ def format_multisample_report(
             tee = "├" if a.name == F1_POSITIVE else "└"
             label = a.name.split("(")[1].rstrip(")")
             if a.na:
-                lines.append(f"    {tee} {label:11} N/A（{n_runs} 次均无可评估样本）")
+                lines.append(f"    {tee} {label:11} N/A（{a.note or f'{n_runs} 次均无可评估样本'}）")
                 continue
             share_txt = f"，占 {a.share * 100:.0f}%" if a.share is not None else ""
             stable = "（稳定，零方差）" if a.half_width == 0.0 else ""
@@ -686,7 +709,7 @@ def format_multisample_report(
             )
             continue
         if a.na:
-            lines.append(f"  {a.name:14} N/A（{n_runs} 次均无可评估样本）")
+            lines.append(f"  {a.name:14} N/A（{a.note or f'{n_runs} 次均无可评估样本'}）")
             continue
         if a.is_latency:
             # 延迟：秒；半宽也以秒计。
@@ -716,12 +739,49 @@ def format_multisample_report(
 # - 容差吸收 LLM 的 run-to-run 抖动：比率回归 ⟺ 当前 < 基线 − 容差。
 # ════════════════════════════════════════════════════════════════════════════
 
-# 门禁只守的指标子集（显式常量）。意图分类准确率已随旧分类器退役
-# （change retire-legacy-intent-classifier）：意图理解由工具选择体现，被工具级指标覆盖。
-GATED_METRICS: tuple[str, ...] = (
-    "工具调用-F1",
-    "槽位抽取完整率",
-)
+# 门禁守哪些指标**由领域包声明**（``Domain.eval_profile.gated_metrics``，change
+# oncall-evals-bootstrap）——此前这里是个全局常量 GATED_METRICS，装上另一个域的数据时
+# 第二项会恒 N/A，门禁**静默**退化成只守 1 项而报告里看不出异常。那是最坏的一种失败。
+#
+# 但「哪些指标**不准**被守」是域无关的判断，留在机制侧：
+_UNGATABLE_METRICS: frozenset[str] = frozenset({
+    "端到端延迟",        # 机器/网络/API 负载相关，跨环境抖动大，非正确性信号
+    "回复质量通过率",     # 来自未校准 judge，按项目诚实原则不可当真值
+    # 工具调用的其余分档：与 F1 同一底层行为，守它们等于同一信号算多遍
+    "工具调用-召回率",
+    "工具调用-精确率",
+    "工具调用-序列正确率",
+    "工具调用-完全匹配率",
+    F1_POSITIVE,
+    F1_NEGATIVE,
+})
+
+
+def validate_gated_metrics(gated: tuple[str, ...], known_names: set[str]) -> None:
+    """校验某域声明的被守指标集（语义校验，见 design D2 的分层理由）。
+
+    这层校验在 ``evals/`` 而非 ``domains/``：指标名全集与「哪些不准守」的判断都在本模块，
+    而依赖方向是 ``evals → domains``，反过来 import 会成环。
+
+    Args:
+        gated: 域声明的被守指标名。
+        known_names: 本次报告实际产出的全部指标名（拼错即在此暴露）。
+
+    Raises:
+        ValueError: 名字不存在、或声明了不准被守的指标。**不静默跳过**——静默跳过
+            一个拼错的名字，等于门禁少守一项而没人知道。
+    """
+    unknown = [n for n in gated if n not in known_names]
+    if unknown:
+        raise ValueError(
+            f"门禁声明了不存在的指标名 {unknown}；可用指标：{sorted(known_names)}"
+        )
+    banned = [n for n in gated if n in _UNGATABLE_METRICS]
+    if banned:
+        raise ValueError(
+            f"门禁不得守这些指标 {banned}——延迟是环境噪声、回复质量来自未校准 judge、"
+            f"工具调用的其余分档与 F1 是同一底层行为（同一信号算多遍）"
+        )
 
 # 基线 JSON 结构版本；将来结构变化时门禁可据此拒绝/迁移旧基线。
 BASELINE_SCHEMA_VERSION = 1
@@ -814,7 +874,7 @@ def compare_to_baseline(
     baseline: dict[str, Any],
     tolerance: float,
     *,
-    gated: tuple[str, ...] = GATED_METRICS,
+    gated: tuple[str, ...],
 ) -> GateReport:
     """门禁裁决（纯函数）：只比对 ``gated`` 子集，对回归出整体 pass/fail。
 
@@ -822,7 +882,8 @@ def compare_to_baseline(
         current: ``{指标名: (value, is_latency)}``——本次跑的可比指标（N/A 项不应入此 dict）。
         baseline: 基线 dict（``report_to_baseline``/``aggregated_to_baseline`` 的产物）。
         tolerance: 容差；比率回归 ⟺ 当前 < 基线 − 容差，延迟回归 ⟺ 当前 > 基线 + 容差。
-        gated: 要守的指标名集合（默认 GATED_METRICS）。
+        gated: 要守的指标名集合，由当前领域包声明（无默认值——「守哪些」是域绑定的
+            判断，给个全局默认正是此前静默降级的成因）。
 
     Returns:
         ``GateReport``：逐项 ``GateVerdict`` + ``passed`` + ``guarded_count``。

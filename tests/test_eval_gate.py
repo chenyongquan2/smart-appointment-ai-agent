@@ -6,15 +6,20 @@
 （change retire-legacy-intent-classifier）门禁集为 2 项：工具调用-F1、槽位抽取完整率。
 """
 
+from domains import load_domain
 from evals.metrics import (
     AggregatedMetric,
-    GATED_METRICS,
     Metric,
     aggregated_to_baseline,
     compare_to_baseline,
     format_gate_report,
     report_to_baseline,
 )
+
+
+# 被守指标集**按域取**（change oncall-evals-bootstrap）：此前是 evals.metrics 的全局常量，
+# 装上另一个域会让门禁静默少守一项。断言内容不变——预约域声明的就是那两项。
+GATED_METRICS = load_domain("appointment").eval_profile.gated_metrics
 
 
 def _report(*metrics: Metric) -> dict:
@@ -69,7 +74,7 @@ def test_rate_regression_beyond_tolerance_fails():
     # 键名带连字符不能做 kwargs，直接拼 dict：
     base["metrics"]["工具调用-F1"] = {"value": 0.70, "is_latency": False}
     current = {"槽位抽取完整率": (0.80, False)}  # 0.80 < 0.90 - 0.05 → 回归
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is False
     v = next(x for x in gate.verdicts if x.name == "槽位抽取完整率")
     assert v.status == "regressed"
@@ -80,7 +85,7 @@ def test_rate_regression_beyond_tolerance_fails():
 def test_within_tolerance_is_ok():
     base = _baseline(槽位抽取完整率=(0.90, False))
     current = {"槽位抽取完整率": (0.86, False)}  # 降 0.04 ≤ 容差 0.05 → 不算回归
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is True
     v = next(x for x in gate.verdicts if x.name == "槽位抽取完整率")
     assert v.status == "ok"
@@ -93,7 +98,7 @@ def test_retired_intent_metric_not_gated():
     assert "意图分类准确率" not in GATED_METRICS
     base = _baseline(意图分类准确率=(0.90, False), 槽位抽取完整率=(0.9, False))
     current = {"意图分类准确率": (0.10, False), "槽位抽取完整率": (0.9, False)}  # 意图暴跌
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is True
     assert all(v.name != "意图分类准确率" for v in gate.verdicts)
 
@@ -104,7 +109,7 @@ def test_non_gated_metric_change_does_not_block():
     assert "回复质量通过率" not in GATED_METRICS
     base = _baseline(槽位抽取完整率=(0.90, False), 端到端延迟=(1.0, True))
     current = {"槽位抽取完整率": (0.90, False), "端到端延迟": (5.0, True)}  # 延迟暴涨
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is True
     assert all(v.name != "端到端延迟" for v in gate.verdicts)
 
@@ -114,7 +119,7 @@ def test_baseline_has_current_na_is_skipped():
     base = _baseline(槽位抽取完整率=(0.8, False))
     base["metrics"]["工具调用-F1"] = {"value": 0.70, "is_latency": False}
     current = {"工具调用-F1": (0.70, False)}  # 槽位缺席
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is True
     slot = next(x for x in gate.verdicts if x.name == "槽位抽取完整率")
     assert slot.status == "skipped"
@@ -125,7 +130,7 @@ def test_baseline_has_current_na_is_skipped():
 def test_current_has_baseline_missing_is_new():
     base = _baseline(槽位抽取完整率=(0.90, False))
     current = {"槽位抽取完整率": (0.90, False), "工具调用-F1": (0.6, False)}
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.passed is True
     f1 = next(x for x in gate.verdicts if x.name == "工具调用-F1")
     assert f1.status == "new"
@@ -137,7 +142,7 @@ def test_realistic_two_metric_guard():
     base = _baseline(槽位抽取完整率=(0.90, False))
     base["metrics"]["工具调用-F1"] = {"value": 0.70, "is_latency": False}
     current = {"槽位抽取完整率": (0.90, False), "工具调用-F1": (0.70, False)}
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     assert gate.guarded_count == 2
     assert gate.passed is True
 
@@ -147,7 +152,7 @@ def test_realistic_two_metric_guard():
 def test_format_gate_report_shows_values_and_count():
     base = _baseline(槽位抽取完整率=(0.90, False))
     current = {"槽位抽取完整率": (0.80, False)}
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     text = format_gate_report(gate)
     assert "回归" in text
     assert "FAIL" in text
@@ -158,7 +163,7 @@ def test_format_gate_report_shows_values_and_count():
 def test_format_gate_report_pass_is_quiet_but_conclusive():
     base = _baseline(槽位抽取完整率=(0.90, False))
     current = {"槽位抽取完整率": (0.90, False)}
-    gate = compare_to_baseline(current, base, tolerance=0.05)
+    gate = compare_to_baseline(current, base, tolerance=0.05, gated=GATED_METRICS)
     text = format_gate_report(gate)
     assert "PASS" in text
     assert "退出码 3" not in text  # 通过时不提退出码 3

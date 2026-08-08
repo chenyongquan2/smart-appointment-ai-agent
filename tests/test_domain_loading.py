@@ -26,6 +26,7 @@ from domains import (
     DEFAULT_DOMAIN,
     DOMAIN_ENV_VAR,
     Domain,
+    EvalProfile,
     available_domains,
     build_subagent_registry,
     build_tool_registry,
@@ -108,6 +109,7 @@ def test_env_var_selects_domain(monkeypatch):
         system_prompt="fake",
         policy=lambda tool, args: None,
         evals_dir=REPO_ROOT,
+        eval_profile=EvalProfile(labels=frozenset({"fake"}), gated_metrics=("工具调用-F1",)),
     )
     monkeypatch.setitem(domains._DOMAINS, "fake", lambda: sentinel)
     monkeypatch.setenv(DOMAIN_ENV_VAR, "fake")
@@ -282,6 +284,7 @@ async def test_domain_policy_is_wired_into_dispatch():
         system_prompt=domain.system_prompt,
         policy=deny_everything,
         evals_dir=domain.evals_dir,
+        eval_profile=domain.eval_profile,
     )
     registry = build_tool_registry(denied)
 

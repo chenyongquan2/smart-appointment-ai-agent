@@ -11,19 +11,41 @@
 | 子 Agent 集 | `subagents/`（预约 / 咨询 / 行为分析） |
 | 系统提示 | `prompt.py` |
 | 权限策略 | `policy.py` |
-| 评估数据 | `evals/`（`cases.jsonl` + `baseline.json`，**只有数据在这，机制留在 `evals/`**） |
+| 评估数据与标注口径 | `evals/`（`cases.jsonl` + `baseline.json`）+ 下面的 `_EVAL_PROFILE`，**只有数据与口径在这，机制留在 `evals/`** |
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from domains import Domain
+from domains import Domain, EvalProfile
 
 __all__ = ["build_domain"]
 
 # 数据目录用「相对本文件」定位而非 cwd：评估既可能从仓库根跑，也可能从别处跑。
 _EVALS_DIR = Path(__file__).parent / "evals"
+
+# 评估标注口径（change oncall-evals-bootstrap）。三项**原样搬自** evals/ 里此前的全局
+# 硬编码常量（VALID_INTENTS / _SLOT_ARG_KEYS / GATED_METRICS），故本域行为与基线数字
+# 一字不动、**无需重定基线**——这是那次重构的等价性锚点。
+_EVAL_PROFILE = EvalProfile(
+    # 5 类意图口径。纯数据集元数据：旧分类器已随 change retire-legacy-intent-classifier
+    # 删除，这些标签不再对应任何组件，只管覆盖约束/分项分析/切分规则。
+    labels=frozenset({"appointment", "query", "pay", "statistics", "other"}),
+    # 门禁守正确性子集。刻意排除延迟（环境噪声）、回复质量（judge 未校准）、
+    # 以及工具调用的其余分档（同一底层行为，只守 F1 即可）。
+    gated_metrics=("工具调用-F1", "槽位抽取完整率"),
+    # 工具入参名 → 统一槽位键。technician_name 归一为 technician（对齐 AppointmentSlots）；
+    # create_appointment 的 technician_id/session_id 是 ID/会话基建、不是「抽取槽位」，不在此。
+    slot_key_map={
+        "start_time": "start_time",
+        "duration": "duration",
+        "project": "project",
+        "preference": "preference",
+        "gender": "gender",
+        "technician_name": "technician",
+    },
+)
 
 
 def build_domain() -> Domain:
@@ -43,4 +65,5 @@ def build_domain() -> Domain:
         system_prompt=SYSTEM_PROMPT,
         policy=POLICY,
         evals_dir=_EVALS_DIR,
+        eval_profile=_EVAL_PROFILE,
     )

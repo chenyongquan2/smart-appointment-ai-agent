@@ -25,7 +25,9 @@
 
 分层结构：`Channel/Gateway(channels/ + web/)` → `Executor(executor/ 任务执行层)` → `Harness(harness/ 域无关运行时)` → `Domains(domains/ 可装载领域包)` → `Services(services/)` → `DB(db/ Repository)` → `Config(config/, 含 model_provider Provider 抽象)`。知识库检索是一个**出站端口**（`services/knowledge_search.py`），实现将由独立的 RAG 项目提供。
 
-**换域 = 换五样东西**（change `domain-packages`）：工具集 + 子 Agent 集 + 系统提示 + 权限策略 + 评估数据。这五样在 `domains/<name>/`，由 `AGENT_DOMAIN` 环境变量决定装哪个（缺省 `appointment`）。运行时（TAO 循环、记忆、护栏、Tracer、评估运行器）**一行不动**，且 MUST NOT 出现 `if domain == ...`。
+**换域 = 换五样东西**（change `domain-packages`）：工具集 + 子 Agent 集 + 系统提示 + 权限策略 + **评估数据与标注口径**。这五样在 `domains/<name>/`，由 `AGENT_DOMAIN` 环境变量决定装哪个（缺省 `appointment`）。运行时（TAO 循环、记忆、护栏、Tracer、评估运行器）**一行不动**，且 MUST NOT 出现 `if domain == ...`。
+
+第五样不止是一个数据目录：评估机制要读用例，就得知道「本域的标签叫什么、哪些入参算槽位、本域能守哪些门禁项」，这三项由 `EvalProfile` 声明（change `oncall-evals-bootstrap`）。它们此前硬编码在 `evals/` 里，装上另一个域要么直接加载失败，要么门禁**静默**少守一项。
 
 判断一段代码该放哪，只问：**换成另一个域还成立吗？** 成立 → 域无关，留 `harness/` 或 `evals/`；不成立 → 进领域包。这条判据有测试守着（`tests/test_domain_loading.py`）。
 

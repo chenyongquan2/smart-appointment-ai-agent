@@ -16,10 +16,18 @@ from evals.agent_capture import CaptureResult
 def _wire_placeholders():
     """注入 run_evals 的模块级占位（正常由 run_baseline 内按需 import 后设置）。"""
     import evals.run_evals as re
+    from functools import partial
+
+    from domains import load_domain
     from evals.metrics import EvalResult, slots_from_tool_calls
 
     re._EvalResult = EvalResult
-    re._slots_from_tool_calls = slots_from_tool_calls
+    # 槽位键映射随域声明（change oncall-evals-bootstrap），故占位是绑好映射的 partial——
+    # 与 run_baseline 里的形状一致。
+    re._slots_from_tool_calls = partial(
+        slots_from_tool_calls,
+        slot_key_map=load_domain("appointment").eval_profile.slot_key_map,
+    )
     yield
 
 

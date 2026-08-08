@@ -1,6 +1,6 @@
 """领域包：把「域」收敛成一个可装载的包。
 
-**换域 = 换五样东西**：工具集 + 子 Agent 集 + 系统提示 + 权限策略 + 评估数据。
+**换域 = 换五样东西**：工具集 + 子 Agent 集 + 系统提示 + 权限策略 + 评估数据与标注口径。
 运行时（TAO 循环、记忆、护栏、Tracer、评估运行器）**一行不动**——这正是本模块存在的
 全部理由，也是它的验收标准。
 
@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from domains.eval_profile import EvalProfile
+
 if TYPE_CHECKING:  # 仅类型注解，避免 import 期拉起 harness 的重型依赖
     from harness.guardrails.permission import PermissionPolicy
     from harness.subagents.base import SubAgent
@@ -27,6 +29,7 @@ if TYPE_CHECKING:  # 仅类型注解，避免 import 期拉起 harness 的重型
 
 __all__ = [
     "Domain",
+    "EvalProfile",
     "load_domain",
     "available_domains",
     "build_tool_registry",
@@ -59,6 +62,10 @@ class Domain:
         policy: 本域的权限策略，接入 ``ToolRegistry`` 的分发闸门。
         evals_dir: 本域评估数据（``cases.jsonl`` / ``baseline.json``）所在目录。
             **只有数据随域走，评估机制留在 evals/**（多采样 CI、门禁、triage 等域无关）。
+        eval_profile: 本域的评估**标注口径**（标签白名单 / 槽位键映射 / 门禁指标集）。
+            与 ``evals_dir`` 同属第五样东西：光有数据目录不够——评估机制要读一份用例，
+            就得先知道「本域的标签叫什么、哪些入参算槽位、本域实际能守哪些指标」，
+            而这三件事换个域就不成立。见 ``domains/eval_profile.py``。
     """
 
     name: str
@@ -67,6 +74,7 @@ class Domain:
     system_prompt: str
     policy: "PermissionPolicy"
     evals_dir: Path
+    eval_profile: "EvalProfile"
 
 
 def _load_oncall() -> Domain:

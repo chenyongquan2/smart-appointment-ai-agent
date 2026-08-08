@@ -1,0 +1,104 @@
+// OnCall 值守域评估用例集（change oncall-evals-bootstrap）
+//
+// expected_intent = 本域声明的 5 类标签（domains/oncall/__init__.py 的 _EVAL_PROFILE.labels）。
+//   纯数据集元数据：不喂任何分类器，只管覆盖约束/按类分析/切分规则。按**工具族**划分，
+//   这样「每类不少于 5 条」直接翻译成工具覆盖。**与预约域的 5 类毫无关系，不可比。**
+//     log_triage       查日志排障（traceId / 报错片段 / 告警时刻下钻）→ vlog_query
+//     code_lookup      定位与只读检索服务源码 → locate_service_code / code_search / read_source
+//     docs_lookup      MT 平台 Manager API 语义 → mt_docs_search
+//     reference_lookup 加载排查资料（服务档案 / 各类错误码表）→ load_reference
+//     other            与值守排障无关的输入 → 不调任何工具（expected_tools: []）
+//
+// expected_tool_args（喂门禁第二项「工具调用-参数级F1」）**只标枚举或短字面量键**：
+//   service（ocs4/ocs5/mttools，取自 repos/registry.json）、env、platform（mt4/mt5）、
+//   name（ReferenceName 枚举）、path（明确给出的源码路径）。
+//   ⛔ 带 schema 默认值的入参一律**不标**——window/limit/glob/sync/context_lines/
+//      start_line/line_count 模型不给也会出现在 args 里，标了就是白拿分（同「哨兵值
+//      不算已填」是一条原则）。
+//   ⛔ 自由文本入参一律**不标**——term/pattern/query/logsql 的语义等价形态太多
+//      （同一个 traceId 可以走 term 也可以走 logsql），精确比对会恒 miss。
+//
+// 槽位完整率对本域**按设计不度量**（域声明的 slot_key_map 为空）：本域判别性入参几乎
+//   全是必填项/枚举，存在性口径下只要工具被调用就恒命中，那指标只是工具 F1 的影子。
+// expected_outcome 一律**不标**：六工具全为只读检索，没有「办成没办成」的事务终态，
+//   硬标一个等于把「调用成功」重命名为「任务成功」。见 evals/README.md 的覆盖边界。
+//
+// ⚠ 「查日志 → 看源码」不作单轮组合用例：系统提示明确要求那种情况「本轮不做源码分析」，
+//   标它等于期望一个被刻意抑制的行为。该链路天然多轮，随多轮用例一并推迟。
+// ⚠ mt_docs_search 的锚点只能是 **Manager API 语义**问题：按分诊表，返回码要先查本地
+//   speed 表（load_reference），速查表没覆盖才轮到文档库。
+
+// ══════════════════════════════════════════════════════════════════════════
+// dev 子集
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── log_triage（vlog_query 锚点；一律给窄时间窗措辞以控网关流量）────────────
+{"input": "查一下 prod 环境最近半小时 ocs4 的报错日志", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "prod"}}}
+{"input": "帮我搜下这个 traceId：a3f9c21e8b7d4056，uat 环境，最近一小时", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "uat"}}}
+{"input": "stg 上有个请求超时，日志里带 TaskCoordinator timeout，最近 30 分钟看一下", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "stg"}}}
+{"input": "刚收到告警说 prod 有大量 connection refused，帮我查查最近一小时的日志", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "prod"}}}
+{"input": "这条 vmui 链接你帮我看下命中了什么 https://vmui.internal/select/vmui/#/?query=cpp&g0.range_input=1h", "expected_intent": "log_triage", "expected_tools": ["vlog_query"]}
+{"input": "dev 环境近 30 分钟有没有 OnDisconnect 的记录", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "dev"}}}
+{"input": "查下 pod_ip 是 10.42.7.19 的那台机器最近十分钟的日志，prod", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "prod"}}}
+
+// ── code_lookup ─ locate_service_code 锚点 ──────────────────────────────────
+{"input": "把 ocs4 prd 分支的源码准备好，我等下要看代码", "expected_intent": "code_lookup", "expected_tools": ["locate_service_code"], "expected_tool_args": {"locate_service_code": {"service": "ocs4", "env": "prd"}}}
+{"input": "同步一下 ocs5 uat 的仓库到最新", "expected_intent": "code_lookup", "expected_tools": ["locate_service_code"], "expected_tool_args": {"locate_service_code": {"service": "ocs5", "env": "uat"}}}
+{"input": "mttools stg 的代码工作区现在是什么状态？", "expected_intent": "code_lookup", "expected_tools": ["locate_service_code"], "expected_tool_args": {"locate_service_code": {"service": "mttools", "env": "stg"}}}
+
+// ── code_lookup ─ code_search 锚点 ──────────────────────────────────────────
+{"input": "在 ocs4 prd 代码里搜一下 66302 是在哪里抛出来的", "expected_intent": "code_lookup", "expected_tools": ["code_search"], "expected_tool_args": {"code_search": {"service": "ocs4", "env": "prd"}}}
+{"input": "ocs5 uat 里 mt5_return_to_result_code 这个函数在哪几个文件出现过？", "expected_intent": "code_lookup", "expected_tools": ["code_search"], "expected_tool_args": {"code_search": {"service": "ocs5", "env": "uat"}}}
+{"input": "帮我在 ocs4 stg 的 cpp 文件里找 CMT4Processor 的定义", "expected_intent": "code_lookup", "expected_tools": ["code_search"], "expected_tool_args": {"code_search": {"service": "ocs4", "env": "stg"}}}
+
+// ── code_lookup ─ read_source 锚点（给出确切路径，可直接读）─────────────────
+{"input": "读一下 ocs5 prd 的 fp-common/fp-common/result_code.h，从头看 60 行", "expected_intent": "code_lookup", "expected_tools": ["read_source"], "expected_tool_args": {"read_source": {"service": "ocs5", "env": "prd", "path": "fp-common/fp-common/result_code.h"}}}
+{"input": "把 ocs5 uat 的 fp-common/fp-common/mt_utils/utils.cpp 打开看看", "expected_intent": "code_lookup", "expected_tools": ["read_source"], "expected_tool_args": {"read_source": {"service": "ocs5", "env": "uat", "path": "fp-common/fp-common/mt_utils/utils.cpp"}}}
+{"input": "ocs4 prd 的 src/ocs/MT4/CMT4Processor.cpp 这个文件，帮我看下开头部分", "expected_intent": "code_lookup", "expected_tools": ["read_source"], "expected_tool_args": {"read_source": {"service": "ocs4", "env": "prd", "path": "src/ocs/MT4/CMT4Processor.cpp"}}}
+
+// ── docs_lookup（只问 Manager API 语义；返回码问题按分诊表归 load_reference）──
+{"input": "MT5 的 Manager API 里怎么读取一个用户组的配置？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt5"}}}
+{"input": "MT4 Manager API 的 CManagerInterface 有没有批量查询持仓的接口？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt4"}}}
+{"input": "MT5 Manager API 订阅实时行情要调哪个方法？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt5"}}}
+{"input": "MT4 的 Manager API 怎么修改一个账户的杠杆？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt4"}}}
+{"input": "MT5 Manager API 里 deal 和 order 这两个概念的接口分别是什么？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt5"}}}
+
+// ── reference_lookup（四种 ReferenceName 分诊）──────────────────────────────
+{"input": "responseCode 66418 是什么意思？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs4-returncode"}}}
+{"input": "OCS5 返回了 result_code 5021，这是什么错误？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs5-returncode"}}}
+{"input": "日志里 mtCode 是 MT_RET_REQUEST_INVALID，什么含义？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "mt-returncode"}}}
+{"input": "OCS4 生产环境一共有哪几台机器？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs-service-profiles"}}}
+{"input": "Rocket 这个主体的 C 分区对应哪台 host？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs-service-profiles"}}}
+{"input": "nCode 68302 属于哪个码段，什么错误？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs4-returncode"}}}
+
+// ── other（与值守排障无关；期望不调任何工具）────────────────────────────────
+{"input": "今天北京天气怎么样", "expected_intent": "other", "expected_tools": []}
+{"input": "帮我写一封请假邮件", "expected_intent": "other", "expected_tools": []}
+{"input": "你是用什么大模型做的", "expected_intent": "other", "expected_tools": []}
+{"input": "推荐几家公司附近好吃的川菜馆", "expected_intent": "other", "expected_tools": []}
+{"input": "把这段英文翻译成中文：the quick brown fox jumps over the lazy dog", "expected_intent": "other", "expected_tools": []}
+
+// ── 跨工具组合（三条链路；expected_tools 按整段累计）────────────────────────
+// 链路 1：定位 → 检索 → 读取（全在源码侧，不掺日志）
+{"input": "帮我在 ocs4 prd 里找到 ENUM_ERR_MT4_CODE 的定义，然后把那段代码贴给我看", "expected_intent": "code_lookup", "expected_tools": ["code_search", "read_source"], "expected_tool_args": {"code_search": {"service": "ocs4", "env": "prd"}, "read_source": {"service": "ocs4", "env": "prd"}}}
+// 链路 2：先按服务档案定位字段，再查日志
+{"input": "CG-Trade 主体在 prod 上最近半小时有没有报错？按它对应的机器查", "expected_intent": "log_triage", "expected_tools": ["load_reference", "vlog_query"], "expected_tool_args": {"load_reference": {"name": "ocs-service-profiles"}, "vlog_query": {"env": "prod"}}}
+// 链路 3：错误码分诊 → 本地速查表没覆盖才用平台文档兜底
+{"input": "MT5 返回了一个码 10047，本地返回码表里查不到的话帮我到 Manager API 文档里找找", "expected_intent": "reference_lookup", "expected_tools": ["load_reference", "mt_docs_search"], "expected_tool_args": {"load_reference": {"name": "mt-returncode"}, "mt_docs_search": {"platform": "mt5"}}}
+
+// ══════════════════════════════════════════════════════════════════════════
+// held-out 子集（过拟合体检；MUST NOT 参与调优与门禁）
+// traceId / 错误码 / 源码路径 / 检索词均与 dev 不重复；服务名不在此列（全项目仅三个）
+// ══════════════════════════════════════════════════════════════════════════
+{"input": "uat 环境最近 20 分钟有没有 Redis 相关的报错？", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "uat"}}, "split": "held-out"}
+{"input": "帮我查 traceId 7c1b40de99a2f358，prod，近一小时", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "prod"}}, "split": "held-out"}
+{"input": "stg 上 select_account 这个 cmd 最近十分钟的调用情况看一下", "expected_intent": "log_triage", "expected_tools": ["vlog_query"], "expected_tool_args": {"vlog_query": {"env": "stg"}}, "split": "held-out"}
+{"input": "在 mttools prd 里搜一下 heartbeat_interval 这个配置项", "expected_intent": "code_lookup", "expected_tools": ["code_search"], "expected_tool_args": {"code_search": {"service": "mttools", "env": "prd"}}, "split": "held-out"}
+{"input": "读一下 ocs4 uat 的 src/ocs/TaskCoordinator.h，看前 80 行", "expected_intent": "code_lookup", "expected_tools": ["read_source"], "expected_tool_args": {"read_source": {"service": "ocs4", "env": "uat", "path": "src/ocs/TaskCoordinator.h"}}, "split": "held-out"}
+{"input": "MT4 Manager API 怎么拿到某个交易品种的点差设置？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt4"}}, "split": "held-out"}
+{"input": "MT5 Manager API 有没有查询账户历史出入金的接口？", "expected_intent": "docs_lookup", "expected_tools": ["mt_docs_search"], "expected_tool_args": {"mt_docs_search": {"platform": "mt5"}}, "split": "held-out"}
+{"input": "result_code 4012 代表什么？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs5-returncode"}}, "split": "held-out"}
+{"input": "6i 这个主体在生产上是部署在哪台机器的？", "expected_intent": "reference_lookup", "expected_tools": ["load_reference"], "expected_tool_args": {"load_reference": {"name": "ocs-service-profiles"}}, "split": "held-out"}
+{"input": "帮我算一下 128 乘以 47 等于多少", "expected_intent": "other", "expected_tools": [], "split": "held-out"}
+// --- online 回灌 (改造 7) ---
+{"input": "看一下这个requestId:36a29ab7c75a490c8d5af4bfc6414ee7", "expected_intent": "log_triage", "expected_tools": ["load_reference", "vlog_query"], "expected_tool_args": {"load_reference": {"name": "ocs-service-profiles"}}, "source": "online"}
