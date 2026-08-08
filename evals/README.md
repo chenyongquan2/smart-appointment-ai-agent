@@ -62,14 +62,110 @@
 - **v1 不纳入门禁**：任务成功依赖工具触发、是强非确定项，先只打印观察；不在 `GATED_METRICS`，`--gate` 不因它退出非零。
 - ⚠️ **诚实边界**：这是**离线任务完成度代理**，不是真实转化率/满意度/人工介入率（那些需真实用户流量，属生产级）。实测 dev 集任务成功率约 20%（24 条期望建单/查询、仅 5 条真正成功完成终态）——这正是它暴露的、意图/工具指标看不到的「办没办成」缺口。
 
-## 📁 数据在哪、机制在哪（change `domain-packages`）
+## 📁 数据在哪、机制在哪（change `domain-packages` → 修正于 `oncall-evals-bootstrap`）
 
-**评估数据随领域包走，评估机制留在本目录。**
+**评估数据与标注口径随领域包走，评估机制留在本目录。**
 
-- 数据：`domains/<domain>/evals/{cases.jsonl,baseline.json}`（预约域即 `domains/appointment/evals/`）
-- 机制：本目录的 `run_evals.py` / `agent_capture.py` / `trace_collect.py` / `triage.py` / 并发 runner —— **全部域无关**，从 `load_domain().evals_dir` 取数据路径
+- 数据：`domains/<domain>/evals/{cases.jsonl,baseline.json}`
+- **标注口径**：`domains/<domain>/__init__.py` 里声明的 `EvalProfile`——三项：
+  - `labels`：本域数据集的 `expected_intent` 标签白名单
+  - `slot_key_map`：工具入参名 → 槽位键（**空 = 本域不度量槽位完整率**）
+  - `gated_metrics`：本域门禁守哪几项
+- 机制：本目录的 `run_evals.py` / `metrics.py` / `agent_capture.py` / `trace_collect.py` / `triage.py` / 并发 runner —— **全部域无关**，从 `load_domain()` 取数据路径与口径
 
-这正是「机制 ≠ 数据」那条分界的落地：OnCall 第 4 期建 oncall 用例集时，只需往 `domains/oncall/evals/` 放两个文件，本目录一行不用改。
+> ⚠️ **修正一条曾经的说法**：`domain-packages` 的 design D7 说「建 oncall 用例集时本目录一行不用改」——**实际不成立**。彼时机制里还硬编码着三处预约域概念：`run_evals.VALID_INTENTS`（5 类预约意图，非法标签**硬退出 2**，oncall 用例根本加载不进来）、`metrics._SLOT_ARG_KEYS`（预约槽位名）、`metrics.GATED_METRICS`（`{工具调用-F1, 槽位抽取完整率}`）。第三条最坏：它不报错，只是**静默**让门禁少守一项，报告里看起来一切正常。`oncall-evals-bootstrap` 把三项收进 `EvalProfile` 后，这条分界才真正成立。
+
+## 🛡 值守域（oncall）用例集
+
+数据在 `domains/oncall/evals/`，口径见 `domains/oncall/__init__.py` 的 `_EVAL_PROFILE`。
+
+**标签口径（5 类，按工具族划分）**——刻意与工具集对齐，这样「每类不少于 5 条」直接翻译成工具覆盖：
+
+| 标签 | 含义 | 主工具 |
+|---|---|---|
+| `log_triage` | 查日志排障（traceId / 报错片段 / 告警下钻） | `vlog_query` |
+| `code_lookup` | 定位与只读检索服务源码 | `locate_service_code` / `code_search` / `read_source` |
+| `docs_lookup` | MT4/MT5 Manager API 语义 | `mt_docs_search` |
+| `reference_lookup` | 加载排查资料（服务档案 / 错误码表） | `load_reference` |
+| `other` | 与值守排障无关 | 无（`expected_tools: []`） |
+
+**门禁守 `{工具调用-F1, 工具调用-参数级F1}`，不守槽位完整率**——这是口径判断，不是省事：
+
+- 本域判别性入参（`service` / `env` / `platform` / `load_reference.name`）几乎全是**必填项或枚举**。槽位完整率是**存在性**口径（键在即命中），必填项只要工具被调用就一定在 → 该指标恒等于「工具调没调」，是 `工具调用-F1` 的影子，两项一起守等于同一信号守两遍。
+- 反过来，正因为这些值是枚举和短字面量，**精确值比对**在这里成立。预约域参数级 F1 只有 11.1% 恰恰是相反的原因：它的值是自由文本（`start_time` 常被模型算错、`gender='男'` 而非 `male`）。**同一个指标，在两个域的适用性正好相反。**
+- 故 oncall 的 `slot_key_map` 声明为**空**，`槽位抽取完整率` 恒 N/A，报告里标「本域不度量该项」——与「本次未捕获」的 N/A 区分开：前者是设计，后者是抖动。
+
+**`expected_tool_args` 标注规则**：只标 `service` / `env` / `platform` / `name` / `path`。
+
+- ⛔ 带 schema 默认值的入参一律不标（`window` / `limit` / `glob` / `sync` / `context_lines` / `start_line` / `line_count`）——模型不给也会出现在 args 里，标了就是白拿分。这是「哨兵值 `未知`/`无` 不算已填」的同一条原则：**默认值不是模型的抽取成果**。
+- ⛔ 自由文本入参一律不标（`term` / `pattern` / `query` / `logsql`）——语义等价形态太多（同一个 traceId 走 `term` 或 `logsql` 都对），精确比对会恒 miss。
+
+**⚠ 用例期望必须与系统提示的分诊规则一致**，否则量到的是「提示词和用例谁写得对」，不是模型能力。两条实测踩过的坑：
+
+- **「查日志 → 看源码」不作单轮组合用例**：`domains/oncall/prompt.py` 明确要求「下钻到需要看源码才能定位时：给出日志层结论 + 线索，**本轮不做源码分析**」。标这条单轮链路，期望的是一个被刻意抑制的行为。该链路天然多轮，随多轮用例一并推迟。
+- **`mt_docs_search` 的锚点只能是 Manager API 语义问题**：分诊表规定三层查法——自研码查 reference → 平台原生码先查本地 `mt-returncode` 速查表 → **速查表没覆盖才用 `mt_docs_search`**。拿「`MT_RET_REQUEST_INVALID` 是什么」当它的锚点，期望的恰是分诊表禁止的那一步。
+
+### ⛔ 值守域**明确不覆盖**的两层
+
+| 指标层 | 状态 | 为什么 |
+|---|---|---|
+| `任务成功率` | **不覆盖**（无用例标 `expected_outcome`） | 六工具全为**只读检索**，没有 `create_appointment` 那样的事务终态——「查到了想要的日志」不是一个工具能判定的事实。硬标一个终态工具，等于把「调用成功」重命名为「任务成功」，是伪造分母 |
+| `回复质量通过率` | **不覆盖** | judge 未校准（既有诚实原则已排除它进门禁）；且值守回复的正确性依赖代码仓 / MT 文档库 / 日志数据的**当下内容**，语料一漂移同一条用例的正确答案就变了，离线判定不成立 |
+
+这两层在报告里仍会打印，但对本域恒 N/A——**不要读成「模型这两方面不行」，它们压根没被量**。
+
+### 基线（2026-08-08 首次标定，dev 36 条 × 3 采样）
+
+| 指标 | 均值 ± 95% t-CI 半宽 | 门禁 |
+|---|---|---|
+| **工具调用-F1** | **88.9% ± 0.9%** | ✅ 守 |
+| **工具调用-参数级F1** | **86.7% ± 1.1%** | ✅ 守 |
+| 工具调用-召回率 | 96.8% ± 2.0% | — |
+| 工具调用-精确率 | 86.3% ± 2.3% | — |
+| ├ F1 正样本 | 87.1% ± 1.1%（占 86%） | — |
+| └ F1 负样本 | 100.0% ± 0.0%（占 14%，零方差） | — |
+| 工具调用-序列正确率 | 96.3% ± 4.0% | — |
+| 工具调用-完全匹配率 | 77.8% ± 0.0% | — |
+| 端到端延迟 | 42.4s ± 8.9s | — |
+| 槽位完整率 / 任务成功率 / 回复质量 | N/A（本域不度量 / 不覆盖） | — |
+
+**容差定 `0.10`，依据如下**（spec 要求容差覆盖实测半宽、不得是无凭据魔数）：
+
+- 实测最差半宽 **1.1pp**（参数级 F1）。直接取 1.1pp 太脆——`n=3` 的半宽估计本身很不稳（t 临界 4.303），预约域实测过连续两次重定基线间半宽摆动 2~5 倍（槽位 ±28.7pp → ±5.3pp，F1 ±5.7pp → ±12.0pp）。
+- 故按同一条经验留安全系数：`0.10` ≈ 实测最差半宽的 9 倍，仍比预约域的 `0.30` **紧 3 倍**。
+- **单跑实测佐证**（连跑 3 次 `--gate`，均 PASS、均实守 2 项）：F1 `88.5 / 89.7 / 86.9`、参数级 F1 `86.2 / 87.7 / 84.3`——**单跑偏离基线最大 2.4pp**，`0.10` 留了约 4 倍余量。
+- **这是只有一次基线观测的暂定值**。第二次重定基线后按「历次最差」复核——届时若半宽依旧这么小，可考虑收紧到 `0.05`（仍留 2 倍余量）；MUST NOT 追着最新一次数字上下调。
+
+```bash
+AGENT_DOMAIN=oncall uv run python evals/run_evals.py --gate --tolerance 0.10
+```
+
+> ⚠️ CLI 的 `--tolerance` 默认值仍是全局的 `0.30`（按预约域校准）。本域跑门禁**必须显式带 `--tolerance 0.10`**，否则会松 3 倍。把容差也收进 `EvalProfile` 是个自然的后续（与 `gated_metrics` 同理），本次未做。
+
+**注意 `工具调用-F1 = 88.9%` 与预约域的 `56.2%` 不可比**——见本节末尾。数字高不代表模型变强了，是任务形态不同（本域大量单工具直接触发，预约域是多工具链）。
+
+### 定基线的语料前提（2026-08-08 实测）
+
+| 语料 | 状态（2026-08-08 实测） |
+|---|---|
+| `repos/` 的 `ocs4` / `ocs5` prd worktree | ✅ ready |
+| 日志网关（VictoriaLogs） | ✅ 连通（5 条冒烟真跑成功） |
+| MT 文档库 | ✅ `.env` 的 `ONCALL_MT_DOCS_DIR` → `data/mt-docs/{mt4docs.db,mt5api.db}`，MT4/MT5 检索实测均有命中 |
+| `mttools` prd 分支 | ❌ `branch_not_found`——`repos/mt-tools/.git-mirror` 的 `refs/heads` 里没有 `MTTools/prd`（只有 `refs/remotes/origin/`）。**仅 held-out 1 条用到，不进 dev 基线** |
+
+> ⚠️ 排查这类问题时注意：`config/mt_docs_config.py` 与 `config/repo_config.py` 只读 `os.getenv`，**不自己调 `load_dotenv()`**（那是 `run_evals.py` / `app.py` 入口的事）。直接 `python -c` 探测会读不到 `.env`，得出「未配置」的假结论。
+
+```bash
+AGENT_DOMAIN=oncall uv run python evals/run_evals.py --samples 3 --update-baseline
+```
+
+定基线时**必须**记录 `工具调用-F1` 与 `工具调用-参数级F1` 的 95% t-CI 半宽，容差按实测最差半宽定，**不得直接沿用预约域的 `0.30`**（那是按预约域槽位 ±28.7pp 定的，与本域无关）。
+
+**冒烟已验证的一件事**：5 条 `log_triage` 用例上 `工具调用-参数级F1 = 91.7%`（n=4），对照预约域的 11.1%——枚举/短字面量入参确实让精确值比对成立，这是选它当第二道门禁的依据（design D3）的第一份实测支持。样本太小，不作结论。
+
+### ⚠ 两域指标**不可比**
+
+`工具调用-F1 = 56.2%`（预约域）与值守域的任何数字**不可并列、不可互相当目标**——工具名都不同，任务形态也不同。谁拿预约域的数字当 oncall 的目标都是误用，反之亦然。
 
 ## ⛔ 本用例集已冻结（2026-08-02 决策）
 
@@ -153,8 +249,8 @@ uv run python evals/run_evals.py --samples 3 --update-baseline
 uv run python evals/run_evals.py --gate
 ```
 
-- **基线文件**：`evals/baseline.json`（进 git、可追溯），记录**全部非 N/A 指标**的快照 + 元信息（用例数、采样次数、`schema_version`）。可经 `--baseline <path>` 改路径。
-- **门禁只守正确性子集** `GATED_METRICS = {工具调用-F1, 槽位抽取完整率}`（2 项；意图分类准确率已随旧分类器退役，见上节）。**刻意排除**：
+- **基线文件**：当前域的 `evals/baseline.json`（进 git、可追溯），记录**全部非 N/A 指标**的快照 + 元信息（用例数、采样次数、`schema_version`）。可经 `--baseline <path>` 改路径。
+- **门禁只守正确性子集，守哪几项由领域包声明**（`EvalProfile.gated_metrics`，change `oncall-evals-bootstrap`）：预约域守 `{工具调用-F1, 槽位抽取完整率}`，值守域守 `{工具调用-F1, 工具调用-参数级F1}`。声明里的名字拼错、或声明了下面这些不准守的指标，**装载即报错退出 2**——静默跳过一个拼错的名字等于门禁少守一项而没人知道。任何域都**刻意排除**：
   - `端到端延迟`——机器/网络/API 负载相关，跨环境抖动大，非正确性信号；
   - `回复质量通过率`——来自**未校准** judge，按项目诚实原则不可当真值；
   - 工具调用的其余 5 个子指标——同一底层行为，只守 F1（name 级部分给分、平滑退化）即可。

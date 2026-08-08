@@ -7,11 +7,11 @@
 
 import pytest
 
+from domains import load_domain
 from evals.metrics import (
     EvalResult,
     F1_NEGATIVE,
     F1_POSITIVE,
-    GATED_METRICS,
     POLARITY_METRICS,
     compare_to_baseline,
     tool_call_f1_by_polarity,
@@ -285,6 +285,10 @@ def test_polarity_na_when_no_tool_capture():
     assert by_name[F1_POSITIVE].na and by_name[F1_NEGATIVE].na
 
 
+# 被守指标集按域取（change oncall-evals-bootstrap）；断言内容不变。
+_GATED = load_domain("appointment").eval_profile.gated_metrics
+
+
 def test_polarity_metrics_are_not_gated():
     """★ 分档 MUST NOT 进门禁（design D2）。
 
@@ -292,7 +296,7 @@ def test_polarity_metrics_are_not_gated():
     ~100%、方差极小，守它是个假门禁。没有这条测试，日后"既然算出来了不如守上"
     是很自然的动作。
     """
-    assert set(GATED_METRICS).isdisjoint(POLARITY_METRICS)
+    assert set(_GATED).isdisjoint(POLARITY_METRICS)
 
 
 def test_polarity_does_not_change_gate_verdicts():
@@ -302,7 +306,7 @@ def test_polarity_does_not_change_gate_verdicts():
                F1_POSITIVE: (0.10, False),      # 分档值再难看也不该影响裁决
                F1_NEGATIVE: (1.00, False)}
 
-    report = compare_to_baseline(current, baseline, tolerance=0.05)
+    report = compare_to_baseline(current, baseline, tolerance=0.05, gated=_GATED)
 
     assert report.passed is True
     assert [v.name for v in report.verdicts] == ["工具调用-F1"], "分档不该出现在裁决里"

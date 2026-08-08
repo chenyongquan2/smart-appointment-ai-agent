@@ -22,6 +22,14 @@ from harness.tools.base import Tool
 from harness.tools.registry import ToolRegistry
 
 
+# 标签白名单随域声明（change oncall-evals-bootstrap）。这里**显式**取预约域的那份：
+# 本文件的用例字面量用的是预约域标签，而 load_cases 的缺省取「当前 AGENT_DOMAIN 装的域」，
+# 跟着环境变量飘。测试不该受 .env 影响，故显式传。
+from domains import load_domain  # noqa: E402
+
+_LABELS = load_domain("appointment").eval_profile.labels
+
+
 # ── 加载层：load_cases 支持多轮 turns ─────────────────────────────────────────
 def _write_cases(tmp_path, lines: list[str]):
     p = tmp_path / "cases.jsonl"
@@ -34,7 +42,7 @@ def test_load_single_turn_normalizes_to_turns(tmp_path):
     from evals.run_evals import load_cases
 
     path = _write_cases(tmp_path, ['{"input": "你好", "expected_intent": "other"}'])
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert len(cases) == 1
     assert cases[0]["turns"] == ["你好"]
 
@@ -47,7 +55,7 @@ def test_load_multiturn_turns_list(tmp_path):
         tmp_path,
         ['{"turns": ["我想约个按摩", "明天下午2点，约李师傅"], "expected_intent": "appointment"}'],
     )
-    cases = load_cases(path)
+    cases = load_cases(path, _LABELS)
     assert cases[0]["turns"] == ["我想约个按摩", "明天下午2点，约李师傅"]
 
 
@@ -60,7 +68,7 @@ def test_load_rejects_both_input_and_turns(tmp_path):
         ['{"input": "a", "turns": ["a"], "expected_intent": "other"}'],
     )
     with pytest.raises(SystemExit) as exc:
-        load_cases(path)
+        load_cases(path, _LABELS)
     assert exc.value.code == 2
 
 
@@ -70,7 +78,7 @@ def test_load_rejects_neither_input_nor_turns(tmp_path):
 
     path = _write_cases(tmp_path, ['{"expected_intent": "other"}'])
     with pytest.raises(SystemExit) as exc:
-        load_cases(path)
+        load_cases(path, _LABELS)
     assert exc.value.code == 2
 
 
@@ -80,7 +88,7 @@ def test_load_rejects_empty_turns(tmp_path):
 
     path = _write_cases(tmp_path, ['{"turns": [], "expected_intent": "other"}'])
     with pytest.raises(SystemExit) as exc:
-        load_cases(path)
+        load_cases(path, _LABELS)
     assert exc.value.code == 2
 
 
@@ -189,11 +197,19 @@ async def test_single_element_turns_equivalent_to_single_turn():
 async def test_run_once_dispatches_multiturn_vs_single():
     """_run_once：多轮用例调多轮采集、单轮用例调单轮采集。"""
     import evals.run_evals as re
+    from functools import partial
+
+    from domains import load_domain
     from evals.metrics import EvalResult, slots_from_tool_calls
 
     # 注入模块级占位（正常由 run_baseline 设置）
     re._EvalResult = EvalResult
-    re._slots_from_tool_calls = slots_from_tool_calls
+    # 槽位键映射随域声明（change oncall-evals-bootstrap），故占位是绑好映射的 partial——
+    # 与 run_baseline 里的形状一致。
+    re._slots_from_tool_calls = partial(
+        slots_from_tool_calls,
+        slot_key_map=load_domain("appointment").eval_profile.slot_key_map,
+    )
 
     seen = {"single": [], "multi": []}
 
@@ -226,10 +242,18 @@ async def test_run_once_fills_task_success_fields():
     """_run_once 把 CaptureResult.tool_outcomes 填进 actual_tool_outcomes、
     并从用例读 expected_outcome（change evals-task-success-rate）。"""
     import evals.run_evals as re
+    from functools import partial
+
+    from domains import load_domain
     from evals.metrics import EvalResult, slots_from_tool_calls
 
     re._EvalResult = EvalResult
-    re._slots_from_tool_calls = slots_from_tool_calls
+    # 槽位键映射随域声明（change oncall-evals-bootstrap），故占位是绑好映射的 partial——
+    # 与 run_baseline 里的形状一致。
+    re._slots_from_tool_calls = partial(
+        slots_from_tool_calls,
+        slot_key_map=load_domain("appointment").eval_profile.slot_key_map,
+    )
 
     async def fake_single(text, llm, full, subs):
         return CaptureResult(

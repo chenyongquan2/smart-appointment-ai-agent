@@ -4,14 +4,17 @@
 混合宏平均；并确认该指标**不在门禁**内、不触发非零退出。不触网、不调真实 provider。
 """
 
+from domains import load_domain
 from evals.metrics import (
-    GATED_METRICS,
     EvalResult,
     build_report,
     compare_to_baseline,
     report_to_baseline,
     task_success_rate,
 )
+
+# 被守指标集按域取（change oncall-evals-bootstrap）；断言内容不变。
+_GATED = load_domain("appointment").eval_profile.gated_metrics
 
 
 def _r(expected_outcome, outcomes):
@@ -85,17 +88,17 @@ def test_macro_average_mixed():
 
 
 def test_task_success_in_report_but_not_gated():
-    """任务成功率进多指标报告，但不在 GATED_METRICS、不触发门禁非零。"""
-    assert "任务成功率" not in GATED_METRICS
+    """任务成功率进多指标报告，但不在 _GATED、不触发门禁非零。"""
+    assert "任务成功率" not in _GATED
     rs = [_r("create_appointment", [{"name": "create_appointment", "ok": True}])]
     rep = build_report(rs)
     assert any(m.name == "任务成功率" for m in rep["metrics"])
 
-    # 基线收录任务成功率（作历史参照），但门禁只遍历 GATED_METRICS → 不因它退出非零。
+    # 基线收录任务成功率（作历史参照），但门禁只遍历该域声明的被守指标 → 不因它退出非零。
     base = report_to_baseline(rep, total_cases=1, samples=1)
     assert "任务成功率" in base["metrics"]
     # 当前视图给一个「任务成功率」远低于基线的值，门禁仍 PASS（因不在 gated 内）。
     current = {"任务成功率": (0.0, False)}
-    gate = compare_to_baseline(current, base, tolerance=0.2)
+    gate = compare_to_baseline(current, base, tolerance=0.2, gated=_GATED)
     assert gate.passed is True
     assert all(v.name != "任务成功率" for v in gate.verdicts)  # 压根不比它
