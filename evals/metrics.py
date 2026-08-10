@@ -944,9 +944,15 @@ def _fmt_gate_value(v: Optional[float], is_latency: bool) -> str:
     return f"{v:.3f}s" if is_latency else f"{v * 100:.1f}%"
 
 
-def format_gate_report(gate: GateReport) -> str:
-    """渲染门禁结果：成功静默——回归/无法比对详列，通过项简列，末行给结论。"""
-    lines = [f"\n回归门禁（容差 {gate.tolerance:.3f}）:"]
+def format_gate_report(gate: GateReport, tolerance_source: str = "") -> str:
+    """渲染门禁结果：成功静默——回归/无法比对详列，通过项简列，末行给结论。
+
+    ``tolerance_source``：容差的来源说明（域声明 / 命令行覆盖）。容差随域声明后
+    （change gate-tolerance-per-domain）它不再是命令里看得见的字面量，而判定结论依赖
+    它——故来源必须与结论同处输出，否则回溯一次可疑的 PASS 得去翻命令历史。
+    """
+    suffix = f"，{tolerance_source}" if tolerance_source else ""
+    lines = [f"\n回归门禁（容差 {gate.tolerance:.3f}{suffix}）:"]
     for v in gate.verdicts:
         b = _fmt_gate_value(v.baseline, v.is_latency)
         c = _fmt_gate_value(v.current, v.is_latency)

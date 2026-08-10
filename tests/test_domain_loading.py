@@ -109,7 +109,9 @@ def test_env_var_selects_domain(monkeypatch):
         system_prompt="fake",
         policy=lambda tool, args: None,
         evals_dir=REPO_ROOT,
-        eval_profile=EvalProfile(labels=frozenset({"fake"}), gated_metrics=("工具调用-F1",)),
+        eval_profile=EvalProfile(
+            labels=frozenset({"fake"}), gated_metrics=("工具调用-F1",), tolerance=0.1
+        ),
     )
     monkeypatch.setitem(domains._DOMAINS, "fake", lambda: sentinel)
     monkeypatch.setenv(DOMAIN_ENV_VAR, "fake")
