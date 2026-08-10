@@ -38,10 +38,18 @@ class EvalProfile:
         gated_metrics: 本域门禁守护的指标名。**不允许为空**——「一个都不守」等于没有
             门禁，必须显式暴露而非默许。指标名是否真实存在、是否属被禁的说明性指标，
             由 `evals/` 侧校验（见模块 docstring 的分层理由）。
+        tolerance: 本域门禁容差——比率型指标的回归判定为 `当前 < 基线 − 容差`。
+            **刻意无缺省值**：任何缺省都是「按某个域校准的数」，而这正是本字段要消灭的
+            东西（`0.30` 曾是全局默认，它按预约域槽位 ±28.7pp 定，用在值守域上会松 3 倍
+            且不报错）。每个域必须自己想一遍。
+            **跨域 MUST NOT 互相沿用**。取值须覆盖该域定基线时实测的 95% t-CI 半宽——
+            但那是**流程约束、代码无从校验**：半宽是每次重定基线的观测量，不是常量。
+            这里只校验区间，假装能自动校验它只会给出虚假的安全感。
     """
 
     labels: frozenset[str]
     gated_metrics: tuple[str, ...]
+    tolerance: float
     # 缺省空映射 = 本域不度量槽位完整率。放最后并给缺省值，使「不度量」是一句话的事。
     slot_key_map: Mapping[str, str] = field(default_factory=dict)
 
@@ -63,6 +71,15 @@ class EvalProfile:
             raise ValueError("EvalProfile.gated_metrics 的每一项必须是非空字符串")
         if len(set(self.gated_metrics)) != len(self.gated_metrics):
             raise ValueError(f"EvalProfile.gated_metrics 含重复项：{self.gated_metrics}")
+        # 容差只校验区间：>=1.0 的比率容差等于「永不回归」（门禁形同虚设）；负数无意义。
+        # 0.0 刻意放行——「零容忍，任何下降都算回归」是合法且有意义的严格模式。
+        if isinstance(self.tolerance, bool) or not isinstance(self.tolerance, (int, float)):
+            raise ValueError("EvalProfile.tolerance 必须是数值")
+        if not (0.0 <= float(self.tolerance) < 1.0):
+            raise ValueError(
+                f"EvalProfile.tolerance 必须落在 [0.0, 1.0)，收到 {self.tolerance!r}；"
+                "≥1.0 的比率容差等于门禁永不判回归"
+            )
         if not isinstance(self.slot_key_map, Mapping):
             raise ValueError("EvalProfile.slot_key_map 必须是 Mapping[str, str]")
         if not all(

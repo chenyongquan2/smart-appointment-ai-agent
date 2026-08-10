@@ -35,6 +35,9 @@ _EVAL_PROFILE = EvalProfile(
     # 门禁守正确性子集。刻意排除延迟（环境噪声）、回复质量（judge 未校准）、
     # 以及工具调用的其余分档（同一底层行为，只守 F1 即可）。
     gated_metrics=("工具调用-F1", "槽位抽取完整率"),
+    # 容差（change gate-tolerance-per-domain）：照抄此前的全局默认值，故本域门禁判定
+    # 行为等价。依据是本域实测最差半宽——槽位完整率 ±28.7pp（41 条 dev × 3，干净跑）。
+    tolerance=0.30,
     # 工具入参名 → 统一槽位键。technician_name 归一为 technician（对齐 AppointmentSlots）；
     # create_appointment 的 technician_id/session_id 是 ID/会话基建、不是「抽取槽位」，不在此。
     slot_key_map={

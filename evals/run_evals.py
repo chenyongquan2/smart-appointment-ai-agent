@@ -20,7 +20,10 @@
 回归门禁（改造 6）:
     --update-baseline  把本次跑分落盘为基线（当前域的 evals/baseline.json）
     --gate             跑完比对基线，被守指标回归则以退出码 3 结束
-    --tolerance        容差（默认 0.30）吸收 LLM 抖动；门禁只守正确性子集，
+    --tolerance        容差，吸收 LLM 抖动。**不传即用当前域声明的值**
+                       （Domain.eval_profile.tolerance，change gate-tolerance-per-domain）：
+                       预约域 0.30、值守域 0.10；显式传入则覆盖，供排障与临时放宽。
+                       门禁只守正确性子集，
                        **守哪几项由领域包声明**（Domain.eval_profile.gated_metrics，
                        change oncall-evals-bootstrap）：预约域守 工具调用-F1 / 槽位完整率，
                        值守域守 工具调用-F1 / 参数级F1。延迟与回复质量任何域都不准守。
@@ -90,6 +93,19 @@ DEFAULT_CONCURRENCY = 5
 # dev = 日常调试/调优/门禁用；held-out = 过拟合体检的留出集，MUST NOT 参与调优与门禁。
 # 缺省(未标 split 字段)即 dev——既有用例不改一字即属 dev，向后兼容。
 VALID_SPLITS = {"dev", "held-out"}
+
+
+def _resolve_tolerance(explicit: float | None) -> tuple[float, str]:
+    """定出本次门禁用的容差，并给出它的**来源**。
+
+    显式 ``--tolerance`` 优先（排障与临时放宽必须可用），否则取当前域声明的值。
+    来源要一并返回是因为：容差不再是命令里看得见的字面量后，「这次判定有多松」就成了
+    隐式信息；而判定结论依赖它，故它必须和结论出现在同一处，否则回溯一次可疑的 PASS
+    得去翻命令历史（change gate-tolerance-per-domain 的 design D3）。
+    """
+    if explicit is not None:
+        return explicit, "命令行覆盖"
+    return _EVAL_PROFILE.tolerance, f"来自域 {_DOMAIN.name!r} 声明"
 
 
 def load_cases(path: Path, labels: Collection[str] | None = None) -> list[dict]:
@@ -328,7 +344,10 @@ async def run_baseline(
     gate: bool = False,
     update_baseline: bool = False,
     baseline_path: Path | None = None,
-    tolerance: float = 0.30,  # 与 CLI --tolerance 默认值一致（实测半宽校准，见模块 docstring）
+    # None = 未显式指定 → 用当前域声明的容差（change gate-tolerance-per-domain D1）。
+    # **刻意不给数值缺省**：任何缺省都是「按某个域校准的数」，用在别的域上会静默失准。
+    # 用 None 作哨兵而非「判是否等于默认值」，否则显式传 0.30 与没传不可区分。
+    tolerance: float | None = None,
     concurrency: int = DEFAULT_CONCURRENCY,  # 用例并发度；1=串行基准路径
 ) -> int:
     """端到端真跑全部用例, 输出多指标报告。返回进程退出码。
@@ -420,9 +439,10 @@ async def run_baseline(
                 print(f"[ERROR] 域 {_DOMAIN.name!r} 的门禁声明非法: {exc}", file=sys.stderr)
                 return 2  # 2 = 用例/配置错误
             print(f"[门禁] 域 {_DOMAIN.name!r} 声明被守指标：{', '.join(gated)}")
+            tol, tol_source = _resolve_tolerance(tolerance)
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-            gate_report = compare_to_baseline(current_view, baseline, tolerance, gated=gated)
-            print(format_gate_report(gate_report))
+            gate_report = compare_to_baseline(current_view, baseline, tol, gated=gated)
+            print(format_gate_report(gate_report, tolerance_source=tol_source))
             return 0 if gate_report.passed else 3  # 3 = 检测到回归
         return 0
 
@@ -526,8 +546,9 @@ def main() -> int:
         help=f"基线文件路径(改造 6)；默认 {BASELINE_FILE.name}(与本脚本同目录)",
     )
     parser.add_argument(
-        "--tolerance", type=float, default=0.30,
-        help="门禁容差(改造 6)；比率即百分点(0.30=30pp)，经实测半宽校准吸收 LLM 抖动；默认 0.30",
+        "--tolerance", type=float, default=None,
+        help="门禁容差(改造 6)；比率即百分点(0.30=30pp)。**不传即用当前域声明的容差**"
+             "(change gate-tolerance-per-domain)；显式传入则覆盖域声明，供排障与临时放宽",
     )
     parser.add_argument(
         "--concurrency", type=int, default=DEFAULT_CONCURRENCY,
